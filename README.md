@@ -13,3 +13,4 @@ SRIAAS WhatsApp Operations Hub for ERPNext / Frappe.
 ## Planned later phases
 - Phase 2: unofficial/QR-based WhatsApp connectors
 - Phase 3: AI copilot and controlled automation
+# wa_chat_hub
