@@ -1,0 +1,63 @@
+{
+  "doctype": "DocType",
+  "name": "WA AI Tool Permission",
+  "module": "WA Chat Hub",
+  "custom": 0,
+  "istable": 0,
+  "issingle": 0,
+  "track_changes": 1,
+  "engine": "InnoDB",
+  "field_order": [
+    "tool_name",
+    "scope",
+    "department",
+    "allow_read",
+    "allow_write",
+    "allow_execute",
+    "is_active"
+  ],
+  "fields": [
+    {
+      "fieldname": "tool_name",
+      "fieldtype": "Data",
+      "label": "Tool Name",
+      "reqd": 1
+    },
+    {
+      "fieldname": "scope",
+      "fieldtype": "Select",
+      "label": "Scope",
+      "options": "global\ndepartment\nagent",
+      "default": "global"
+    },
+    {
+      "fieldname": "department",
+      "fieldtype": "Link",
+      "label": "Department",
+      "options": "Department"
+    },
+    {
+      "fieldname": "allow_read",
+      "fieldtype": "Check",
+      "label": "Allow Read",
+      "default": 1
+    },
+    {
+      "fieldname": "allow_write",
+      "fieldtype": "Check",
+      "label": "Allow Write"
+    },
+    {
+      "fieldname": "allow_execute",
+      "fieldtype": "Check",
+      "label": "Allow Execute"
+    },
+    {
+      "fieldname": "is_active",
+      "fieldtype": "Check",
+      "label": "Is Active",
+      "default": 1
+    }
+  ],
+  "permissions": []
+}

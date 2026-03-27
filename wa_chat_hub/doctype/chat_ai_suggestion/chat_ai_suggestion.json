@@ -1,0 +1,56 @@
+{
+  "doctype": "DocType",
+  "name": "Chat AI Suggestion",
+  "module": "WA Chat Hub",
+  "custom": 0,
+  "istable": 0,
+  "track_changes": 1,
+  "engine": "InnoDB",
+  "field_order": [
+    "conversation",
+    "suggestion_type",
+    "content",
+    "status",
+    "applied_reference_doctype",
+    "applied_reference_name"
+  ],
+  "fields": [
+    {
+      "fieldname": "conversation",
+      "fieldtype": "Link",
+      "label": "Conversation",
+      "options": "Chat Conversation",
+      "reqd": 1
+    },
+    {
+      "fieldname": "suggestion_type",
+      "fieldtype": "Select",
+      "label": "Suggestion Type",
+      "options": "Summary\nReply Draft\nIntent\nDepartment\nLead Draft\nEncounter Draft\nSupport Ticket Draft",
+      "reqd": 1
+    },
+    {
+      "fieldname": "content",
+      "fieldtype": "Long Text",
+      "label": "Content"
+    },
+    {
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "label": "Status",
+      "options": "Draft\nReviewed\nApplied\nRejected",
+      "default": "Draft"
+    },
+    {
+      "fieldname": "applied_reference_doctype",
+      "fieldtype": "Data",
+      "label": "Applied Reference Doctype"
+    },
+    {
+      "fieldname": "applied_reference_name",
+      "fieldtype": "Data",
+      "label": "Applied Reference Name"
+    }
+  ],
+  "permissions": []
+}

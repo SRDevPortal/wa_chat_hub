@@ -1,0 +1,44 @@
+.wa-chat-hub-layout {
+  display: grid;
+  grid-template-columns: 320px 1fr 360px;
+  min-height: 78vh;
+  background: #f0f2f5;
+}
+.wa-left-pane, .wa-center-pane, .wa-right-pane {
+  padding: 16px;
+  border-right: 1px solid #d8dfe6;
+  background: #fff;
+}
+.wa-right-pane { border-right: none; background: #f8fafc; }
+.wa-pane-title { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
+.wa-thread-subtitle, .wa-empty { color: #5c6b7a; font-size: 13px; line-height: 1.5; }
+.wa-search {
+  width: 100%; padding: 10px 12px; border: 1px solid #d8dfe6; border-radius: 10px; margin-bottom: 10px;
+}
+.wa-filter-row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.wa-chip {
+  border: 1px solid #d8dfe6; background: #f8fafc; color: #334155; border-radius: 999px; padding: 6px 10px; font-size: 12px;
+}
+.wa-chip.active { background: #dcfce7; border-color: #86efac; }
+.wa-conversation-list, .wa-message-list { min-height: 240px; }
+.wa-thread-header, .wa-composer-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.wa-thread-actions, .wa-action-list { display: flex; gap: 8px; flex-wrap: wrap; }
+.wa-card {
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 14px; padding: 12px; margin-bottom: 12px;
+}
+.wa-card-title { font-weight: 700; margin-bottom: 8px; }
+.wa-meta-row { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; font-size: 13px; }
+.wa-composer {
+  margin-top: 16px; border-top: 1px solid #e2e8f0; padding-top: 12px;
+}
+.wa-settings-layout { display: grid; gap: 16px; padding: 16px; }
+.wa-settings-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 14px; padding: 16px; }
+.wa-conversation-item { width: 100%; text-align: left; border: 1px solid #e2e8f0; background: #fff; border-radius: 12px; padding: 10px; margin-bottom: 8px; }
+.wa-conversation-top { display: flex; justify-content: space-between; gap: 8px; }
+.wa-conversation-meta, .wa-conversation-preview, .wa-message-meta { font-size: 12px; color: #64748b; }
+.wa-badge { background: #dcfce7; border-radius: 999px; padding: 2px 8px; font-size: 11px; }
+.wa-message { max-width: 78%; padding: 10px 12px; border-radius: 12px; margin: 8px 0; border: 1px solid #e2e8f0; }
+.wa-message.inbound { background: #fff; }
+.wa-message.outbound { background: #dcfce7; margin-left: auto; }
+.wa-message-body { white-space: pre-wrap; }
+.pre, .wa-pre { white-space: pre-wrap; font-size: 12px; color: #334155; }

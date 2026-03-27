@@ -1,0 +1,91 @@
+{
+  "doctype": "DocType",
+  "name": "Chat Conversation",
+  "module": "WA Chat Hub",
+  "custom": 0,
+  "istable": 0,
+  "track_changes": 1,
+  "engine": "InnoDB",
+  "field_order": [
+    "channel_account",
+    "contact",
+    "department",
+    "assigned_to",
+    "status",
+    "priority",
+    "last_message_preview",
+    "unread_count",
+    "ai_summary",
+    "linked_reference_doctype",
+    "linked_reference_name"
+  ],
+  "fields": [
+    {
+      "fieldname": "channel_account",
+      "fieldtype": "Link",
+      "label": "Channel Account",
+      "options": "Chat Channel Account",
+      "reqd": 1
+    },
+    {
+      "fieldname": "contact",
+      "fieldtype": "Link",
+      "label": "Contact",
+      "options": "Chat Contact",
+      "reqd": 1
+    },
+    {
+      "fieldname": "department",
+      "fieldtype": "Link",
+      "label": "Department",
+      "options": "Department"
+    },
+    {
+      "fieldname": "assigned_to",
+      "fieldtype": "Link",
+      "label": "Assigned To",
+      "options": "User"
+    },
+    {
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "label": "Status",
+      "options": "Open\nPending\nResolved\nClosed",
+      "default": "Open"
+    },
+    {
+      "fieldname": "priority",
+      "fieldtype": "Select",
+      "label": "Priority",
+      "options": "Low\nMedium\nHigh\nUrgent",
+      "default": "Medium"
+    },
+    {
+      "fieldname": "last_message_preview",
+      "fieldtype": "Small Text",
+      "label": "Last Message Preview"
+    },
+    {
+      "fieldname": "unread_count",
+      "fieldtype": "Int",
+      "label": "Unread Count",
+      "default": 0
+    },
+    {
+      "fieldname": "ai_summary",
+      "fieldtype": "Text",
+      "label": "AI Summary"
+    },
+    {
+      "fieldname": "linked_reference_doctype",
+      "fieldtype": "Data",
+      "label": "Linked Reference Doctype"
+    },
+    {
+      "fieldname": "linked_reference_name",
+      "fieldtype": "Data",
+      "label": "Linked Reference Name"
+    }
+  ],
+  "permissions": []
+}

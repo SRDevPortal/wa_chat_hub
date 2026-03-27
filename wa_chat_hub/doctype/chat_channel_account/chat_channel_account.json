@@ -1,0 +1,76 @@
+{
+  "doctype": "DocType",
+  "name": "Chat Channel Account",
+  "module": "WA Chat Hub",
+  "custom": 0,
+  "istable": 0,
+  "track_changes": 1,
+  "engine": "InnoDB",
+  "field_order": [
+    "account_name",
+    "channel_type",
+    "department",
+    "phone_number",
+    "phone_id",
+    "waba_id",
+    "connector_status",
+    "default_team",
+    "is_active"
+  ],
+  "fields": [
+    {
+      "fieldname": "account_name",
+      "fieldtype": "Data",
+      "label": "Account Name",
+      "reqd": 1
+    },
+    {
+      "fieldname": "channel_type",
+      "fieldtype": "Select",
+      "label": "Channel Type",
+      "options": "Official WhatsApp\nPersonal WhatsApp",
+      "reqd": 1
+    },
+    {
+      "fieldname": "department",
+      "fieldtype": "Link",
+      "label": "Department",
+      "options": "Department"
+    },
+    {
+      "fieldname": "phone_number",
+      "fieldtype": "Data",
+      "label": "Phone Number"
+    },
+    {
+      "fieldname": "phone_id",
+      "fieldtype": "Data",
+      "label": "Phone ID"
+    },
+    {
+      "fieldname": "waba_id",
+      "fieldtype": "Data",
+      "label": "WABA ID"
+    },
+    {
+      "fieldname": "connector_status",
+      "fieldtype": "Select",
+      "label": "Connector Status",
+      "options": "Draft\nActive\nQR Pending\nDisconnected\nError",
+      "default": "Draft"
+    },
+    {
+      "fieldname": "default_team",
+      "fieldtype": "Link",
+      "label": "Default Team",
+      "options": "User"
+    },
+    {
+      "fieldname": "is_active",
+      "fieldtype": "Check",
+      "label": "Is Active",
+      "default": 1
+    }
+  ],
+  "permissions": []
+}

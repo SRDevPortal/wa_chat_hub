@@ -1,0 +1,57 @@
+{
+  "doctype": "DocType",
+  "name": "Chat Channel Session",
+  "module": "WA Chat Hub",
+  "custom": 0,
+  "istable": 0,
+  "track_changes": 1,
+  "engine": "InnoDB",
+  "field_order": [
+    "channel_account",
+    "session_key",
+    "qr_status",
+    "health_status",
+    "last_sync_on",
+    "session_payload"
+  ],
+  "fields": [
+    {
+      "fieldname": "channel_account",
+      "fieldtype": "Link",
+      "label": "Channel Account",
+      "options": "Chat Channel Account",
+      "reqd": 1
+    },
+    {
+      "fieldname": "session_key",
+      "fieldtype": "Data",
+      "label": "Session Key"
+    },
+    {
+      "fieldname": "qr_status",
+      "fieldtype": "Select",
+      "label": "QR Status",
+      "options": "Not Required\nPending\nScanned\nExpired",
+      "default": "Not Required"
+    },
+    {
+      "fieldname": "health_status",
+      "fieldtype": "Select",
+      "label": "Health Status",
+      "options": "Draft\nConnected\nReconnecting\nDisconnected\nBlocked\nError",
+      "default": "Draft"
+    },
+    {
+      "fieldname": "last_sync_on",
+      "fieldtype": "Datetime",
+      "label": "Last Sync On"
+    },
+    {
+      "fieldname": "session_payload",
+      "fieldtype": "Code",
+      "label": "Session Payload",
+      "options": "JSON"
+    }
+  ],
+  "permissions": []
+}

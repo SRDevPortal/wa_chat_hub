@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Egg info
+*.egg-info/
+
+# Env
+env/
+venv/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

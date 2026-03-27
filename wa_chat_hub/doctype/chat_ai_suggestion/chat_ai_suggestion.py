@@ -1,0 +1,2 @@
+class ChatAISuggestion:
+    pass
