@@ -1,2 +1,0 @@
-class WAAIToolPermission:
-    pass

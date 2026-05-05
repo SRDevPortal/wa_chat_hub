@@ -1,2 +1,0 @@
-class ChatChannelAccount:
-    pass
