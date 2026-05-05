@@ -1,0 +1,90 @@
+{
+ "actions": [],
+ "autoname": "field:server_label",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "server_label",
+  "transport",
+  "server_url",
+  "auth_type",
+  "auth_secret",
+  "scope",
+  "department",
+  "allowed_tools",
+  "is_active"
+ ],
+ "fields": [
+  {
+   "fieldname": "server_label",
+   "fieldtype": "Data",
+   "label": "Server Label",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "transport",
+   "fieldtype": "Select",
+   "label": "Transport",
+   "options": "http\nhttps\nstdio",
+   "reqd": 1
+  },
+  {
+   "fieldname": "server_url",
+   "fieldtype": "Data",
+   "label": "Server URL"
+  },
+  {
+   "default": "None",
+   "fieldname": "auth_type",
+   "fieldtype": "Select",
+   "label": "Auth Type",
+   "options": "None\nBearer\nHeader\nBasic"
+  },
+  {
+   "fieldname": "auth_secret",
+   "fieldtype": "Password",
+   "label": "Auth Secret"
+  },
+  {
+   "default": "global",
+   "fieldname": "scope",
+   "fieldtype": "Select",
+   "label": "Scope",
+   "options": "global\ndepartment\nagent"
+  },
+  {
+   "fieldname": "department",
+   "fieldtype": "Link",
+   "label": "Department",
+   "options": "Department"
+  },
+  {
+   "fieldname": "allowed_tools",
+   "fieldtype": "Small Text",
+   "label": "Allowed Tools"
+  },
+  {
+   "default": "1",
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "label": "Is Active"
+  }
+ ],
+ "links": [],
+ "module": "WA Chat Hub",
+ "name": "WA MCP Server",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

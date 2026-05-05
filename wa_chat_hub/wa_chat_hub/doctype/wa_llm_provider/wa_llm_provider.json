@@ -1,0 +1,110 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "format:{title}",
+ "creation": "2026-04-09 12:16:55.850841",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "title",
+  "is_active",
+  "priority",
+  "sb1",
+  "provider_type",
+  "model_name",
+  "api_key",
+  "base_url",
+  "is_embedding_provider"
+ ],
+ "fields": [
+  {
+   "fieldname": "title",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Title",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "label": "Is Active"
+  },
+  {
+   "default": "1",
+   "description": "Lower number means higher priority. e.g. Priority 1 is tried before Priority 2.",
+   "fieldname": "priority",
+   "fieldtype": "Int",
+   "label": "Priority"
+  },
+  {
+   "fieldname": "sb1",
+   "fieldtype": "Section Break",
+   "label": "API Config"
+  },
+  {
+   "default": "OpenAI",
+   "fieldname": "provider_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Provider Type",
+   "options": "OpenAI\nGemini\nAnthropic\nCustom",
+   "reqd": 1
+  },
+  {
+   "description": "e.g. gpt-4o, gemini-1.5-pro",
+   "fieldname": "model_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Model Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "api_key",
+   "fieldtype": "Password",
+   "label": "API Key"
+  },
+  {
+   "description": "Used if overriding default API host (e.g. for Groq or local endpoints).",
+   "fieldname": "base_url",
+   "fieldtype": "Data",
+   "label": "Custom Base URL"
+  },
+  {
+   "default": "0",
+   "description": "Check this to use this provider for generating Knowledge Base vectors (Ensure OpenAI config is correct)",
+   "fieldname": "is_embedding_provider",
+   "fieldtype": "Check",
+   "label": "Is Embedding Provider"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-04-09 15:05:52.417257",
+ "modified_by": "Administrator",
+ "module": "WA Chat Hub",
+ "name": "WA LLM Provider",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

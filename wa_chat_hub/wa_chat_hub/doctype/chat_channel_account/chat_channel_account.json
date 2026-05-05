@@ -1,0 +1,141 @@
+{
+ "actions": [],
+ "autoname": "field:account_name",
+ "creation": "2026-04-08 18:13:30.182052",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "account_name",
+  "channel_type",
+  "department",
+  "phone_number",
+  "phone_id",
+  "waba_id",
+  "connector_status",
+  "default_team",
+  "is_active",
+  "sb_api_config",
+  "provider_base_url",
+  "x_api_key",
+  "x_tenant_id",
+  "x_user_id"
+ ],
+ "fields": [
+  {
+   "fieldname": "account_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Account Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "channel_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Channel Type",
+   "options": "Official WhatsApp\nPersonal WhatsApp",
+   "reqd": 1
+  },
+  {
+   "fieldname": "department",
+   "fieldtype": "Link",
+   "label": "Department",
+   "options": "Medical Department"
+  },
+  {
+   "fieldname": "phone_number",
+   "fieldtype": "Data",
+   "label": "Phone Number"
+  },
+  {
+   "depends_on": "eval:doc.channel_type == 'Official WhatsApp'",
+   "fieldname": "phone_id",
+   "fieldtype": "Data",
+   "label": "Phone ID"
+  },
+  {
+   "depends_on": "eval:doc.channel_type == 'Official WhatsApp'",
+   "fieldname": "waba_id",
+   "fieldtype": "Data",
+   "label": "WABA ID"
+  },
+  {
+   "default": "Draft",
+   "fieldname": "connector_status",
+   "fieldtype": "Select",
+   "label": "Connector Status",
+   "options": "Draft\nActive\nQR Pending\nDisconnected\nError"
+  },
+  {
+   "fieldname": "default_team",
+   "fieldtype": "Link",
+   "label": "Default Team",
+   "options": "User"
+  },
+  {
+   "default": "1",
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "label": "Is Active"
+  },
+  {
+   "depends_on": "eval:doc.channel_type == 'Official WhatsApp'",
+   "fieldname": "sb_api_config",
+   "fieldtype": "Section Break",
+   "label": "API Config (External Provider)"
+  },
+  {
+   "depends_on": "eval:doc.channel_type == 'Official WhatsApp'",
+   "description": "e.g. https://api.whatsapp-partner.com",
+   "fieldname": "provider_base_url",
+   "fieldtype": "Data",
+   "label": "Provider Base URL"
+  },
+  {
+   "depends_on": "eval:doc.channel_type == 'Official WhatsApp'",
+   "fieldname": "x_api_key",
+   "fieldtype": "Password",
+   "label": "x_api_key"
+  },
+  {
+   "depends_on": "eval:doc.channel_type == 'Official WhatsApp'",
+   "fieldname": "x_tenant_id",
+   "fieldtype": "Data",
+   "label": "x_tenant_id"
+  },
+  {
+   "depends_on": "eval:doc.channel_type == 'Official WhatsApp'",
+   "fieldname": "x_user_id",
+   "fieldtype": "Data",
+   "label": "x_user_id"
+  }
+ ],
+ "links": [],
+ "modified": "2026-04-09 12:53:06.496849",
+ "modified_by": "Administrator",
+ "module": "WA Chat Hub",
+ "name": "Chat Channel Account",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "read": 1,
+   "role": "All",
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "account_name",
+ "track_changes": 1
+}

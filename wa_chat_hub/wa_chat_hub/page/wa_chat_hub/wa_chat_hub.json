@@ -1,0 +1,21 @@
+{
+  "docstatus": 0,
+  "doctype": "Page",
+  "icon": "fa fa-comments",
+  "idx": 1,
+  "modified_by": "Administrator",
+  "module": "WA Chat Hub",
+  "name": "wa-chat-hub",
+  "owner": "Administrator",
+  "page_name": "wa-chat-hub",
+  "roles": [
+    {
+      "role": "System Manager"
+    },
+    {
+      "role": "All"
+    }
+  ],
+  "standard": "Yes",
+  "title": "WA Chat Hub"
+}

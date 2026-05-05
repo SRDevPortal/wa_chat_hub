@@ -1,0 +1,18 @@
+{
+  "docstatus": 0,
+  "doctype": "Page",
+  "icon": "fa fa-cog",
+  "idx": 1,
+  "modified_by": "Administrator",
+  "module": "WA Chat Hub",
+  "name": "wa-chat-hub-settings",
+  "owner": "Administrator",
+  "page_name": "wa-chat-hub-settings",
+  "roles": [
+    {
+      "role": "System Manager"
+    }
+  ],
+  "standard": "Yes",
+  "title": "WA Chat Hub Settings"
+}

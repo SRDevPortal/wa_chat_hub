@@ -1,0 +1,68 @@
+{
+ "actions": [],
+ "autoname": "autoincrement",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "conversation",
+  "suggestion_type",
+  "content",
+  "status",
+  "applied_reference_doctype",
+  "applied_reference_name"
+ ],
+ "fields": [
+  {
+   "fieldname": "conversation",
+   "fieldtype": "Link",
+   "label": "Conversation",
+   "options": "Chat Conversation",
+   "reqd": 1
+  },
+  {
+   "fieldname": "suggestion_type",
+   "fieldtype": "Select",
+   "label": "Suggestion Type",
+   "options": "Summary\nReply Draft\nIntent\nDepartment\nLead Draft\nEncounter Draft\nSupport Ticket Draft",
+   "reqd": 1
+  },
+  {
+   "fieldname": "content",
+   "fieldtype": "Long Text",
+   "label": "Content"
+  },
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Draft\nReviewed\nApplied\nRejected"
+  },
+  {
+   "fieldname": "applied_reference_doctype",
+   "fieldtype": "Data",
+   "label": "Applied Reference Doctype"
+  },
+  {
+   "fieldname": "applied_reference_name",
+   "fieldtype": "Data",
+   "label": "Applied Reference Name"
+  }
+ ],
+ "links": [],
+ "module": "WA Chat Hub",
+ "name": "Chat AI Suggestion",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

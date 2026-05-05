@@ -1,0 +1,116 @@
+{
+ "actions": [],
+ "autoname": "autoincrement",
+ "creation": "2026-04-08 18:13:32.387964",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "conversation",
+  "direction",
+  "sender_type",
+  "content_type",
+  "body",
+  "media_url",
+  "channel_message_id",
+  "provider_message_id",
+  "delivery_status",
+  "raw_payload",
+  "raw_transport_payload"
+ ],
+ "fields": [
+  {
+   "fieldname": "conversation",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Conversation",
+   "options": "Chat Conversation",
+   "reqd": 1
+  },
+  {
+   "fieldname": "direction",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Direction",
+   "options": "Inbound\nOutbound\nInternal Note",
+   "reqd": 1
+  },
+  {
+   "fieldname": "sender_type",
+   "fieldtype": "Select",
+   "label": "Sender Type",
+   "options": "Customer\nAgent\nAI\nSystem"
+  },
+  {
+   "default": "Text",
+   "fieldname": "content_type",
+   "fieldtype": "Select",
+   "label": "Content Type",
+   "options": "Text\nImage\nVideo\nAudio\nDocument\nTemplate\nLocation"
+  },
+  {
+   "fieldname": "body",
+   "fieldtype": "Long Text",
+   "label": "Body"
+  },
+  {
+   "fieldname": "media_url",
+   "fieldtype": "Data",
+   "label": "Media URL"
+  },
+  {
+   "fieldname": "channel_message_id",
+   "fieldtype": "Data",
+   "label": "Channel Message ID"
+  },
+  {
+   "fieldname": "provider_message_id",
+   "fieldtype": "Data",
+   "label": "Provider Message ID"
+  },
+  {
+   "default": "Pending",
+   "fieldname": "delivery_status",
+   "fieldtype": "Select",
+   "label": "Delivery Status",
+   "options": "Pending\nSent\nDelivered\nRead\nFailed"
+  },
+  {
+   "fieldname": "raw_payload",
+   "fieldtype": "Code",
+   "label": "Raw Payload",
+   "options": "JSON"
+  },
+  {
+   "fieldname": "raw_transport_payload",
+   "fieldtype": "Code",
+   "label": "Raw Transport Payload",
+   "options": "JSON"
+  }
+ ],
+ "links": [],
+ "modified": "2026-04-09 10:53:50.557034",
+ "modified_by": "Administrator",
+ "module": "WA Chat Hub",
+ "name": "Chat Message",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "read": 1,
+   "role": "All",
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

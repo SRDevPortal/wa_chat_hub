@@ -1,0 +1,98 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "format:{tool_name}",
+ "creation": "2026-04-09 12:16:56.306707",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "tool_name",
+  "is_active",
+  "description",
+  "sb1",
+  "endpoint_url",
+  "http_method",
+  "parameters_schema"
+ ],
+ "fields": [
+  {
+   "description": "e.g. get_patient_appointments. Must be a valid identifier (no spaces).",
+   "fieldname": "tool_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Tool Name (Function Name)",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "label": "Is Active"
+  },
+  {
+   "description": "Instructions for the LLM on exactly when and how to use this tool.",
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "in_list_view": 1,
+   "label": "Tool Description",
+   "reqd": 1
+  },
+  {
+   "fieldname": "sb1",
+   "fieldtype": "Section Break",
+   "label": "Endpoint Configuration"
+  },
+  {
+   "description": "e.g. /api/method/wa_chat_hub.api.get_appointments",
+   "fieldname": "endpoint_url",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Endpoint URL",
+   "reqd": 1
+  },
+  {
+   "default": "GET",
+   "fieldname": "http_method",
+   "fieldtype": "Select",
+   "label": "HTTP Method",
+   "options": "GET\nPOST"
+  },
+  {
+   "description": "Provide standard JSON Schema defining the expected parameters. e.g. {'type': 'object', 'properties': {'phone': {'type':'string'}}}",
+   "fieldname": "parameters_schema",
+   "fieldtype": "Code",
+   "label": "Parameters Schema",
+   "options": "JSON"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-04-09 12:16:56.306707",
+ "modified_by": "Administrator",
+ "module": "WA Chat Hub",
+ "name": "WA MCP Tool Endpoint",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
