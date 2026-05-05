@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+import frappe
+
 from wa_chat_hub.connector.official.adapter import OfficialWhatsAppAdapter
 from wa_chat_hub.connector.personal.adapter import PersonalWhatsAppAdapter
 
@@ -9,4 +13,11 @@ REGISTRY = {
 
 
 def get_adapter(channel_type: str):
-    return REGISTRY[channel_type]
+    adapter = REGISTRY.get(channel_type)
+    if adapter is None:
+        frappe.throw(
+            f"Unsupported channel type: '{channel_type}'. "
+            f"Valid options are: {', '.join(REGISTRY.keys())}",
+            title="Unknown Channel Type",
+        )
+    return adapter

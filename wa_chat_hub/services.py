@@ -146,6 +146,13 @@ def append_message(payload: Dict[str, Any]) -> Dict[str, str]:
     return {"contact": contact, "conversation": conversation, "message": message.name}
 
 
+def cint_safe(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
+
+
 def update_conversation_after_message(conversation_name: str, payload: Dict[str, Any]) -> None:
     convo = frappe.get_doc("Chat Conversation", conversation_name)
     convo.last_message_preview = (payload.get("body") or payload.get("content_type") or "")[:500]
@@ -157,13 +164,6 @@ def update_conversation_after_message(conversation_name: str, payload: Dict[str,
 
 def mark_conversation_read(conversation_name: str) -> None:
     frappe.db.set_value("Chat Conversation", conversation_name, "unread_count", 0)
-
-
-def cint_safe(value: Any) -> int:
-    try:
-        return int(value or 0)
-    except Exception:
-        return 0
 
 
 def build_erp_actions() -> Dict[str, Dict[str, str]]:
