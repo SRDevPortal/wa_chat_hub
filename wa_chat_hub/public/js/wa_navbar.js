@@ -18,10 +18,14 @@ wa_chat_hub.notifications = {
 
         this.insert_icon();
         this.bind_events();
+        this.refresh_count();
     },
 
     insert_icon: function() {
-        if ($('.custom-wa-dropdown').length > 0) return; // Prevent duplicates gracefully
+        if ($('.custom-wa-dropdown').length > 0) {
+            wa_chat_hub.notifications.refresh_count();
+            return;
+        } // Prevent duplicates gracefully
         
         // Appends to the right side of the navbar
         let html = `
@@ -29,13 +33,13 @@ wa_chat_hub.notifications = {
                 <a class="nav-link" data-toggle="dropdown" href="#" role="button" aria-haspopup="true" aria-expanded="false" title="WhatsApp Messages">
                     <span style="position:relative;">
                         <i class="fa fa-whatsapp" style="font-size: 18px; color: #25D366; vertical-align: middle;"></i>
-                        <span class="badge badge-danger wa-unread-badge" style="position: absolute; top: -5px; right: -10px; font-size: 9px; display: none;"></span>
+                        <span class="badge badge-danger wa-unread-badge" style="position: absolute; top: -7px; right: -12px; min-width: 16px; height: 16px; padding: 2px 4px; border-radius: 10px; font-size: 10px; line-height: 12px; display: none;"></span>
                     </span>
                 </a>
                 <div class="dropdown-menu dropdown-menu-right wa-dropdown-box" style="width: 340px; max-height: 400px; overflow-y: auto; padding: 0; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
                     <div class="dropdown-header d-flex justify-content-between align-items-center" style="background: #f8f9fa; border-bottom: 1px solid #e2e2e2; padding: 12px;">
                         <strong style="color: #333;"><i class="fa fa-whatsapp"></i> WhatsApp Live Desk</strong>
-                        <a href="/app/wa-chat-interface" class="text-primary" style="font-size: 12px;"><i class="fa fa-external-link"></i> Open Hub</a>
+                        <a href="/app/wa-chat-hub" class="text-primary" style="font-size: 12px;"><i class="fa fa-external-link"></i> Open Hub</a>
                     </div>
                     <div class="wa-notifications-list">
                         <!-- Loaded dynamically -->
@@ -55,8 +59,7 @@ wa_chat_hub.notifications = {
         // On dropdown open, fetch limits
         $('.custom-wa-dropdown').on('show.bs.dropdown', function () {
             wa_chat_hub.notifications.load_recent();
-            // Clear badge
-            $('.wa-unread-badge').hide().text("");
+            wa_chat_hub.notifications.refresh_count();
         });
     },
 
@@ -71,7 +74,7 @@ wa_chat_hub.notifications = {
                     let items_html = r.message.map(m => {
                         let short_body = m.body ? m.body.substring(0, 50) + (m.body.length > 50 ? '...' : '') : '[Media]';
                         return `
-                            <a class="dropdown-item d-flex flex-column border-bottom" href="/app/wa-chat-interface" style="padding: 12px; white-space: normal;">
+                            <a class="dropdown-item d-flex flex-column border-bottom" href="/app/wa-chat-hub" style="padding: 12px; white-space: normal;">
                                 <div class="d-flex justify-content-between w-100 mb-1">
                                     <strong style="font-size: 13px; color: #1f272e;">${m.sender_name}</strong>
                                     <small class="text-muted" style="font-size: 11px;">${frappe.datetime.comment_when(m.creation)}</small>
@@ -88,10 +91,25 @@ wa_chat_hub.notifications = {
         });
     },
     
-    update_count: function() {
-        let count = parseInt($('.wa-unread-badge').text() || 0);
-        count += 1;
-        $('.wa-unread-badge').show().text(count);
+    refresh_count: function() {
+        frappe.call({
+            method: "wa_chat_hub.api.notifications.get_unread_count",
+            callback: function(r) {
+                wa_chat_hub.notifications.render_count(r.message || 0);
+            }
+        });
+    },
+
+    render_count: function(count) {
+        count = cint(count || 0);
+        const badge = $('.wa-unread-badge');
+        if (!badge.length) return;
+
+        if (count > 0) {
+            badge.show().text(count > 99 ? "99+" : count);
+        } else {
+            badge.hide().text("");
+        }
     },
 
     bind_events: function() {
@@ -100,10 +118,9 @@ wa_chat_hub.notifications = {
                 // If dropdown is open, refresh it. Else, increment counter.
                 if ($('.custom-wa-dropdown').hasClass('show')) {
                     wa_chat_hub.notifications.load_recent();
-                } else {
-                    wa_chat_hub.notifications.update_count();
-                    frappe.utils.play_sound("notification");
                 }
+                wa_chat_hub.notifications.refresh_count();
+                frappe.utils.play_sound("notification");
             }
         });
     }
