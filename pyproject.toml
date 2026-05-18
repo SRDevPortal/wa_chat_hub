@@ -1,16 +1,26 @@
 [project]
 name = "wa_chat_hub"
+version = "0.0.1"
+description = "Unified WhatsApp operations hub for ERPNext"
+requires-python = ">=3.10"
+license = { text = "MIT" }
 authors = [
     { name = "SAI", email = "admin@example.com" }
 ]
-description = "Unified WhatsApp operations hub for ERPNext"
-requires-python = ">=3.10"
-dependencies = []
-version = "0.0.1"
+dependencies = [
+    "requests",
+]
 
 [build-system]
-requires = ["flit_core >=3.4,<4"]
-build-backend = "flit_core.buildapi"
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["wa_chat_hub*"]
 
 [tool.bench.frappe-dependencies]
 frappe = ">=15.0.0,<16.0.0"
