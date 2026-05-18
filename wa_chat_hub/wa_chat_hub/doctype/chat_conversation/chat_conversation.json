@@ -43,6 +43,7 @@
   {
    "fieldname": "assigned_to",
    "fieldtype": "Link",
+   "in_list_view": 1,
    "label": "Assigned To",
    "options": "User"
   },
@@ -50,6 +51,7 @@
    "default": "Open",
    "fieldname": "status",
    "fieldtype": "Select",
+   "in_list_view": 1,
    "label": "Status",
    "options": "Open\nPending\nResolved\nClosed"
   },
@@ -57,18 +59,21 @@
    "default": "Medium",
    "fieldname": "priority",
    "fieldtype": "Select",
+   "in_list_view": 1,
    "label": "Priority",
    "options": "Low\nMedium\nHigh\nUrgent"
   },
   {
    "fieldname": "last_message_preview",
    "fieldtype": "Small Text",
+   "in_list_view": 1,
    "label": "Last Message Preview"
   },
   {
    "default": "0",
    "fieldname": "unread_count",
    "fieldtype": "Int",
+   "in_list_view": 1,
    "label": "Unread Count"
   },
   {
@@ -112,5 +117,6 @@
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
+ "title_field": "contact",
  "track_changes": 1
 }

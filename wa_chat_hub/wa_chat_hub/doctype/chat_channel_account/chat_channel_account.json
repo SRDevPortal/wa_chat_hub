@@ -14,6 +14,12 @@
   "connector_status",
   "default_team",
   "is_active",
+  "interakt_config",
+  "interakt_api_key",
+  "interakt_base_url",
+  "interakt_webhook_secret",
+  "interakt_default_country_code",
+  "interakt_default_language_code",
   "sb_api_config",
   "provider_base_url",
   "x_api_key",
@@ -34,7 +40,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Channel Type",
-   "options": "Official WhatsApp\nPersonal WhatsApp",
+   "options": "Interakt\nOfficial WhatsApp\nPersonal WhatsApp",
    "reqd": 1
   },
   {
@@ -78,6 +84,47 @@
    "fieldname": "is_active",
    "fieldtype": "Check",
    "label": "Is Active"
+  },
+  {
+   "depends_on": "eval:doc.channel_type == 'Interakt'",
+   "fieldname": "interakt_config",
+   "fieldtype": "Section Break",
+   "label": "Interakt API Config"
+  },
+  {
+   "depends_on": "eval:doc.channel_type == 'Interakt'",
+   "fieldname": "interakt_api_key",
+   "fieldtype": "Password",
+   "label": "Interakt API Key"
+  },
+  {
+   "default": "https://api.interakt.ai/v1/public/message/",
+   "depends_on": "eval:doc.channel_type == 'Interakt'",
+   "description": "Interakt public message endpoint",
+   "fieldname": "interakt_base_url",
+   "fieldtype": "Data",
+   "label": "Interakt Message API URL"
+  },
+  {
+   "depends_on": "eval:doc.channel_type == 'Interakt'",
+   "description": "Secret key configured in Interakt Developer Settings for webhook HMAC validation",
+   "fieldname": "interakt_webhook_secret",
+   "fieldtype": "Password",
+   "label": "Interakt Webhook Secret"
+  },
+  {
+   "default": "+91",
+   "depends_on": "eval:doc.channel_type == 'Interakt'",
+   "fieldname": "interakt_default_country_code",
+   "fieldtype": "Data",
+   "label": "Default Country Code"
+  },
+  {
+   "default": "en",
+   "depends_on": "eval:doc.channel_type == 'Interakt'",
+   "fieldname": "interakt_default_language_code",
+   "fieldtype": "Data",
+   "label": "Default Template Language"
   },
   {
    "depends_on": "eval:doc.channel_type == 'Official WhatsApp'",

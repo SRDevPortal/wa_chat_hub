@@ -45,7 +45,7 @@
    "fieldname": "content_type",
    "fieldtype": "Select",
    "label": "Content Type",
-   "options": "Text\nImage\nVideo\nAudio\nDocument\nTemplate\nLocation"
+   "options": "Text\nImage\nVideo\nAudio\nDocument\nTemplate\nLocation\nSticker"
   },
   {
    "fieldname": "body",
@@ -54,7 +54,7 @@
   },
   {
    "fieldname": "media_url",
-   "fieldtype": "Data",
+   "fieldtype": "Small Text",
    "label": "Media URL"
   },
   {
@@ -72,7 +72,7 @@
    "fieldname": "delivery_status",
    "fieldtype": "Select",
    "label": "Delivery Status",
-   "options": "Pending\nSent\nDelivered\nRead\nFailed"
+   "options": "Pending\nReceived\nSent\nDelivered\nRead\nFailed"
   },
   {
    "fieldname": "raw_payload",
