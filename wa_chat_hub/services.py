@@ -128,21 +128,36 @@ def append_message(payload: Dict[str, Any]) -> Dict[str, str]:
         status=routing.get("queue_status") or DEFAULT_CONVERSATION_STATUS,
     )
 
+    direction = payload.get("direction", "Inbound")
+    delivery_status = payload.get("delivery_status")
+    if not delivery_status:
+        delivery_status = "Received" if direction == "Inbound" else "Pending"
+
     message = frappe.get_doc({
         "doctype": "Chat Message",
         "conversation": conversation,
-        "direction": payload.get("direction", "Inbound"),
+        "direction": direction,
         "sender_type": payload.get("sender_type", "Customer"),
         "content_type": payload.get("content_type", "Text"),
         "body": payload.get("body"),
         "media_url": payload.get("media_url"),
         "channel_message_id": payload.get("channel_message_id"),
-        "delivery_status": payload.get("delivery_status", "Pending"),
+        "delivery_status": delivery_status,
         "raw_payload": frappe.as_json(payload),
+        "raw_transport_payload": frappe.as_json(payload.get("raw_transport_payload") or {}),
     })
     message.insert(ignore_permissions=True)
 
     update_conversation_after_message(conversation, payload)
+    frappe.publish_realtime(
+        "wa_chat_new_message",
+        {
+            "conversation": conversation,
+            "message": message.as_dict(),
+            "direction": message.direction,
+        },
+        after_commit=True,
+    )
     return {"contact": contact, "conversation": conversation, "message": message.name}
 
 
@@ -155,15 +170,59 @@ def cint_safe(value: Any) -> int:
 
 def update_conversation_after_message(conversation_name: str, payload: Dict[str, Any]) -> None:
     convo = frappe.get_doc("Chat Conversation", conversation_name)
-    convo.last_message_preview = (payload.get("body") or payload.get("content_type") or "")[:500]
+    body = payload.get("body")
+    content_type = payload.get("content_type") or "Text"
+    media_url = payload.get("media_url")
+    if media_url and content_type != "Text":
+        preview = build_media_preview(content_type, body)
+    else:
+        preview = body or content_type or ""
+    convo.last_message_preview = preview[:500]
     unread = cint_safe(convo.unread_count)
     if payload.get("direction", "Inbound") == "Inbound":
         convo.unread_count = unread + 1
     convo.save(ignore_permissions=True)
 
 
+def build_media_preview(content_type: str, body: Optional[str] = None) -> str:
+    normalized_type = str(content_type or "Media").title()
+    clean_body = _clean_media_body(normalized_type, body)
+    if normalized_type == "Image":
+        return f"[Image] {clean_body or 'Photo'}"
+    if normalized_type == "Document":
+        return f"[Document] {clean_body or 'Document'}"
+    return f"[{normalized_type}] {clean_body or normalized_type}"
+
+
+def _clean_media_body(content_type: str, body: Optional[str]) -> str:
+    text = str(body or "").strip()
+    normalized = text.lower()
+    generic_by_type = {
+        "Image": {"", "none", "null", "undefined", "photo", "image", "image message received", "[image message received]"},
+        "Document": {"", "none", "null", "undefined", "document", "document message received", "[document message received]"},
+    }
+    if normalized in generic_by_type.get(content_type, {"", "none", "null", "undefined"}):
+        return ""
+    return text
+
+
 def mark_conversation_read(conversation_name: str) -> None:
     frappe.db.set_value("Chat Conversation", conversation_name, "unread_count", 0)
+    frappe.publish_realtime(
+        "wa_chat_conversation_updated",
+        {"conversation": conversation_name, "unread_count": 0},
+        after_commit=True,
+    )
+
+
+def repair_inbound_pending_statuses() -> None:
+    frappe.db.sql("""
+        update `tabChat Message`
+        set delivery_status = 'Received'
+        where direction = 'Inbound'
+          and delivery_status = 'Pending'
+    """)
+    frappe.db.commit()
 
 
 def build_erp_actions() -> Dict[str, Dict[str, str]]:

@@ -1,5 +1,29 @@
 import frappe
+import hashlib
+import hmac
 import json
+
+from frappe import _
+
+from wa_chat_hub.connector.registry import get_adapter
+from wa_chat_hub.services import append_message
+
+
+INTERAKT_STATUS_TYPES = {
+    "message_api_sent",
+    "message_api_delivered",
+    "message_api_read",
+    "message_api_failed",
+    "message_campaign_sent",
+    "message_campaign_delivered",
+    "message_campaign_read",
+    "message_campaign_failed",
+    "message_sent",
+    "message_delivered",
+    "message_read",
+    "message_failed",
+}
+
 
 @frappe.whitelist(allow_guest=True)
 def receive():
@@ -64,6 +88,7 @@ def receive():
         msg.direction = "Inbound"
         msg.content_type = "Text"
         msg.body = body
+        msg.delivery_status = "Received"
         if message_id:
             msg.provider_message_id = message_id
             
@@ -80,3 +105,230 @@ def receive():
         frappe.log_error(f"Webhook Receive Error: {str(e)}", "WA Webhook")
         return {"success": False, "message": str(e)}
 
+
+@frappe.whitelist(allow_guest=True)
+def receive_interakt():
+    """
+    Interakt webhook endpoint.
+    Configure this URL in Interakt Developer Settings:
+    /api/method/wa_chat_hub.api.webhook.receive_interakt
+    """
+    try:
+        if frappe.request.method != "POST":
+            frappe.local.response["http_status_code"] = 405
+            return {"success": False, "message": "Only POST requests accepted"}
+
+        raw_body = frappe.request.data or b"{}"
+        payload = json.loads(raw_body)
+        channel_account = _resolve_interakt_channel_account(payload)
+        account = frappe.get_doc("Chat Channel Account", channel_account)
+        _verify_interakt_signature(account, raw_body)
+
+        payload["channel_account"] = channel_account
+        adapter = get_adapter("Interakt")
+        webhook_type = payload.get("type")
+
+        if webhook_type == "message_received":
+            event = adapter.normalize_inbound(payload)
+            if event.channel_message_id and frappe.db.exists("Chat Message", {"channel_message_id": event.channel_message_id}):
+                return {"success": True, "message": "Duplicate message ignored"}
+            result = append_message(event.__dict__)
+            frappe.db.commit()
+            return {"success": True, "result": result}
+
+        if webhook_type in INTERAKT_STATUS_TYPES:
+            event = adapter.normalize_status(payload)
+            result = _update_message_status(event.channel_message_id, event.delivery_status, payload)
+            if not result.get("updated"):
+                result = _create_interakt_outbound_from_webhook(payload, event.delivery_status)
+            frappe.db.commit()
+            return {"success": True, "result": result}
+
+        result = _sync_unknown_interakt_message_webhook(payload, webhook_type)
+        if result:
+            frappe.db.commit()
+            return {"success": True, "result": result}
+
+        frappe.log_error(
+            f"Type: {webhook_type}\nPayload: {frappe.as_json(payload)}",
+            "Ignored Interakt Webhook Type",
+        )
+        return {"success": True, "message": f"Ignored Interakt webhook type: {webhook_type}"}
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "Interakt Webhook Error")
+        frappe.local.response["http_status_code"] = 400
+        return {"success": False, "message": "Interakt webhook failed"}
+
+
+def _resolve_interakt_channel_account(payload):
+    requested = (
+        frappe.form_dict.get("channel_account")
+        or frappe.form_dict.get("account")
+        or payload.get("channel_account")
+    )
+    if requested:
+        if not frappe.db.exists("Chat Channel Account", requested):
+            frappe.throw(_("Unknown Chat Channel Account: {0}").format(requested))
+        return requested
+
+    accounts = frappe.get_all(
+        "Chat Channel Account",
+        filters={"channel_type": "Interakt", "is_active": 1},
+        pluck="name",
+        limit=2,
+    )
+    if len(accounts) == 1:
+        return accounts[0]
+    if not accounts:
+        frappe.throw(_("No active Interakt Chat Channel Account found"))
+    frappe.throw(_("Multiple Interakt accounts found. Pass channel_account in webhook query string."))
+
+
+def _verify_interakt_signature(account, raw_body: bytes) -> None:
+    secret = account.get_password("interakt_webhook_secret")
+    if not secret:
+        frappe.throw(_("Interakt Webhook Secret is not configured"))
+
+    received = (
+        frappe.get_request_header("Interakt-Signature")
+        or frappe.get_request_header("X-Interakt-Signature")
+        or ""
+    )
+    expected = "sha256=" + hmac.new(
+        secret.encode("utf-8"),
+        raw_body if isinstance(raw_body, bytes) else raw_body.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    if not hmac.compare_digest(received, expected):
+        frappe.throw(_("Invalid Interakt webhook signature"))
+
+
+def _create_interakt_outbound_from_webhook(payload, delivery_status):
+    data = payload.get("data") or {}
+    customer = data.get("customer") or {}
+    message = data.get("message") or {}
+    channel_message_id = message.get("id") or payload.get("channel_message_id")
+
+    if channel_message_id and frappe.db.exists("Chat Message", {"channel_message_id": channel_message_id}):
+        return {
+            "updated": True,
+            "message": frappe.db.get_value("Chat Message", {"channel_message_id": channel_message_id}, "name"),
+            "delivery_status": delivery_status,
+        }
+
+    phone_number = (
+        customer.get("channel_phone_number")
+        or message.get("receiver")
+        or message.get("to")
+        or payload.get("phone_number")
+    )
+    if not phone_number:
+        return {"updated": False, "message": "Missing customer phone for outbound sync"}
+
+    body = _extract_interakt_message_body(message)
+    content_type = message.get("message_content_type") or message.get("content_type") or message.get("type") or "Text"
+
+    result = append_message({
+        "channel_account": payload["channel_account"],
+        "phone_number": phone_number,
+        "display_name": _extract_interakt_customer_name(customer),
+        "direction": "Outbound",
+        "sender_type": "Agent",
+        "content_type": str(content_type or "Text").title(),
+        "body": body,
+        "channel_message_id": channel_message_id,
+        "delivery_status": delivery_status or "Sent",
+        "raw_payload": payload,
+    })
+    return {"updated": False, "created": True, **result, "delivery_status": delivery_status}
+
+
+def _sync_unknown_interakt_message_webhook(payload, webhook_type):
+    data = payload.get("data") or {}
+    message = data.get("message") or {}
+    if not isinstance(message, dict) or not message:
+        return None
+
+    event_name = str(webhook_type or "").lower()
+    message_status = str(message.get("message_status") or "").lower()
+    message_category = str(message.get("category") or message.get("direction") or "").lower()
+    if (
+        "sent" not in event_name
+        and "delivered" not in event_name
+        and "read" not in event_name
+        and "failed" not in event_name
+        and message_category not in {"out", "outbound"}
+    ):
+        return None
+
+    delivery_status = (
+        "Read" if "read" in event_name or message_status == "read"
+        else "Delivered" if "delivered" in event_name or message_status == "delivered"
+        else "Failed" if "failed" in event_name or message_status == "failed"
+        else "Sent"
+    )
+    return _create_interakt_outbound_from_webhook(payload, delivery_status)
+
+
+def _extract_interakt_customer_name(customer):
+    traits = customer.get("traits") or {}
+    return traits.get("name") or customer.get("name")
+
+
+def _extract_interakt_message_body(message):
+    body = message.get("message") or message.get("text") or message.get("body")
+    if isinstance(body, dict):
+        body = body.get("body") or body.get("text") or body.get("message")
+    if isinstance(body, str):
+        try:
+            parsed = json.loads(body)
+            if isinstance(parsed, dict):
+                body = parsed.get("body") or parsed.get("text") or parsed.get("message") or body
+        except Exception:
+            pass
+    if str(body or "").strip().lower() in {"none", "null", "undefined"}:
+        body = None
+    if body:
+        return body
+
+    components = message.get("components") or []
+    for component in components:
+        if not isinstance(component, dict):
+            continue
+        if str(component.get("type") or "").upper() == "BODY":
+            return component.get("text") or "Template message"
+
+    template = message.get("template") or {}
+    if isinstance(template, dict):
+        return template.get("name") or template.get("label") or "Template message"
+
+    return f"{message.get('message_content_type') or message.get('type') or 'Message'} sent from Interakt"
+
+
+def _update_message_status(channel_message_id, delivery_status, payload):
+    if not channel_message_id:
+        return {"updated": False, "message": "Missing Interakt message id"}
+
+    message_name = (
+        frappe.db.get_value("Chat Message", {"channel_message_id": channel_message_id}, "name")
+        or frappe.db.get_value("Chat Message", {"provider_message_id": channel_message_id}, "name")
+    )
+    if not message_name:
+        return {"updated": False, "message": f"No Chat Message found for {channel_message_id}"}
+
+    updates = {"delivery_status": delivery_status or "Pending"}
+    if frappe.get_meta("Chat Message").has_field("raw_payload"):
+        updates["raw_payload"] = frappe.as_json(payload)
+    frappe.db.set_value("Chat Message", message_name, updates)
+    conversation = frappe.db.get_value("Chat Message", message_name, "conversation")
+    frappe.publish_realtime(
+        "wa_chat_message_status_updated",
+        {
+            "conversation": conversation,
+            "message": message_name,
+            "delivery_status": delivery_status,
+        },
+        after_commit=True,
+    )
+    return {"updated": True, "message": message_name, "delivery_status": delivery_status}

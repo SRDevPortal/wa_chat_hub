@@ -1,5 +1,20 @@
 import frappe
 
+
+@frappe.whitelist()
+def get_unread_count():
+    try:
+        count = frappe.db.sql("""
+            select coalesce(sum(unread_count), 0)
+            from `tabChat Conversation`
+            where status != 'Closed'
+        """)[0][0]
+        return int(count or 0)
+    except Exception as e:
+        frappe.log_error(str(e), "Navbar Unread Count Error")
+        return 0
+
+
 @frappe.whitelist()
 def get_recent_messages():
     try:
