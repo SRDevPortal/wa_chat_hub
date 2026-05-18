@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import frappe
 
+from wa_chat_hub.connector.interakt.adapter import InteraktAdapter
 from wa_chat_hub.connector.official.adapter import OfficialWhatsAppAdapter
 from wa_chat_hub.connector.personal.adapter import PersonalWhatsAppAdapter
 
 
 REGISTRY = {
+    "Interakt": InteraktAdapter(),
     "Official WhatsApp": OfficialWhatsAppAdapter(),
     "Personal WhatsApp": PersonalWhatsAppAdapter(),
 }
