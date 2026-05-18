@@ -1,20 +1,16 @@
-"""
-Setup script: creates the "WhatsApp" workspace in Frappe with shortcuts
-to all WA Chat Hub doctypes and the WA Chat Hub page.
+"""Create or update the WhatsApp workspace for WA Chat Hub."""
 
-Run with:
-    bench --site <site> execute wa_chat_hub.setup_workspace.run
-"""
+from __future__ import annotations
+
+import json
 
 import frappe
-import json
 
 
 def run():
-    frappe.flags.in_patch = True  # allows creating standard workspaces
+    frappe.flags.in_patch = True
 
     workspace_name = "WhatsApp"
-
     if frappe.db.exists("Workspace", workspace_name):
         doc = frappe.get_doc("Workspace", workspace_name)
         doc.links = []
@@ -29,7 +25,6 @@ def run():
     doc.public = 1
     doc.is_standard = 1
 
-    # Content header block (Frappe v14/v15 editor format)
     content_blocks = [
         {
             "id": "header_main",
@@ -37,12 +32,11 @@ def run():
             "data": {
                 "text": "WhatsApp Operations Hub",
                 "level": 4,
-                "col": 12
+                "col": 12,
             },
         }
     ]
 
-    # ── Shortcuts (icon tiles at the top of the workspace) ────────────────────
     shortcuts = [
         {"label": "WA Chat Hub", "link_to": "wa-chat-hub", "type": "Page", "icon": "home"},
         {"label": "Chat Conversation", "link_to": "Chat Conversation", "type": "DocType", "icon": "chat"},
@@ -63,28 +57,29 @@ def run():
         {"label": "Chat Action Log", "link_to": "Chat Action Log", "type": "DocType", "icon": "history"},
     ]
 
-    for i, s in enumerate(shortcuts):
-        # Add to shortcuts table
-        doc.append("shortcuts", {
-            "label": s["label"],
-            "link_to": s["link_to"],
-            "type": s["type"],
-            "icon": s.get("icon")
-        })
-        # Add to content blocks JSON for rendering in the new desk
-        content_blocks.append({
-            "id": f"sc_{i}",
-            "type": "shortcut",
-            "data": {
-                "shortcut_name": s["label"],
-                "col": 4
+    for index, shortcut in enumerate(shortcuts):
+        doc.append(
+            "shortcuts",
+            {
+                "label": shortcut["label"],
+                "link_to": shortcut["link_to"],
+                "type": shortcut["type"],
+                "icon": shortcut.get("icon"),
+            },
+        )
+        content_blocks.append(
+            {
+                "id": f"sc_{index}",
+                "type": "shortcut",
+                "data": {
+                    "shortcut_name": shortcut["label"],
+                    "col": 4,
+                },
             }
-        })
+        )
 
     doc.content = json.dumps(content_blocks)
-
-    # ── Links section (same items, shown as list cards) ───────────────────────
     doc.flags.ignore_links = True
     doc.save(ignore_permissions=True)
     frappe.db.commit()
-    print(f"✅  Workspace '{workspace_name}' created / updated successfully.")
+    print(f"Workspace '{workspace_name}' created / updated successfully.")
