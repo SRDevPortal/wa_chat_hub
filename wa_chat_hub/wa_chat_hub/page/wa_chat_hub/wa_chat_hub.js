@@ -1115,5 +1115,17 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     });
 
     bindRealtime();
-    refreshConversations();
+
+    const requestedConversation =
+        (frappe.route_options && frappe.route_options.conversation) ||
+        new URLSearchParams(window.location.search).get('conversation');
+    if (frappe.route_options && requestedConversation) {
+        delete frappe.route_options.conversation;
+    }
+
+    refreshConversations().then(() => {
+        if (requestedConversation) {
+            loadConversation(requestedConversation);
+        }
+    });
 };

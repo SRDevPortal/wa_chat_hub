@@ -1,0 +1,117 @@
+{
+ "actions": [],
+ "autoname": "hash",
+ "creation": "2026-05-19 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "lead",
+  "conversation",
+  "channel_context",
+  "channel_account",
+  "pipeline",
+  "insight_type",
+  "confidence",
+  "input_snapshot",
+  "output_json",
+  "applied_fields"
+ ],
+ "fields": [
+  {
+   "fieldname": "lead",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Lead",
+   "options": "CRM Lead",
+   "reqd": 1
+  },
+  {
+   "fieldname": "conversation",
+   "fieldtype": "Link",
+   "label": "Conversation",
+   "options": "Chat Conversation"
+  },
+  {
+   "fieldname": "channel_context",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Channel Context",
+   "options": "WA Channel Context"
+  },
+  {
+   "fieldname": "channel_account",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Channel Account",
+   "options": "Chat Channel Account"
+  },
+  {
+   "fieldname": "pipeline",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Pipeline",
+   "options": "SR Lead Pipeline"
+  },
+  {
+   "fieldname": "insight_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Insight Type",
+   "options": "Scoring\nMedical Extraction\nOCR Summary",
+   "reqd": 1
+  },
+  {
+   "fieldname": "confidence",
+   "fieldtype": "Percent",
+   "in_list_view": 1,
+   "label": "Confidence"
+  },
+  {
+   "fieldname": "input_snapshot",
+   "fieldtype": "Long Text",
+   "label": "Input Snapshot"
+  },
+  {
+   "fieldname": "output_json",
+   "fieldtype": "Long Text",
+   "label": "Output JSON"
+  },
+  {
+   "fieldname": "applied_fields",
+   "fieldtype": "Small Text",
+   "label": "Applied Fields"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-05-19 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "WA Chat Hub",
+ "name": "WA Lead AI Insight",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "All"
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

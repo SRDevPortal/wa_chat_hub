@@ -4,14 +4,15 @@ import frappe
 import requests
 from frappe import _
 
-from wa_chat_hub.mcp import build_mcp_runtime_context, invoke_mcp_tool
 from wa_chat_hub.outbound import send_interakt_template_message, send_outbound_message
 from wa_chat_hub.services import append_message
 
 
 @frappe.whitelist()
 def get_runtime_context(department=None):
-    return {"success": True, "result": build_mcp_runtime_context(department=department)}
+    from wa_chat_hub.settings import get_active_knowledge_base
+
+    return {"success": True, "result": {"knowledge_base": get_active_knowledge_base(department=department)}}
 
 
 @frappe.whitelist(methods=["POST"])
@@ -212,14 +213,7 @@ def send_template_message():
 
 @frappe.whitelist(methods=["POST"])
 def call_mcp_tool():
-    payload = frappe.local.form_dict or {}
-    if frappe.request and frappe.request.get_json(silent=True):
-        payload = frappe.request.get_json()
-    return invoke_mcp_tool(
-        server_name=payload.get("server_name"),
-        tool_name=payload.get("tool_name"),
-        payload=payload.get("payload") or {},
-    )
+    frappe.throw(_("MCP tool execution has been removed from WA Chat Hub."))
 
 
 def _list_or_json(value):

@@ -18,7 +18,6 @@
     "section_access",
     "allow_erp_read",
     "allow_erp_write",
-    "allow_mcp_access",
     "allowed_actions",
     "section_guardrails",
     "medical_guardrail_policy",
@@ -79,11 +78,6 @@
       "fieldname": "allow_erp_write",
       "fieldtype": "Check",
       "label": "Allow ERP Write"
-    },
-    {
-      "fieldname": "allow_mcp_access",
-      "fieldtype": "Check",
-      "label": "Allow MCP Access"
     },
     {
       "fieldname": "allowed_actions",

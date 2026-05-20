@@ -1,5 +1,5 @@
 from frappe.model.document import Document
 
 
-class ChatQueueEvent(Document):
+class WAChannelContextKnowledgeBase(Document):
     pass

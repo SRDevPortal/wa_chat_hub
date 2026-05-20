@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import frappe
 
-from wa_chat_hub.settings import get_active_knowledge_base, get_active_mcp_servers
+from wa_chat_hub.settings import get_active_knowledge_base
 
 
 @frappe.whitelist()
@@ -13,11 +13,10 @@ def get_ai_settings_context():
         "result": {
             "settings": settings.as_dict() if settings else {},
             "knowledge_base": get_active_knowledge_base(),
-            "mcp_servers": get_active_mcp_servers(),
-            "tool_permissions": frappe.get_all(
-                "WA AI Tool Permission",
+            "channel_contexts": frappe.get_all(
+                "WA Channel Context",
                 filters={"is_active": 1},
-                fields=["name", "tool_name", "scope", "department", "allow_read", "allow_write", "allow_execute"],
+                fields=["name", "context_name", "pipeline", "channel_account", "department"],
                 order_by="modified desc",
             ),
         },

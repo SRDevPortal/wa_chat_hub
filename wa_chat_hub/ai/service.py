@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Dict, List
 
 from wa_chat_hub.settings import get_active_knowledge_base
-from wa_chat_hub.mcp import build_mcp_runtime_context
 
 import frappe
 
@@ -70,9 +69,7 @@ def generate_reply_draft(conversation: str) -> Dict[str, str]:
 
 
 def get_knowledge_snippets(department: str | None = None) -> List[Dict[str, str]]:
-    rows = get_active_knowledge_base()
-    if department:
-        rows = [row for row in rows if not row.get("department") or row.get("department") == department]
+    rows = get_active_knowledge_base(department=department)
     return rows[:10]
 
 
@@ -80,5 +77,4 @@ def build_ai_runtime_bundle(conversation: str, department: str | None = None) ->
     return {
         "messages": build_conversation_context(conversation),
         "knowledge_base": get_knowledge_snippets(department=department),
-        "mcp": build_mcp_runtime_context(department=department),
     }

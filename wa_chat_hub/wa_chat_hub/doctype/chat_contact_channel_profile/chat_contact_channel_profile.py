@@ -1,5 +1,5 @@
 from frappe.model.document import Document
 
 
-class WAMCPServer(Document):
+class ChatContactChannelProfile(Document):
     pass

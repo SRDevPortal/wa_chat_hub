@@ -13,18 +13,28 @@ def get_or_create_settings():
 
 
 def get_active_mcp_servers():
-    return frappe.get_all(
-        "WA MCP Server",
-        filters={"is_active": 1},
-        fields=["name", "server_label", "transport", "server_url", "allowed_tools", "auth_type"],
-        order_by="modified desc",
-    )
+    return []
 
 
-def get_active_knowledge_base():
+def get_active_knowledge_base(context: str | None = None, department: str | None = None):
+    if context:
+        doc = frappe.get_doc("WA Channel Context", context)
+        names = [row.knowledge_base for row in doc.get("knowledge_bases") or [] if row.is_active and row.knowledge_base]
+        if not names:
+            return []
+        return frappe.get_all(
+            "WA AI Knowledge Base",
+            filters={"name": ["in", names], "is_active": 1},
+            fields=["name", "kb_label", "kb_type", "source_path", "source_url", "department", "priority", "content"],
+            order_by="priority desc, modified desc",
+        )
+
+    filters = {"is_active": 1}
+    if department:
+        filters["department"] = ["in", ["", department]]
     return frappe.get_all(
         "WA AI Knowledge Base",
-        filters={"is_active": 1},
-        fields=["name", "kb_label", "kb_type", "source_path", "source_url", "department", "priority"],
+        filters=filters,
+        fields=["name", "kb_label", "kb_type", "source_path", "source_url", "department", "priority", "content"],
         order_by="priority desc, modified desc",
     )

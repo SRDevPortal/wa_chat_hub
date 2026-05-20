@@ -1,5 +1,5 @@
 from frappe.model.document import Document
 
 
-class ChatActionLog(Document):
+class WALeadAIInsight(Document):
     pass

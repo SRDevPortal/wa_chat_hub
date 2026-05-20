@@ -7,7 +7,8 @@ from frappe import _
 from frappe.desk.form import assign_to
 from frappe.utils import now_datetime
 
-from wa_chat_hub.services import append_message, build_erp_actions, mark_conversation_read
+from wa_chat_hub.channel_resolver import get_or_create_mapped_lead_conversation
+from wa_chat_hub.services import append_message, build_erp_actions, mark_conversation_read, normalize_phone
 
 
 @frappe.whitelist(methods=["POST"])
@@ -96,10 +97,265 @@ def get_messages(conversation, limit=100):
     return {"success": True, "result": rows}
 
 
+@frappe.whitelist()
+def get_conversation_for_reference(reference_doctype, reference_name):
+    if reference_doctype not in {"CRM Lead", "Patient", "Patient Encounter"}:
+        frappe.throw(_("Unsupported reference type: {0}").format(reference_doctype))
+    if not reference_name:
+        frappe.throw(_("reference_name is required"))
+
+    doc = frappe.get_doc(reference_doctype, reference_name)
+    doc.check_permission("read")
+
+    if reference_doctype == "CRM Lead":
+        mapped = get_or_create_mapped_lead_conversation(doc)
+        return {
+            "success": True,
+            "conversation": mapped["conversation"],
+            "channel_context": mapped.get("channel_context"),
+            "channel_account": mapped["channel_account"],
+            "contact": mapped["contact"],
+            "created": mapped["created"],
+        }
+
+    linked_conversation = _find_linked_conversation(reference_doctype, reference_name)
+    if linked_conversation:
+        return {"success": True, "conversation": linked_conversation}
+
+    contact_conversation = _find_conversation_for_linked_contact(reference_doctype, reference_name)
+    if contact_conversation:
+        return {"success": True, "conversation": contact_conversation}
+
+    phone = _get_reference_phone(doc)
+    patient_name = doc.get("patient") if reference_doctype == "Patient Encounter" else None
+
+    if patient_name:
+        patient_conversation = _find_linked_conversation("Patient", patient_name)
+        if patient_conversation:
+            return {"success": True, "conversation": patient_conversation}
+
+        if not phone and frappe.db.exists("Patient", patient_name):
+            patient = frappe.get_doc("Patient", patient_name)
+            patient.check_permission("read")
+            phone = _get_reference_phone(patient)
+
+    normalized_phone = normalize_phone(phone)
+    if not normalized_phone:
+        return {
+            "success": False,
+            "message": _("No mobile number found for {0} {1}.").format(reference_doctype, reference_name),
+        }
+
+    contact = frappe.db.get_value("Chat Contact", {"phone_number": normalized_phone}, "name")
+    if not contact:
+        return {
+            "success": False,
+            "message": _("No WhatsApp contact found for mobile number {0}.").format(normalized_phone),
+        }
+
+    conversation = _find_latest_conversation_for_contact(contact)
+    if not conversation:
+        return {
+            "success": False,
+            "message": _("No WhatsApp conversation found for mobile number {0}.").format(normalized_phone),
+        }
+
+    return {"success": True, "conversation": conversation}
+
+
+@frappe.whitelist()
+def get_reference_chat_statuses(reference_doctype, reference_names):
+    if reference_doctype not in {"CRM Lead", "Patient", "Patient Encounter"}:
+        frappe.throw(_("Unsupported reference type: {0}").format(reference_doctype))
+
+    names = _as_list(reference_names)
+    if not names:
+        return {"success": True, "result": {}}
+
+    result = {}
+    for name in names:
+        try:
+            status = _get_reference_chat_status(reference_doctype, name)
+            result[name] = status
+        except frappe.PermissionError:
+            result[name] = {
+                "success": False,
+                "message": _("Not permitted to read {0} {1}.").format(reference_doctype, name),
+            }
+
+    return {"success": True, "result": result}
+
+
 @frappe.whitelist(methods=["POST"])
 def mark_read(conversation):
     mark_conversation_read(conversation)
     return {"success": True}
+
+
+def _find_linked_conversation(reference_doctype, reference_name):
+    return frappe.db.get_value(
+        "Chat Conversation",
+        {
+            "linked_reference_doctype": reference_doctype,
+            "linked_reference_name": reference_name,
+        },
+        "name",
+        order_by="modified desc",
+    )
+
+
+def _find_conversation_for_linked_contact(reference_doctype, reference_name):
+    contact_filters = []
+    if reference_doctype == "Patient":
+        contact_filters.append({"linked_patient": reference_name})
+    if reference_doctype == "CRM Lead":
+        contact_filters.append({"source_doctype": "CRM Lead", "source_name": reference_name})
+
+    for filters in contact_filters:
+        contact = frappe.db.get_value("Chat Contact", filters, "name")
+        if contact:
+            conversation = _find_latest_conversation_for_contact(contact)
+            if conversation:
+                return conversation
+    return None
+
+
+def _get_reference_chat_status(reference_doctype, reference_name):
+    doc = frappe.get_doc(reference_doctype, reference_name)
+    doc.check_permission("read")
+
+    conversation_names = []
+    linked_conversation = _find_linked_conversation(reference_doctype, reference_name)
+    if linked_conversation:
+        conversation_names.append(linked_conversation)
+
+    contact_names = _get_reference_contact_names(reference_doctype, reference_name)
+    phone = _get_reference_phone(doc)
+    patient_name = doc.get("patient") if reference_doctype == "Patient Encounter" else None
+
+    if patient_name:
+        patient_conversation = _find_linked_conversation("Patient", patient_name)
+        if patient_conversation:
+            conversation_names.append(patient_conversation)
+
+        contact_names.extend(_get_reference_contact_names("Patient", patient_name))
+        if not phone and frappe.db.exists("Patient", patient_name):
+            patient = frappe.get_doc("Patient", patient_name)
+            patient.check_permission("read")
+            phone = _get_reference_phone(patient)
+
+    normalized_phone = normalize_phone(phone)
+    if normalized_phone:
+        contact = frappe.db.get_value("Chat Contact", {"phone_number": normalized_phone}, "name")
+        if contact:
+            contact_names.append(contact)
+
+    contact_names = list(dict.fromkeys([name for name in contact_names if name]))
+    if contact_names:
+        rows = frappe.get_all(
+            "Chat Conversation",
+            filters={"contact": ["in", contact_names]},
+            fields=["name"],
+            limit_page_length=0,
+        )
+        conversation_names.extend(row.name for row in rows)
+
+    conversation_names = list(dict.fromkeys([name for name in conversation_names if name]))
+    if not conversation_names:
+        return {
+            "success": True,
+            "conversation": None,
+            "conversation_count": 0,
+            "unread_count": 0,
+            "has_unread": False,
+            "last_message_time": None,
+        }
+
+    conversations = frappe.get_all(
+        "Chat Conversation",
+        filters={"name": ["in", conversation_names]},
+        fields=["name", "contact", "status", "unread_count", "modified"],
+        order_by="modified desc",
+        limit_page_length=0,
+    )
+
+    open_conversations = [row for row in conversations if row.status != "Closed"]
+    selected = open_conversations[0] if open_conversations else conversations[0]
+    unread_count = sum(row.unread_count or 0 for row in conversations)
+
+    return {
+        "success": True,
+        "conversation": selected.name,
+        "conversation_count": len(conversations),
+        "unread_count": unread_count,
+        "has_unread": unread_count > 0,
+        "last_message_time": selected.modified,
+    }
+
+
+def _get_reference_contact_names(reference_doctype, reference_name):
+    contact_filters = []
+    if reference_doctype == "Patient":
+        contact_filters.append({"linked_patient": reference_name})
+    if reference_doctype == "CRM Lead":
+        contact_filters.append({"source_doctype": "CRM Lead", "source_name": reference_name})
+
+    contacts = []
+    for filters in contact_filters:
+        rows = frappe.get_all("Chat Contact", filters=filters, fields=["name"], limit_page_length=0)
+        contacts.extend(row.name for row in rows)
+    return contacts
+
+
+def _find_latest_conversation_for_contact(contact):
+    open_conversation = frappe.db.get_value(
+        "Chat Conversation",
+        {"contact": contact, "status": ["!=", "Closed"]},
+        "name",
+        order_by="modified desc",
+    )
+    if open_conversation:
+        return open_conversation
+
+    return frappe.db.get_value(
+        "Chat Conversation",
+        {"contact": contact},
+        "name",
+        order_by="modified desc",
+    )
+
+
+def _get_reference_phone(doc):
+    field_candidates = {
+        "CRM Lead": [
+            "mobile_no",
+            "phone",
+            "mobile",
+            "whatsapp_number",
+            "whatsapp_no",
+            "custom_whatsapp_number",
+        ],
+        "Patient": [
+            "mobile",
+            "phone",
+            "mobile_no",
+            "whatsapp_number",
+            "whatsapp_no",
+            "custom_whatsapp_number",
+        ],
+        "Patient Encounter": [
+            "sr_pe_mobile",
+            "mobile",
+            "phone",
+            "mobile_no",
+        ],
+    }
+
+    meta = frappe.get_meta(doc.doctype)
+    for fieldname in field_candidates.get(doc.doctype, []):
+        if meta.has_field(fieldname) and doc.get(fieldname):
+            return doc.get(fieldname)
+    return None
 
 
 @frappe.whitelist(methods=["POST"])

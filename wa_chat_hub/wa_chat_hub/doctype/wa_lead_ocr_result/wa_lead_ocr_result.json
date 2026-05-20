@@ -1,0 +1,127 @@
+{
+ "actions": [],
+ "autoname": "hash",
+ "creation": "2026-05-19 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "lead",
+  "file",
+  "conversation",
+  "channel_context",
+  "channel_account",
+  "pipeline",
+  "ocr_provider",
+  "confidence",
+  "status",
+  "raw_text",
+  "extracted_json",
+  "error"
+ ],
+ "fields": [
+  {
+   "fieldname": "lead",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Lead",
+   "options": "CRM Lead",
+   "reqd": 1
+  },
+  {
+   "fieldname": "file",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "File",
+   "options": "File"
+  },
+  {
+   "fieldname": "conversation",
+   "fieldtype": "Link",
+   "label": "Conversation",
+   "options": "Chat Conversation"
+  },
+  {
+   "fieldname": "channel_context",
+   "fieldtype": "Link",
+   "label": "Channel Context",
+   "options": "WA Channel Context"
+  },
+  {
+   "fieldname": "channel_account",
+   "fieldtype": "Link",
+   "label": "Channel Account",
+   "options": "Chat Channel Account"
+  },
+  {
+   "fieldname": "pipeline",
+   "fieldtype": "Link",
+   "label": "Pipeline",
+   "options": "SR Lead Pipeline"
+  },
+  {
+   "fieldname": "ocr_provider",
+   "fieldtype": "Data",
+   "label": "OCR Provider"
+  },
+  {
+   "fieldname": "confidence",
+   "fieldtype": "Percent",
+   "label": "Confidence"
+  },
+  {
+   "default": "Applied",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Applied\nFailed"
+  },
+  {
+   "fieldname": "raw_text",
+   "fieldtype": "Long Text",
+   "label": "Raw Text"
+  },
+  {
+   "fieldname": "extracted_json",
+   "fieldtype": "Long Text",
+   "label": "Extracted JSON"
+  },
+  {
+   "fieldname": "error",
+   "fieldtype": "Small Text",
+   "label": "Error"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-05-19 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "WA Chat Hub",
+ "name": "WA Lead OCR Result",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "All"
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

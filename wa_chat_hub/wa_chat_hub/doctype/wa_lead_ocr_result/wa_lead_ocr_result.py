@@ -1,5 +1,5 @@
 from frappe.model.document import Document
 
 
-class WAAIToolPermission(Document):
+class WALeadOCRResult(Document):
     pass
