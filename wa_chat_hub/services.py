@@ -321,6 +321,12 @@ def _link_or_create_master_record(
         convo.linked_reference_doctype = "Patient"
         convo.linked_reference_name = patient_name
         convo.save(ignore_permissions=True)
+        try:
+            from wa_chat_hub.interakt.contact_sync import enqueue_push_for_conversation
+
+            enqueue_push_for_conversation(conversation)
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "Interakt Contact Push Enqueue Failed")
         return
 
     customer_name = _find_by_phone("Customer", ["mobile_no", "phone", "custom_whatsapp_number"], phone_number)
@@ -360,6 +366,21 @@ def _link_or_create_master_record(
         convo.linked_reference_doctype = lead_doctype
         convo.linked_reference_name = lead_name
     convo.save(ignore_permissions=True)
+
+    if lead_doctype == "CRM Lead":
+        try:
+            from wa_chat_hub.messaging.crm_lead_meta import sync_crm_lead_meta_from_conversation
+
+            sync_crm_lead_meta_from_conversation(convo)
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "CRM Lead Meta Sync On Link Failed")
+
+    try:
+        from wa_chat_hub.interakt.contact_sync import enqueue_push_for_conversation
+
+        enqueue_push_for_conversation(conversation)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "Interakt Contact Push Enqueue Failed")
 
 
 def _create_lead_for_inbound(
@@ -428,13 +449,9 @@ def _find_by_phone(doctype: str, phone_fields: list[str], phone_number: str) -> 
 
 
 def _get_mapped_sr_pipeline(channel_account: Optional[str]) -> Optional[str]:
-    if not channel_account:
-        return None
-    return frappe.db.get_value(
-        "WA Channel Pipeline Map",
-        {"chat_channel_account": channel_account, "is_active": 1},
-        "sr_lead_pipeline",
-    )
+    from wa_chat_hub.messaging.channel_map import get_pipeline_for_channel_account
+
+    return get_pipeline_for_channel_account(channel_account)
 
 
 def _get_lead_pipeline_fieldname(lead_doctype: str) -> Optional[str]:

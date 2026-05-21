@@ -8,12 +8,6 @@ app_license = "MIT"
 app_include_css = ["/assets/wa_chat_hub/css/wa_chat_hub.css"]
 app_include_js = ["/assets/wa_chat_hub/js/wa_navbar.js"]
 
-doctype_list_js = {
-    "CRM Lead": "public/js/reference_open_chat_list.js",
-    "Patient": "public/js/reference_open_chat_list.js",
-    "Patient Encounter": "public/js/reference_open_chat_list.js",
-}
-
 after_install = "wa_chat_hub.setup_workspace.run"
 after_migrate = "wa_chat_hub.migrate.after_migrate"
 
@@ -26,7 +20,9 @@ fixtures = [
 ]
 
 doctype_list_js = {
-    "CRM Lead": "public/js/crm_lead_list_chat.js",
+    "CRM Lead": "public/js/reference_open_chat_list.js",
+    "Patient": "public/js/reference_open_chat_list.js",
+    "Patient Encounter": "public/js/reference_open_chat_list.js",
 }
 
 doc_events = {

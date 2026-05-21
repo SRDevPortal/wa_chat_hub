@@ -28,9 +28,12 @@ def get_conversation_attribution(conversation: str) -> Dict[str, Optional[str]]:
 
 def extract_attribution(payload: Dict[str, Any]) -> Dict[str, Optional[str]]:
     referral = find_first_dict(payload, {"referral", "source", "context", "button", "click_to_whatsapp"})
+    traits = _interakt_customer_traits(payload)
+
     source_id = (
         find_first_value(payload, ["source_id", "sourceId", "sourceID", "source_url_id", "Source ID"], referral)
         or find_direct_value(referral, ["id"])
+        or find_direct_value(traits, ["W Source_id", "W Source ID", "source_id", "Source ID"])
     )
     source = (
         find_first_value(payload, ["_internal_lead_source", "internal_lead_source", "channel_type"], referral)
@@ -39,12 +42,30 @@ def extract_attribution(payload: Dict[str, Any]) -> Dict[str, Optional[str]]:
     )
     return {
         "source_id": source_id,
-        "source_url": find_first_value(payload, ["source_url", "sourceUrl", "url", "sourceURL", "Source URL"], referral),
+        "source_url": (
+            find_first_value(payload, ["source_url", "sourceUrl", "url", "sourceURL", "Source URL"], referral)
+            or find_direct_value(traits, ["W Source_url", "W Source URL", "source_url", "Source URL"])
+        ),
         "source": source,
-        "ctwa_clid": find_first_value(
-            payload, ["ctwa_clid", "ctwaClid", "ctwa_click_id", "click_id", "ctwa clid"], referral
+        "ctwa_clid": (
+            find_first_value(
+                payload, ["ctwa_clid", "ctwaClid", "ctwa_click_id", "click_id", "ctwa clid"], referral
+            )
+            or find_direct_value(traits, ["W Ctwa_clid", "W CTWA clid", "ctwa_clid", "Ctwa_clid"])
         ),
     }
+
+
+def _interakt_customer_traits(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Interakt message_received nests ad traits under data.customer.traits."""
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return {}
+    customer = data.get("customer")
+    if not isinstance(customer, dict):
+        return {}
+    traits = customer.get("traits")
+    return traits if isinstance(traits, dict) else {}
 
 
 def json_loads_payload(value: Any) -> Dict[str, Any]:

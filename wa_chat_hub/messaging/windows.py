@@ -217,6 +217,14 @@ def update_windows_on_message(
     _set_convo_field(convo, "messaging_window_mode", _compute_mode(convo, now))
     convo.save(ignore_permissions=True)
 
+    if is_customer_inbound:
+        try:
+            from wa_chat_hub.messaging.crm_lead_meta import sync_crm_lead_meta_from_conversation
+
+            sync_crm_lead_meta_from_conversation(convo, raw_payload=payload)
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "CRM Lead Meta Sync Failed")
+
     state = get_messaging_window_state(conversation, now=now, convo=convo)
     frappe.publish_realtime(
         "wa_chat_window_updated",

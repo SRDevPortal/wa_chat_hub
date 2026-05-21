@@ -3,41 +3,25 @@ from __future__ import annotations
 from typing import Any
 
 import frappe
-import requests
 from frappe import _
-from frappe.utils import now_datetime
 
+from wa_chat_hub.messaging.channel_map import get_pipeline_map
+from wa_chat_hub.prompts import set_conversation_crm_lead
 from wa_chat_hub.services import DEFAULT_CONVERSATION_STATUS, get_or_create_contact, normalize_phone
 
 
-INTERAKT_TRACK_USER_URL = "https://api.interakt.ai/v1/public/track/users/"
-
-
 def get_channel_context_for_lead(lead):
+    """Legacy name: returns pipeline map row as a simple namespace for callers."""
     pipeline = lead.get("sr_lead_pipeline")
     if not pipeline:
         frappe.throw(_("CRM Lead {0} does not have a pipeline.").format(lead.name))
-
-    matches = frappe.get_all(
-        "WA Channel Context",
-        filters={"pipeline": pipeline, "is_active": 1},
-        fields=["name", "context_name", "channel_account", "pipeline", "department"],
-        limit_page_length=2,
+    row = get_pipeline_map(pipeline=pipeline)
+    return frappe._dict(
+        name=row["name"],
+        channel_account=row["chat_channel_account"],
+        pipeline=row["sr_lead_pipeline"],
+        department=row.get("sr_medical_department"),
     )
-
-    if not matches:
-        frappe.throw(_("No active WA Channel Context configured for pipeline {0}.").format(pipeline))
-    if len(matches) > 1:
-        frappe.throw(_("Pipeline {0} has multiple active WA Channel Context records.").format(pipeline))
-
-    context = frappe.get_doc("WA Channel Context", matches[0].name)
-    account = frappe.get_cached_doc("Chat Channel Account", context.channel_account)
-    if not account.is_active:
-        frappe.throw(_("Mapped WhatsApp channel {0} is not active.").format(account.name))
-    if account.channel_type != "Interakt":
-        frappe.throw(_("Mapped WhatsApp channel {0} must be an Interakt account.").format(account.name))
-
-    return context
 
 
 def get_or_create_lead_contact(lead) -> str:
@@ -58,137 +42,58 @@ def get_or_create_lead_contact(lead) -> str:
     return contact_name
 
 
-def ensure_interakt_contact_for_lead(channel_account: str, contact: str, lead) -> dict[str, Any]:
-    account = frappe.get_doc("Chat Channel Account", channel_account)
-    if account.channel_type != "Interakt":
-        frappe.throw(_("Channel Account {0} is not an Interakt account.").format(channel_account))
+def ensure_interakt_contact_for_reference(
+    channel_account: str,
+    contact: str,
+    reference_doc,
+    *,
+    pipeline: str | None = None,
+) -> dict[str, Any]:
+    """Sync Chat Contact to Interakt (CRM Lead, Patient, etc.)."""
+    from wa_chat_hub.interakt.contact_sync import push_contact_to_interakt
 
-    api_key = account.get_password("interakt_api_key")
-    if not api_key:
-        frappe.throw(_("Interakt API Key is not configured for {0}.").format(channel_account))
-
-    contact_doc = frappe.get_doc("Chat Contact", contact)
-    country_code, phone_number = _split_interakt_phone(
-        contact_doc.phone_number,
-        getattr(account, "interakt_default_country_code", None) or "+91",
-    )
-    if not phone_number:
-        frappe.throw(_("No valid WhatsApp phone number found for contact {0}.").format(contact))
-
-    payload = {
-        "phoneNumber": phone_number,
-        "countryCode": country_code,
-        "traits": _build_interakt_traits(contact_doc, lead),
-    }
-    profile = get_or_create_contact_channel_profile(contact, channel_account, lead.get("sr_lead_pipeline"))
-
+    pipeline_map_row = None
     try:
-        response = requests.post(
-            INTERAKT_TRACK_USER_URL,
-            headers={
-                "Authorization": f"Basic {api_key}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=20,
-        )
-    except Exception as exc:
-        frappe.db.set_value(
-            "Chat Contact Channel Profile",
-            profile,
-            {
-                "interakt_synced": 0,
-                "last_sync_error": str(exc)[:500],
-            },
-        )
-        raise
+        pipeline_map_row = get_pipeline_map(channel_account=channel_account)
+    except Exception:
+        pass
 
-    raw_response = response.text
-    if not response.ok:
-        frappe.log_error(
-            f"Interakt Contact Sync Error {response.status_code}: {raw_response}\nPayload: {frappe.as_json(payload)}",
-            "Interakt Contact Sync Failed",
-        )
-        frappe.db.set_value(
-            "Chat Contact Channel Profile",
-            profile,
-            {
-                "interakt_synced": 0,
-                "last_sync_error": raw_response[:500],
-            },
-        )
-        response.raise_for_status()
+    return push_contact_to_interakt(
+        channel_account,
+        contact,
+        reference_doc=reference_doc,
+        pipeline_map_row=pipeline_map_row,
+    )
 
-    result = response.json() if response.content else {}
-    external_user_id = _extract_interakt_user_id(result)
-    frappe.db.set_value(
-        "Chat Contact Channel Profile",
-        profile,
-        {
-            "interakt_synced": 1,
-            "interakt_user_id": external_user_id,
-            "last_synced_on": now_datetime(),
-            "last_sync_error": None,
-        },
+
+def ensure_interakt_contact_for_lead(channel_account: str, contact: str, lead) -> dict[str, Any]:
+    return ensure_interakt_contact_for_reference(
+        channel_account,
+        contact,
+        lead,
+        pipeline=lead.get("sr_lead_pipeline"),
     )
-    frappe.logger("wa_chat_hub").info(
-        {
-            "message": "Interakt contact ensured",
-            "channel_account": channel_account,
-            "contact": contact,
-            "lead": lead.name,
-            "synced_at": str(now_datetime()),
-        }
-    )
-    return {
-        "success": True,
-        "channel_account": channel_account,
-        "contact": contact,
-        "profile": profile,
-        "provider_response": result,
-    }
 
 
 def get_or_create_mapped_lead_conversation(lead) -> dict[str, Any]:
-    context = get_channel_context_for_lead(lead)
-    channel_account = context.channel_account
+    pipeline_row = get_pipeline_map(pipeline=lead.get("sr_lead_pipeline"))
+    channel_account = pipeline_row["chat_channel_account"]
     contact = get_or_create_lead_contact(lead)
-    ensure_interakt_contact_for_lead(channel_account, contact, lead)
+    ensure_interakt_contact_for_reference(
+        channel_account,
+        contact,
+        lead,
+        pipeline=pipeline_row.get("sr_lead_pipeline"),
+    )
 
-    conversation = _find_conversation_for_contact_on_channel(contact, channel_account, open_only=True)
-    if not conversation:
-        conversation = _find_conversation_for_contact_on_channel(contact, channel_account, open_only=False)
-
-    created = False
-    if not conversation:
-        doc = frappe.get_doc(
-            {
-                "doctype": "Chat Conversation",
-                "channel_account": channel_account,
-                "contact": contact,
-                "department": context.department or frappe.db.get_value("Chat Channel Account", channel_account, "department"),
-                "status": DEFAULT_CONVERSATION_STATUS,
-                "linked_reference_doctype": "CRM Lead",
-                "linked_reference_name": lead.name,
-            }
-        )
-        doc.insert(ignore_permissions=True)
-        conversation = doc.name
-        created = True
-    else:
-        updates = {}
-        existing_reference = frappe.db.get_value(
-            "Chat Conversation",
-            conversation,
-            ["linked_reference_doctype", "linked_reference_name"],
-            as_dict=True,
-        )
-        if not existing_reference.linked_reference_doctype:
-            updates["linked_reference_doctype"] = "CRM Lead"
-        if not existing_reference.linked_reference_name:
-            updates["linked_reference_name"] = lead.name
-        if updates:
-            frappe.db.set_value("Chat Conversation", conversation, updates)
+    conversation, created = _get_or_create_reference_conversation(
+        contact=contact,
+        channel_account=channel_account,
+        reference_doctype="CRM Lead",
+        reference_name=lead.name,
+        department=_conversation_department_for_account(channel_account),
+    )
+    _link_crm_lead_on_conversation(conversation, lead.name)
 
     try:
         from wa_chat_hub.lead_ai import auto_update_lead_from_conversation
@@ -197,9 +102,65 @@ def get_or_create_mapped_lead_conversation(lead) -> dict[str, Any]:
     except Exception:
         frappe.log_error(frappe.get_traceback(), "WA Lead AI Update On Open Failed")
 
+    try:
+        from wa_chat_hub.messaging.crm_lead_meta import sync_crm_lead_meta_from_conversation
+
+        sync_crm_lead_meta_from_conversation(conversation)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "CRM Lead Meta Sync On Map Failed")
+
     return {
         "conversation": conversation,
-        "channel_context": context.name,
+        "pipeline_map": pipeline_row["name"],
+        "channel_account": channel_account,
+        "contact": contact,
+        "created": created,
+    }
+
+
+def get_or_create_patient_contact(patient) -> str:
+    phone = _get_patient_phone(patient)
+    normalized_phone = normalize_phone(phone)
+    if not normalized_phone:
+        frappe.throw(_("No mobile number found for Patient {0}.").format(patient.name))
+
+    contact_name = get_or_create_contact(
+        phone_number=normalized_phone,
+        display_name=_get_patient_display_name(patient),
+    )
+    frappe.db.set_value(
+        "Chat Contact",
+        contact_name,
+        {
+            "source_doctype": "Patient",
+            "source_name": patient.name,
+        },
+    )
+    return contact_name
+
+
+def get_or_create_mapped_patient_conversation(patient) -> dict[str, Any]:
+    pipeline_row = get_pipeline_map(medical_department=patient.get("sr_medical_department"))
+    channel_account = pipeline_row["chat_channel_account"]
+    contact = get_or_create_patient_contact(patient)
+    ensure_interakt_contact_for_reference(
+        channel_account,
+        contact,
+        patient,
+        pipeline=pipeline_row.get("sr_lead_pipeline"),
+    )
+
+    conversation, created = _get_or_create_reference_conversation(
+        contact=contact,
+        channel_account=channel_account,
+        reference_doctype="Patient",
+        reference_name=patient.name,
+        department=_conversation_department_for_account(channel_account),
+    )
+
+    return {
+        "conversation": conversation,
+        "pipeline_map": pipeline_row["name"],
         "channel_account": channel_account,
         "contact": contact,
         "created": created,
@@ -227,6 +188,61 @@ def get_or_create_contact_channel_profile(contact: str, channel_account: str, pi
     )
     doc.insert(ignore_permissions=True)
     return doc.name
+
+
+def _get_or_create_reference_conversation(
+    *,
+    contact: str,
+    channel_account: str,
+    reference_doctype: str,
+    reference_name: str,
+    department: str | None = None,
+) -> tuple[str, bool]:
+    conversation = _find_conversation_for_contact_on_channel(contact, channel_account, open_only=True)
+    if not conversation:
+        conversation = _find_conversation_for_contact_on_channel(contact, channel_account, open_only=False)
+
+    if conversation:
+        updates = {}
+        existing = frappe.db.get_value(
+            "Chat Conversation",
+            conversation,
+            ["linked_reference_doctype", "linked_reference_name"],
+            as_dict=True,
+        )
+        if not existing.linked_reference_doctype:
+            updates["linked_reference_doctype"] = reference_doctype
+        if not existing.linked_reference_name:
+            updates["linked_reference_name"] = reference_name
+        if updates:
+            frappe.db.set_value("Chat Conversation", conversation, updates)
+        return conversation, False
+
+    doc = frappe.get_doc(
+        {
+            "doctype": "Chat Conversation",
+            "channel_account": channel_account,
+            "contact": contact,
+            "department": department,
+            "status": DEFAULT_CONVERSATION_STATUS,
+            "linked_reference_doctype": reference_doctype,
+            "linked_reference_name": reference_name,
+        }
+    )
+    doc.insert(ignore_permissions=True)
+    return doc.name, True
+
+
+def _conversation_department_for_account(channel_account: str) -> str | None:
+    return frappe.db.get_value("Chat Channel Account", channel_account, "department")
+
+
+def _link_crm_lead_on_conversation(conversation: str, lead_name: str) -> None:
+    if not frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
+        return
+    convo = frappe.get_doc("Chat Conversation", conversation)
+    set_conversation_crm_lead(convo, lead_name)
+    convo.save(ignore_permissions=True)
 
 
 def _find_conversation_for_contact_on_channel(contact: str, channel_account: str, open_only: bool) -> str | None:
@@ -260,6 +276,21 @@ def _get_lead_display_name(lead) -> str:
     return lead.name
 
 
+def _get_patient_phone(patient) -> str | None:
+    meta = frappe.get_meta("Patient")
+    for fieldname in ("mobile", "mobile_no", "phone", "custom_whatsapp_number"):
+        if meta.has_field(fieldname) and patient.get(fieldname):
+            return patient.get(fieldname)
+    return None
+
+
+def _get_patient_display_name(patient) -> str:
+    for fieldname in ("patient_name", "first_name"):
+        if patient.get(fieldname):
+            return patient.get(fieldname)
+    return patient.name
+
+
 def _split_interakt_phone(phone: str, default_country_code: str) -> tuple[str, str]:
     country_code = str(default_country_code or "+91").strip()
     if not country_code.startswith("+"):
@@ -276,25 +307,30 @@ def _split_interakt_phone(phone: str, default_country_code: str) -> tuple[str, s
     return country_code, phone_digits
 
 
-def _build_interakt_traits(contact_doc, lead) -> dict[str, Any]:
-    traits = {
-        "name": contact_doc.display_name or _get_lead_display_name(lead),
-        "source_doctype": "CRM Lead",
-        "source_name": lead.name,
-        "sr_lead_pipeline": lead.get("sr_lead_pipeline"),
-    }
-
-    for fieldname in ("email", "email_id", "source", "status"):
-        if lead.get(fieldname):
-            traits[fieldname] = lead.get(fieldname)
+def _build_interakt_traits(contact_doc, reference_doc) -> dict[str, Any]:
+    doctype = reference_doc.doctype
+    if doctype == "Patient":
+        display = _get_patient_display_name(reference_doc)
+        traits = {
+            "name": contact_doc.display_name or display,
+            "source_doctype": "Patient",
+            "source_name": reference_doc.name,
+            "sr_medical_department": reference_doc.get("sr_medical_department"),
+        }
+        if reference_doc.get("sr_patient_id"):
+            traits["sr_patient_id"] = reference_doc.get("sr_patient_id")
+    else:
+        display = _get_lead_display_name(reference_doc)
+        traits = {
+            "name": contact_doc.display_name or display,
+            "source_doctype": doctype,
+            "source_name": reference_doc.name,
+            "sr_lead_pipeline": reference_doc.get("sr_lead_pipeline"),
+        }
+        for fieldname in ("email", "email_id", "source", "status"):
+            if reference_doc.get(fieldname):
+                traits[fieldname] = reference_doc.get(fieldname)
 
     return {key: value for key, value in traits.items() if value not in (None, "")}
 
 
-def _extract_interakt_user_id(result: dict[str, Any]) -> str | None:
-    for source in (result, result.get("data") if isinstance(result, dict) else None, result.get("result") if isinstance(result, dict) else None):
-        if isinstance(source, dict):
-            value = source.get("userId") or source.get("user_id") or source.get("id")
-            if value:
-                return str(value)
-    return None
