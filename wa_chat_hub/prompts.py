@@ -57,17 +57,18 @@ def get_conversation_crm_lead(conversation: str | Any) -> Optional[str]:
 
     linked_crm_lead = getattr(convo, "linked_crm_lead", None)
     if linked_crm_lead and frappe.db.exists("CRM Lead", linked_crm_lead):
-        return linked_crm_lead
+        return _resolve_primary_crm_lead(linked_crm_lead)
 
     if getattr(convo, "linked_reference_doctype", None) in ("CRM Lead", "Lead"):
         name = getattr(convo, "linked_reference_name", None)
         if name and frappe.db.exists("CRM Lead", name):
-            return name
+            return _resolve_primary_crm_lead(name)
     return None
 
 
 def set_conversation_crm_lead(convo, lead_name: str) -> None:
     """Link conversation to CRM Lead using Link field + legacy sync."""
+    lead_name = _resolve_primary_crm_lead(lead_name) or lead_name
     if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
         convo.linked_crm_lead = lead_name
     convo.linked_reference_doctype = "CRM Lead"
@@ -85,3 +86,21 @@ def get_conversation_linked_reference(convo) -> tuple[Optional[str], Optional[st
     if ref_dt and ref_name:
         return ref_dt, ref_name
     return None, None
+
+
+def _resolve_primary_crm_lead(lead_name: str | None) -> Optional[str]:
+    if not lead_name or not frappe.db.exists("CRM Lead", lead_name):
+        return None
+
+    try:
+        from crm_lead_dedupe.leads.dup_utils import get_primary_lead_name_for_lead
+
+        return get_primary_lead_name_for_lead(lead_name) or lead_name
+    except Exception:
+        pass
+
+    if frappe.db.has_column("CRM Lead", "sr_duplicate_of_name"):
+        primary = frappe.db.get_value("CRM Lead", lead_name, "sr_duplicate_of_name")
+        if primary and frappe.db.exists("CRM Lead", primary):
+            return primary
+    return lead_name
