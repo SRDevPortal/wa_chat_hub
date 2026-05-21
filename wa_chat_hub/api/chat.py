@@ -420,13 +420,16 @@ def _conversation_for_reference(reference_doctype: str, reference_name: str | No
     if not reference_doctype or not reference_name:
         return None
 
+    reference_names = _crm_lead_reference_names(reference_name) if reference_doctype == "CRM Lead" else [reference_name]
+
     if reference_doctype == "CRM Lead" and frappe.get_meta("Chat Conversation").has_field(
         "linked_crm_lead"
     ):
         conv = frappe.db.get_value(
             "Chat Conversation",
-            {"linked_crm_lead": reference_name},
+            {"linked_crm_lead": ["in", reference_names]},
             "name",
+            order_by="modified desc",
         )
         if conv:
             return conv
@@ -442,10 +445,47 @@ def _conversation_for_reference(reference_doctype: str, reference_name: str | No
         "Chat Conversation",
         {
             "linked_reference_doctype": reference_doctype,
-            "linked_reference_name": reference_name,
+            "linked_reference_name": ["in", reference_names],
         },
         "name",
+        order_by="modified desc",
     )
+
+
+def _crm_lead_reference_names(reference_name: str) -> list[str]:
+    names = []
+    primary = _resolve_primary_crm_lead(reference_name)
+    for name in (primary, reference_name):
+        if name and name not in names:
+            names.append(name)
+
+    if names and frappe.db.has_column("CRM Lead", "sr_duplicate_of_name"):
+        for duplicate in frappe.get_all(
+            "CRM Lead",
+            filters={"sr_duplicate_of_name": ["in", names]},
+            pluck="name",
+            limit_page_length=0,
+        ):
+            if duplicate not in names:
+                names.append(duplicate)
+    return names or [reference_name]
+
+
+def _resolve_primary_crm_lead(lead_name: str | None) -> str | None:
+    if not lead_name or not frappe.db.exists("CRM Lead", lead_name):
+        return None
+    try:
+        from crm_lead_dedupe.leads.dup_utils import get_primary_lead_name_for_lead
+
+        return get_primary_lead_name_for_lead(lead_name) or lead_name
+    except Exception:
+        pass
+
+    if frappe.db.has_column("CRM Lead", "sr_duplicate_of_name"):
+        primary = frappe.db.get_value("CRM Lead", lead_name, "sr_duplicate_of_name")
+        if primary and frappe.db.exists("CRM Lead", primary):
+            return primary
+    return lead_name
 
 
 @frappe.whitelist()
@@ -550,24 +590,33 @@ def get_reference_chat_statuses(reference_doctype, reference_names=None):
 
     conv_rows: dict[str, list[dict]] = {name: [] for name in names}
     meta = frappe.get_meta("Chat Conversation")
+    reference_lookup = {name: name for name in names}
+    query_names = names
+
+    if reference_doctype == "CRM Lead":
+        reference_lookup = {}
+        for name in names:
+            for alias in _crm_lead_reference_names(name):
+                reference_lookup[alias] = name
+        query_names = list(reference_lookup) or names
 
     if reference_doctype == "CRM Lead" and meta.has_field("linked_crm_lead"):
         for row in frappe.get_all(
             "Chat Conversation",
-            filters={"linked_crm_lead": ["in", names]},
+            filters={"linked_crm_lead": ["in", query_names]},
             fields=["name", "linked_crm_lead", "unread_count", "modified"],
         ):
-            conv_rows.setdefault(row.linked_crm_lead, []).append(row)
+            conv_rows.setdefault(reference_lookup.get(row.linked_crm_lead, row.linked_crm_lead), []).append(row)
 
     for row in frappe.get_all(
         "Chat Conversation",
         filters={
             "linked_reference_doctype": reference_doctype,
-            "linked_reference_name": ["in", names],
+            "linked_reference_name": ["in", query_names],
         },
         fields=["name", "linked_reference_name", "unread_count", "modified"],
     ):
-        conv_rows.setdefault(row.linked_reference_name, []).append(row)
+        conv_rows.setdefault(reference_lookup.get(row.linked_reference_name, row.linked_reference_name), []).append(row)
 
     if reference_doctype == "Patient Encounter":
         for enc in frappe.get_all(
