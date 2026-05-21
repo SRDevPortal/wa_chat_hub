@@ -25,6 +25,15 @@ frappe.pages['wa-chat-hub-settings'].on_page_load = function(wrapper) {
                 <h3>MCP Servers</h3>
                 <p>Register MCP servers, transport, auth, scopes, and allowed tools for AI/agent operations.</p>
             </div>
+            <div class="wa-settings-card">
+                <h3>Error Logs</h3>
+                <p>Review WA Chat Hub webhook, lead, send, media, AI, and contact sync failures.</p>
+                <button class="btn btn-primary btn-sm" id="wa-open-error-logs">Open Error Logs</button>
+            </div>
         </div>
     `);
+
+    $('#wa-open-error-logs').on('click', function() {
+        frappe.set_route('wa-chat-hub-errors');
+    });
 };

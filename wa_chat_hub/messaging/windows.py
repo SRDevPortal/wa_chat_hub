@@ -199,23 +199,45 @@ def update_windows_on_message(
 
     is_customer_inbound = direction == "Inbound" and sender_type == "Customer"
     is_template_outbound = direction == "Outbound" and content_type.lower() in TEMPLATE_CONTENT_TYPES
+    db_updates: Dict[str, Any] = {}
 
     if is_customer_inbound:
+        cs_expires = add_to_date(now, hours=CUSTOMER_SERVICE_HOURS, as_datetime=True)
         _set_convo_field(convo, "last_customer_message_at", now)
-        _set_convo_field(
-            convo,
-            "customer_service_window_expires_at",
-            add_to_date(now, hours=CUSTOMER_SERVICE_HOURS, as_datetime=True),
-        )
+        _set_convo_field(convo, "customer_service_window_expires_at", cs_expires)
+        db_updates["last_customer_message_at"] = now
+        db_updates["customer_service_window_expires_at"] = cs_expires
         _apply_attribution(convo, payload, entry_time=now)
+        for field in (
+            "source_id",
+            "source_url",
+            "source",
+            "ctwa_clid",
+            "ctwa_entry_at",
+            "ctwa_window_expires_at",
+        ):
+            value = _convo_field(convo, field)
+            if value:
+                db_updates[field] = value
 
     if is_template_outbound:
         _set_convo_field(convo, "last_template_sent_at", now)
+        db_updates["last_template_sent_at"] = now
         if template_category:
             _set_convo_field(convo, "last_template_category", template_category)
+            db_updates["last_template_category"] = template_category
 
-    _set_convo_field(convo, "messaging_window_mode", _compute_mode(convo, now))
-    convo.save(ignore_permissions=True)
+    mode = _compute_mode(convo, now)
+    _set_convo_field(convo, "messaging_window_mode", mode)
+    db_updates["messaging_window_mode"] = mode
+
+    if db_updates:
+        frappe.db.set_value(
+            "Chat Conversation",
+            conversation,
+            db_updates,
+            update_modified=False,
+        )
 
     if is_customer_inbound:
         try:

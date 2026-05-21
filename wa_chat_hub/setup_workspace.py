@@ -46,7 +46,6 @@ def run():
         {"label": "Chat Assignment Rule", "link_to": "Chat Assignment Rule", "type": "DocType", "icon": "filter"},
         {"label": "Chat Queue Event", "link_to": "Chat Queue Event", "type": "DocType", "icon": "list"},
         {"label": "Chat AI Suggestion", "link_to": "Chat AI Suggestion", "type": "DocType", "icon": "star"},
-        {"label": "WA Knowledge Base", "link_to": "WA Knowledge Base", "type": "DocType", "icon": "book"},
         {"label": "WA AI Knowledge Base", "link_to": "WA AI Knowledge Base", "type": "DocType", "icon": "book-open"},
         {"label": "WA LLM Provider", "link_to": "WA LLM Provider", "type": "DocType", "icon": "cpu"},
         {"label": "WA MCP Server", "link_to": "WA MCP Server", "type": "DocType", "icon": "server"},

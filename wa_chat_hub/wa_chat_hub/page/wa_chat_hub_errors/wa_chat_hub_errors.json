@@ -1,0 +1,18 @@
+{
+ "docstatus": 0,
+ "doctype": "Page",
+ "icon": "fa fa-exclamation-triangle",
+ "idx": 1,
+ "modified_by": "Administrator",
+ "module": "WA Chat Hub",
+ "name": "wa-chat-hub-errors",
+ "owner": "Administrator",
+ "page_name": "wa-chat-hub-errors",
+ "roles": [
+  {
+   "role": "System Manager"
+  }
+ ],
+ "standard": "Yes",
+ "title": "WA Chat Hub Errors"
+}

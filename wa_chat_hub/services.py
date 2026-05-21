@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import Any, Dict, Optional
 
 import frappe
 import requests
+from frappe import _
 from frappe.utils.file_manager import save_file
 
 from wa_chat_hub.ai.lead_scoring import score_and_sync_conversation
@@ -18,14 +20,39 @@ from wa_chat_hub.prompts import (
 DEFAULT_CONVERSATION_STATUS = "Open"
 
 
+@contextmanager
+def _crm_lead_field_guard_bypass(enabled: bool = True):
+    """Temporarily allow trusted WA automation through CRM Lead field guards."""
+    previous = getattr(frappe.flags, "sr_bypass_field_guard", False)
+    if enabled:
+        frappe.flags.sr_bypass_field_guard = True
+    try:
+        yield
+    finally:
+        frappe.flags.sr_bypass_field_guard = previous
+
+
 def normalize_phone(phone: Optional[str]) -> str:
     if not phone:
         return ""
     return "".join(ch for ch in str(phone) if ch.isdigit())
 
 
+def _valid_link(doctype: str, value: Optional[str]) -> Optional[str]:
+    """Return value only if it exists in the linked DocType (avoids webhook hard-fail)."""
+    name = (value or "").strip()
+    if not name:
+        return None
+    if frappe.db.exists(doctype, name):
+        return name
+    frappe.logger("wa_chat_hub").warning(
+        "Ignored invalid %s link on Chat Conversation: %s", doctype, name
+    )
+    return None
+
+
 def classify_department(channel_department: Optional[str], detected_department: Optional[str] = None) -> Optional[str]:
-    return detected_department or channel_department
+    return _valid_link("Department", detected_department or channel_department)
 
 
 def route_conversation(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -33,10 +60,14 @@ def route_conversation(payload: Dict[str, Any]) -> Dict[str, Any]:
         payload.get("channel_department"),
         payload.get("detected_department"),
     )
-    assigned_to = payload.get("assigned_to") or find_assignment_owner(
-        department=department,
-        channel_account=payload.get("channel_account"),
-        priority=payload.get("priority"),
+    assigned_to = _valid_link(
+        "User",
+        payload.get("assigned_to")
+        or find_assignment_owner(
+            department=department,
+            channel_account=payload.get("channel_account"),
+            priority=payload.get("priority"),
+        ),
     )
     return {
         "department": department,
@@ -80,7 +111,13 @@ def get_or_create_contact(phone_number: str, display_name: Optional[str] = None)
         "phone_number": normalized,
         "display_name": display_name or normalized,
     })
-    doc.insert(ignore_permissions=True)
+    try:
+        doc.insert(ignore_permissions=True)
+    except frappe.DuplicateEntryError:
+        existing = frappe.db.get_value("Chat Contact", {"phone_number": normalized}, "name") or normalized
+        if display_name and frappe.db.exists("Chat Contact", existing):
+            frappe.db.set_value("Chat Contact", existing, "display_name", display_name)
+        return existing
     return doc.name
 
 
@@ -119,12 +156,40 @@ def get_or_create_conversation(
 
 
 def append_message(payload: Dict[str, Any]) -> Dict[str, str]:
+    frappe.flags.wa_chat_in_append_message = True
+    frappe.local.wa_chat_in_append_message = True
+    try:
+        return _append_message_impl(payload)
+    finally:
+        frappe.flags.wa_chat_in_append_message = False
+        frappe.local.wa_chat_in_append_message = False
+
+
+def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
     phone_number = normalize_phone(payload.get("phone_number") or payload.get("to") or payload.get("from"))
+    if not phone_number:
+        frappe.throw(_("Cannot store WhatsApp message: customer phone number is missing in webhook payload."))
     contact = get_or_create_contact(phone_number=phone_number, display_name=payload.get("display_name"))
 
     channel_account = payload["channel_account"]
+    existing_conversation = frappe.db.get_value(
+        "Chat Conversation",
+        {"channel_account": channel_account, "contact": contact, "status": ["!=", "Closed"]},
+        "name",
+    )
+
+    # Preserve existing conversations: map defaults apply only when creating a new thread.
+    # Chat Conversation.department → ERPNext "Department", not Medical Department.
+    # sr_medical_department on WA Channel Pipeline Map is only for Patient routing / Interakt traits.
+    channel_department = _valid_link("Department", payload.get("channel_department"))
+    if not channel_department and not existing_conversation:
+        account_department = frappe.db.get_value(
+            "Chat Channel Account", channel_account, "department"
+        )
+        channel_department = _valid_link("Department", account_department)
+
     routing = route_conversation({
-        "channel_department": payload.get("channel_department"),
+        "channel_department": channel_department,
         "detected_department": payload.get("detected_department"),
         "channel_account": channel_account,
         "priority": payload.get("priority"),
@@ -139,13 +204,6 @@ def append_message(payload: Dict[str, Any]) -> Dict[str, str]:
     )
 
     direction = payload.get("direction", "Inbound")
-    if direction == "Inbound":
-        _link_or_create_master_record(
-            conversation=conversation,
-            contact_name=contact,
-            phone_number=phone_number,
-            display_name=payload.get("display_name"),
-        )
 
     delivery_status = payload.get("delivery_status")
     if not delivery_status:
@@ -164,7 +222,43 @@ def append_message(payload: Dict[str, Any]) -> Dict[str, str]:
         "raw_payload": frappe.as_json(payload),
         "raw_transport_payload": frappe.as_json(payload.get("raw_transport_payload") or {}),
     })
+
+    # Open 24h window before insert so AI autopilot (after_insert hook) sees an active window.
+    if direction == "Inbound":
+        try:
+            from frappe.utils import now_datetime
+            from wa_chat_hub.messaging.windows import update_windows_on_message
+
+            update_windows_on_message(
+                conversation,
+                direction=direction,
+                sender_type=payload.get("sender_type", "Customer"),
+                content_type=payload.get("content_type", "Text"),
+                raw_payload=payload.get("raw_payload") or payload,
+                message_time=str(now_datetime()),
+                template_category=payload.get("template_category"),
+            )
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "Messaging Window Update Failed")
+
     message.insert(ignore_permissions=True)
+
+    if direction == "Inbound":
+        try:
+            _link_or_create_master_record(
+                conversation=conversation,
+                contact_name=contact,
+                phone_number=phone_number,
+                display_name=payload.get("display_name"),
+                raw_payload=_coerce_inbound_raw_payload(payload),
+                message_name=message.name,
+            )
+        except Exception:
+            frappe.log_error(
+                frappe.get_traceback(),
+                "WA Chat Hub Inbound Link Failed",
+            )
+
     attachment_file = None
     try:
         attachment_file = _persist_inbound_attachment(message, payload)
@@ -172,20 +266,6 @@ def append_message(payload: Dict[str, Any]) -> Dict[str, str]:
         frappe.log_error(frappe.get_traceback(), "Inbound Attachment Persistence Failed")
 
     update_conversation_after_message(conversation, payload)
-    try:
-        from wa_chat_hub.messaging.windows import update_windows_on_message
-
-        update_windows_on_message(
-            conversation,
-            direction=direction,
-            sender_type=payload.get("sender_type", "Customer"),
-            content_type=payload.get("content_type", "Text"),
-            raw_payload=payload.get("raw_payload") or payload,
-            message_time=str(message.creation),
-            template_category=payload.get("template_category"),
-        )
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "Messaging Window Update Failed")
     try:
         score_and_sync_conversation(conversation)
     except Exception:
@@ -204,6 +284,16 @@ def append_message(payload: Dict[str, Any]) -> Dict[str, str]:
             process_attachment_for_lead_summary(conversation, message.name, payload)
         except Exception:
             frappe.log_error(frappe.get_traceback(), "OCR Lead Summary Failed")
+    if direction == "Inbound" and not (
+        getattr(frappe.flags, "wa_ai_outbound_reply", False)
+        or getattr(frappe.local, "wa_ai_outbound_reply", False)
+    ):
+        try:
+            from wa_chat_hub.api.ai_bot import schedule_autopilot_for_message
+
+            schedule_autopilot_for_message(message.name)
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "WA AI Autopilot Schedule Failed")
     frappe.publish_realtime(
         "wa_chat_new_message",
         {
@@ -224,7 +314,7 @@ def cint_safe(value: Any) -> int:
 
 
 def update_conversation_after_message(conversation_name: str, payload: Dict[str, Any]) -> None:
-    convo = frappe.get_doc("Chat Conversation", conversation_name)
+    """Update preview/unread without full doc save (avoids TimestampMismatch under concurrent updates)."""
     body = payload.get("body")
     content_type = payload.get("content_type") or "Text"
     media_url = payload.get("media_url")
@@ -232,11 +322,13 @@ def update_conversation_after_message(conversation_name: str, payload: Dict[str,
         preview = build_media_preview(content_type, body)
     else:
         preview = body or content_type or ""
-    convo.last_message_preview = preview[:500]
-    unread = cint_safe(convo.unread_count)
+
+    values: Dict[str, Any] = {"last_message_preview": (preview or "")[:500]}
     if payload.get("direction", "Inbound") == "Inbound":
-        convo.unread_count = unread + 1
-    convo.save(ignore_permissions=True)
+        unread = cint_safe(frappe.db.get_value("Chat Conversation", conversation_name, "unread_count"))
+        values["unread_count"] = unread + 1
+
+    frappe.db.set_value("Chat Conversation", conversation_name, values, update_modified=True)
 
 
 def build_media_preview(content_type: str, body: Optional[str] = None) -> str:
@@ -289,11 +381,29 @@ def build_erp_actions() -> Dict[str, Dict[str, str]]:
     }
 
 
+def _coerce_inbound_raw_payload(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    raw = payload.get("raw_payload")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            import json
+
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
+    return None
+
+
 def _link_or_create_master_record(
     conversation: str,
     contact_name: str,
     phone_number: str,
     display_name: Optional[str] = None,
+    *,
+    raw_payload: Optional[Dict[str, Any]] = None,
+    message_name: Optional[str] = None,
 ) -> None:
     """Attach inbound chat to existing Patient/Customer else create a Lead."""
     if not phone_number:
@@ -304,7 +414,14 @@ def _link_or_create_master_record(
     _sanitize_contact_links(contact)
     _sanitize_conversation_links(convo)
     _normalize_existing_lead_link(convo)
-    if get_conversation_crm_lead(convo):
+    existing_crm_lead = get_conversation_crm_lead(convo)
+    if existing_crm_lead and frappe.db.exists("CRM Lead", existing_crm_lead):
+        _finalize_crm_lead_after_inbound(
+            conversation,
+            existing_crm_lead,
+            raw_payload=raw_payload,
+            message_name=message_name,
+        )
         return
     ref_dt, ref_name = get_conversation_linked_reference(convo)
     if ref_dt and ref_name and ref_dt not in {"CRM Lead", "Lead"}:
@@ -341,17 +458,25 @@ def _link_or_create_master_record(
         convo.save(ignore_permissions=True)
         return
 
-    lead_doctype = _preferred_lead_doctype()
-    if not lead_doctype:
-        return
-
     existing_lead = _find_existing_lead_by_phone(phone_number)
-    lead_name = existing_lead or _create_lead_for_inbound(
-        doctype=lead_doctype,
-        phone_number=phone_number,
-        display_name=display_name or contact.display_name,
-        channel_account=convo.channel_account,
-    )
+    if existing_lead:
+        lead_doctype, lead_name = existing_lead
+    else:
+        lead_doctype = _preferred_lead_doctype()
+        if not lead_doctype:
+            return
+        try:
+            lead_name = _create_lead_for_inbound(
+                doctype=lead_doctype,
+                phone_number=phone_number,
+                display_name=display_name or contact.display_name,
+                channel_account=convo.channel_account,
+            )
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "WA Chat Hub Inbound Lead Create Failed")
+            return
+    if not lead_name:
+        return
 
     contact.linked_lead = lead_name if lead_doctype == "Lead" else None
     contact.source_doctype = lead_doctype
@@ -368,12 +493,12 @@ def _link_or_create_master_record(
     convo.save(ignore_permissions=True)
 
     if lead_doctype == "CRM Lead":
-        try:
-            from wa_chat_hub.messaging.crm_lead_meta import sync_crm_lead_meta_from_conversation
-
-            sync_crm_lead_meta_from_conversation(convo)
-        except Exception:
-            frappe.log_error(frappe.get_traceback(), "CRM Lead Meta Sync On Link Failed")
+        _finalize_crm_lead_after_inbound(
+            conversation,
+            lead_name,
+            raw_payload=raw_payload,
+            message_name=message_name,
+        )
 
     try:
         from wa_chat_hub.interakt.contact_sync import enqueue_push_for_conversation
@@ -383,19 +508,59 @@ def _link_or_create_master_record(
         frappe.log_error(frappe.get_traceback(), "Interakt Contact Push Enqueue Failed")
 
 
+def _finalize_crm_lead_after_inbound(
+    conversation: str,
+    lead_name: str,
+    *,
+    raw_payload: Optional[Dict[str, Any]] = None,
+    message_name: Optional[str] = None,
+) -> None:
+    """Ad attribution → CRM Lead meta tab; lead scoring/OCR fields after link exists."""
+    convo = frappe.get_cached_doc("Chat Conversation", conversation)
+    try:
+        from wa_chat_hub.messaging.crm_lead_meta import sync_crm_lead_meta_from_conversation
+
+        sync_crm_lead_meta_from_conversation(convo, raw_payload=raw_payload, force=True)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "CRM Lead Meta Sync On Link Failed")
+
+    try:
+        from wa_chat_hub.lead_ai import auto_update_lead_from_conversation
+
+        auto_update_lead_from_conversation(lead_name, conversation=conversation)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "WA Lead AI Auto Update Failed")
+
+
+def _inbound_lead_first_name(display_name: Optional[str], phone_number: str) -> str:
+    text = (display_name or "").strip()
+    if text and text != phone_number:
+        return text.split()[0][:140]
+    return phone_number[-10:] if len(phone_number) >= 10 else phone_number
+
+
+def _default_sr_lead_pipeline_for_channel(channel_account: Optional[str]) -> Optional[str]:
+    """One SR Lead Pipeline per Interakt Chat Channel Account (WA Channel Pipeline Map)."""
+    from wa_chat_hub.messaging.channel_map import get_pipeline_for_channel_account
+
+    return get_pipeline_for_channel_account(channel_account)
+
+
 def _create_lead_for_inbound(
     doctype: str,
     phone_number: str,
     display_name: Optional[str],
     channel_account: Optional[str] = None,
-) -> str:
+) -> Optional[str]:
     payload: Dict[str, Any] = {"doctype": doctype}
     meta = frappe.get_meta(doctype)
     lead_title = display_name or phone_number
+    first_name = _inbound_lead_first_name(display_name, phone_number)
+
+    if meta.has_field("first_name"):
+        payload["first_name"] = first_name
     if meta.has_field("lead_name"):
         payload["lead_name"] = lead_title
-    if meta.has_field("first_name") and not payload.get("lead_name"):
-        payload["first_name"] = lead_title
     if meta.has_field("mobile_no"):
         payload["mobile_no"] = phone_number
     elif meta.has_field("phone"):
@@ -404,19 +569,48 @@ def _create_lead_for_inbound(
         source_value = _resolve_whatsapp_source_value(meta)
         if source_value:
             payload["source"] = source_value
+    if meta.has_field("sr_lead_platform"):
+        platform_value = _resolve_whatsapp_platform_value(meta)
+        if platform_value:
+            payload["sr_lead_platform"] = platform_value
 
-    pipeline = _get_mapped_sr_pipeline(channel_account)
+    if doctype == "CRM Lead":
+        if meta.has_field("status") and not payload.get("status"):
+            if frappe.db.exists("CRM Lead Status", "New"):
+                payload["status"] = "New"
+            else:
+                open_status = frappe.get_all(
+                    "CRM Lead Status",
+                    filters={"type": "Open"},
+                    pluck="name",
+                    limit=1,
+                )
+                if open_status:
+                    payload["status"] = open_status[0]
+
     pipeline_fieldname = _get_lead_pipeline_fieldname(doctype)
-    if pipeline and pipeline_fieldname:
-        payload[pipeline_fieldname] = pipeline
-    elif pipeline and not pipeline_fieldname:
+    pipeline = _default_sr_lead_pipeline_for_channel(channel_account)
+    if pipeline_fieldname:
+        if pipeline:
+            payload[pipeline_fieldname] = pipeline
+        elif meta.get_field(pipeline_fieldname) and meta.get_field(pipeline_fieldname).reqd:
+            frappe.log_error(
+                _(
+                    "Skipped CRM Lead for WhatsApp {0}: no WA Channel Pipeline Map for Interakt account {1}. "
+                    "Add one active row on WA Channel Pipeline Map with the default SR Lead Pipeline for that account."
+                ).format(phone_number, channel_account or _("(unknown)")),
+                "WA Chat Hub Inbound Lead Skipped",
+            )
+            return None
+    elif pipeline:
         frappe.log_error(
-            f"Mapped SR Lead Pipeline '{pipeline}' for channel '{channel_account}', but no Link field to SR Lead Pipeline found on {doctype}.",
+            f"Default SR Lead Pipeline '{pipeline}' for {channel_account}, but {doctype} has no pipeline Link field.",
             "WA Channel Pipeline Mapping",
         )
 
     doc = frappe.get_doc(payload)
-    doc.insert(ignore_permissions=True)
+    with _crm_lead_field_guard_bypass(doctype == "CRM Lead"):
+        doc.insert(ignore_permissions=True)
     return doc.name
 
 
@@ -448,12 +642,6 @@ def _find_by_phone(doctype: str, phone_fields: list[str], phone_number: str) -> 
     return None
 
 
-def _get_mapped_sr_pipeline(channel_account: Optional[str]) -> Optional[str]:
-    from wa_chat_hub.messaging.channel_map import get_pipeline_for_channel_account
-
-    return get_pipeline_for_channel_account(channel_account)
-
-
 def _get_lead_pipeline_fieldname(lead_doctype: str) -> Optional[str]:
     """Auto-detect first Link field on Lead/CRM Lead targeting SR Lead Pipeline."""
     if not frappe.db.exists("DocType", "SR Lead Pipeline"):
@@ -473,13 +661,13 @@ def _preferred_lead_doctype() -> Optional[str]:
     return None
 
 
-def _find_existing_lead_by_phone(phone_number: str) -> Optional[str]:
+def _find_existing_lead_by_phone(phone_number: str) -> Optional[tuple[str, str]]:
     for doctype in ("CRM Lead", "Lead"):
         if not frappe.db.exists("DocType", doctype):
             continue
         found = _find_by_phone(doctype, ["mobile_no", "phone", "custom_whatsapp_number"], phone_number)
         if found:
-            return found
+            return doctype, found
     return None
 
 
@@ -564,6 +752,44 @@ def _resolve_whatsapp_source_value(meta) -> Optional[str]:
 
     # Data/other field types can safely take literal value.
     return "WhatsApp"
+
+
+def _resolve_whatsapp_platform_value(meta) -> Optional[str]:
+    """Return/create a safe WhatsApp platform value for CRM Lead when required."""
+    platform_df = meta.get_field("sr_lead_platform")
+    if not platform_df:
+        return None
+
+    if platform_df.fieldtype == "Link" and platform_df.options:
+        if frappe.db.exists(platform_df.options, "WhatsApp"):
+            return "WhatsApp"
+        return _create_simple_link_value(platform_df.options, "WhatsApp")
+
+    if platform_df.fieldtype == "Select":
+        options = [opt.strip() for opt in str(platform_df.options or "").split("\n") if opt.strip()]
+        return "WhatsApp" if "WhatsApp" in options else None
+
+    return "WhatsApp"
+
+
+def _create_simple_link_value(doctype: str, value: str) -> Optional[str]:
+    """Create simple single-name masters such as SR Lead Platform = WhatsApp."""
+    try:
+        meta = frappe.get_meta(doctype)
+        payload: Dict[str, Any] = {"doctype": doctype}
+        autoname = str(getattr(meta, "autoname", "") or "")
+        if autoname.startswith("field:"):
+            fieldname = autoname.split(":", 1)[1]
+            payload[fieldname] = value
+        else:
+            payload["name"] = value
+
+        doc = frappe.get_doc(payload)
+        doc.insert(ignore_permissions=True)
+        return doc.name
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), f"WA Chat Hub Create {doctype} Failed")
+        return None
 
 
 def _persist_inbound_attachment(message_doc, payload: Dict[str, Any]) -> Optional[str]:

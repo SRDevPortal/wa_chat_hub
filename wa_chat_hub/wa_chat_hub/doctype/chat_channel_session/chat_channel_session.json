@@ -1,0 +1,79 @@
+{
+ "actions": [],
+ "autoname": "format:SES-{#####}",
+ "creation": "2026-05-21 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "channel_account",
+  "session_status",
+  "session_id",
+  "qr_payload",
+  "connected_at",
+  "expires_at",
+  "error_message"
+ ],
+ "fields": [
+  {
+   "fieldname": "channel_account",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Channel Account",
+   "options": "Chat Channel Account",
+   "reqd": 1
+  },
+  {
+   "default": "Pending",
+   "fieldname": "session_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Session Status",
+   "options": "Pending\nActive\nExpired\nError"
+  },
+  {
+   "fieldname": "session_id",
+   "fieldtype": "Data",
+   "label": "Session ID"
+  },
+  {
+   "fieldname": "qr_payload",
+   "fieldtype": "Long Text",
+   "label": "QR Payload"
+  },
+  {
+   "fieldname": "connected_at",
+   "fieldtype": "Datetime",
+   "label": "Connected At"
+  },
+  {
+   "fieldname": "expires_at",
+   "fieldtype": "Datetime",
+   "label": "Expires At"
+  },
+  {
+   "fieldname": "error_message",
+   "fieldtype": "Small Text",
+   "label": "Error Message"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-05-21 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "WA Chat Hub",
+ "name": "Chat Channel Session",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

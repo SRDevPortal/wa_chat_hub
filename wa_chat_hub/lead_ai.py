@@ -7,6 +7,8 @@ from typing import Any
 import frappe
 from frappe.utils import now_datetime
 
+from wa_chat_hub.prompts import get_conversation_crm_lead
+
 
 HOT_TERMS = {
     "urgent",
@@ -40,12 +42,12 @@ def on_chat_message_after_insert(doc, method=None):
     if not conversation:
         return
 
-    convo = frappe.get_doc("Chat Conversation", conversation)
-    if convo.linked_reference_doctype != "CRM Lead" or not convo.linked_reference_name:
+    lead_name = get_conversation_crm_lead(conversation)
+    if not lead_name:
         return
 
     try:
-        auto_update_lead_from_conversation(convo.linked_reference_name, conversation=conversation)
+        auto_update_lead_from_conversation(lead_name, conversation=conversation)
     except Exception:
         frappe.log_error(frappe.get_traceback(), "WA Lead AI Auto Update Failed")
 

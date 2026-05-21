@@ -69,7 +69,9 @@ def _upload_media_for_send(allowed_mimetypes, missing_file_message, invalid_file
     if not api_key:
         frappe.throw(_("Interakt API Key is not configured"))
 
-    upload_url = "https://api.interakt.ai/v1/public/track/files/upload_to_fb/"
+    from wa_chat_hub.interakt.account_config import media_upload_api_url
+
+    upload_url = media_upload_api_url(account)
     response = requests.post(
         upload_url,
         params={"fileCategory": "message_template_media"},

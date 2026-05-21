@@ -200,6 +200,9 @@ def enqueue_push_for_conversation(conversation: str) -> None:
 
 
 def push_conversation_contact(conversation: str) -> Optional[Dict[str, Any]]:
+    if not conversation or not frappe.db.exists("Chat Conversation", conversation):
+        return None
+
     convo = frappe.get_doc("Chat Conversation", conversation)
     if not convo.channel_account or not convo.contact:
         return None

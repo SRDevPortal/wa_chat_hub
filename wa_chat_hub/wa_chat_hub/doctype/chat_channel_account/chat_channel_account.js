@@ -4,14 +4,22 @@ frappe.ui.form.on("Chat Channel Account", {
         frm.trigger("channel_type");
 
         if (frm.doc.channel_type === "Interakt" && !frm.is_new()) {
-            const base = `${window.location.origin}/api/method/wa_chat_hub.api.webhook.receive_interakt`;
-            const webhookUrl = `${base}?channel_account=${encodeURIComponent(frm.doc.name)}`;
-            frm.set_intro(
-                `<div><strong>${__('Interakt Webhook URL')}</strong><br>`
-                + `<code style="word-break:break-all;">${frappe.utils.escape_html(webhookUrl)}</code><br>`
-                + `<span class="text-muted">${__('Use this URL in Interakt Developer Settings for this account. Each account should have its own webhook secret.')}</span></div>`,
-                "blue"
-            );
+            frappe.call({
+                method: "wa_chat_hub.api.webhook.get_interakt_webhook_url",
+                args: { channel_account: frm.doc.name },
+                callback(r) {
+                    const webhookUrl = (r.message && r.message.url) || "";
+                    frm.set_intro(
+                        `<div><strong>${__("Interakt Webhook URL")}</strong><br>`
+                        + `<code style="word-break:break-all;">${frappe.utils.escape_html(webhookUrl)}</code><br>`
+                        + `<span class="text-muted">${__(
+                            "Paste this URL in Interakt Developer Settings. Use the same Interakt Webhook Secret as on this form. "
+                            + "Set site host_name (ngrok/public URL) in site_config — not localhost."
+                        )}</span></div>`,
+                        "blue"
+                    );
+                },
+            });
         } else {
             frm.set_intro("");
         }

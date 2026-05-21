@@ -24,9 +24,13 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     let sidebarContextCache = null;
     let messagingWindowCache = null;
     let conversationRefreshTimer = null;
+    let conversationSearchTimer = null;
     let preselectedConversation = (frappe.route_options || {}).conversation || null;
     let selectedChannelAccount = '';
     let channelAccounts = [];
+    let conversationRowsCache = [];
+    let conversationSearchQuery = '';
+    let activeConversationFilter = 'all';
 
     page.add_inner_button(__('List View'), () => {
         frappe.set_route('List', 'Chat Conversation');
@@ -164,6 +168,11 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     const api = {
         channelAccounts: () => frappe.call('wa_chat_hub.api.chat.get_channel_accounts'),
         conversations: () => frappe.call('wa_chat_hub.api.chat.get_conversations', {
+            limit: 100,
+            channel_account: selectedChannelAccount || null,
+        }),
+        searchConversations: (query) => frappe.call('wa_chat_hub.api.chat.search_conversations', {
+            query,
             limit: 100,
             channel_account: selectedChannelAccount || null,
         }),
@@ -388,16 +397,43 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
 
     $('#wa-channel-account-filter').on('change', function() {
         selectedChannelAccount = $(this).val() || '';
+        conversationSearchQuery = '';
+        $('#wa-search').val('');
         closeCurrentConversation();
         refreshConversations();
     });
 
+    function applyClientConversationFilters(rows) {
+        let filtered = rows || [];
+        if (activeConversationFilter === 'unread') {
+            filtered = filtered.filter((row) => cint(row.unread_count) > 0);
+        } else if (activeConversationFilter === 'unassigned') {
+            filtered = filtered.filter((row) => !row.assigned_to);
+        } else if (activeConversationFilter === 'mine') {
+            filtered = filtered.filter((row) => row.assigned_to === frappe.session.user);
+        }
+        return filtered;
+    }
+
+    function applyConversationListView() {
+        if (conversationSearchQuery) {
+            return api.searchConversations(conversationSearchQuery).then((r) => {
+                const rows = applyClientConversationFilters((r.message || {}).result || []);
+                renderConversations(rows);
+            });
+        }
+        const rows = applyClientConversationFilters(conversationRowsCache);
+        renderConversations(rows);
+        return Promise.resolve();
+    }
+
     function refreshConversations() {
-        return api.conversations().then(r => {
-            const rows = r.message.result || [];
-            renderConversations(rows);
+        return api.conversations().then((r) => {
+            conversationRowsCache = (r.message || {}).result || [];
+            return applyConversationListView();
+        }).then(() => {
             if (preselectedConversation) {
-                const target = rows.find(row => row.name === preselectedConversation);
+                const target = conversationRowsCache.find((row) => row.name === preselectedConversation);
                 if (target) {
                     loadConversation(preselectedConversation);
                 }
@@ -405,6 +441,42 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
             }
         });
     }
+
+    function debounceConversationSearch(fn, waitMs) {
+        return function (...args) {
+            clearTimeout(conversationSearchTimer);
+            conversationSearchTimer = setTimeout(() => fn.apply(this, args), waitMs);
+        };
+    }
+
+    $('#wa-search').on('input', debounceConversationSearch(function () {
+        conversationSearchQuery = String($('#wa-search').val() || '').trim();
+        applyConversationListView();
+    }, 280));
+
+    $('#wa-search').on('keydown', function (e) {
+        if (e.key === 'Escape') {
+            conversationSearchQuery = '';
+            $(this).val('');
+            applyConversationListView();
+        }
+    });
+
+    $('.wa-filter-row').on('click', '.wa-chip:not(.wa-chip-icon)', function () {
+        $('.wa-filter-row .wa-chip').removeClass('active');
+        $(this).addClass('active');
+        const label = $(this).text().trim().toLowerCase();
+        if (label.includes('unread')) {
+            activeConversationFilter = 'unread';
+        } else if (label.includes('unassigned')) {
+            activeConversationFilter = 'unassigned';
+        } else if (label.includes('mine')) {
+            activeConversationFilter = 'mine';
+        } else {
+            activeConversationFilter = 'all';
+        }
+        applyConversationListView();
+    });
 
     function escapeHtml(value) {
         return frappe.utils.escape_html(value || '');

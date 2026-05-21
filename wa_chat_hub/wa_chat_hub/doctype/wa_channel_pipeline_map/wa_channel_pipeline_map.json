@@ -21,10 +21,11 @@
    "unique": 1
   },
   {
+   "description": "Default for every new CRM Lead from this Interakt account (not per WhatsApp user).",
    "fieldname": "sr_lead_pipeline",
    "fieldtype": "Link",
    "in_list_view": 1,
-   "label": "SR Lead Pipeline",
+   "label": "Default SR Lead Pipeline",
    "options": "SR Lead Pipeline",
    "reqd": 1
   },

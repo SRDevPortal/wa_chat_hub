@@ -317,7 +317,7 @@ Setup:
 
 1. **WA Chat Hub Settings** — enable **Enable AI Autopilot**, set **Autopilot Mode** to `Limited Auto Reply`, configure **System Prompt** and guardrails.
 2. **WA LLM Provider** — active OpenAI (or compatible) provider with API key and model (e.g. `gpt-4o-mini`).
-3. **WA Knowledge Base** (optional) — Active entries with embeddings for RAG context.
+3. **WA AI Knowledge Base** (optional) — Active entries for RAG context.
 4. **Chat Channel Account** — Interakt API key and webhook configured.
 5. **Background worker** — `bench worker --queue short,default,long` must be running (autopilot uses the `short` queue).
 
@@ -373,7 +373,7 @@ Configure:
 
 - **WA Chat Hub Settings**: Enable AI Autopilot, Autopilot Mode = `Limited Auto Reply`, system prompt + guardrails.
 - **WA LLM Provider**: Active OpenAI (or Gemini/Custom) provider with API key and model name.
-- **WA Knowledge Base** (optional): Active entries with embeddings for RAG context.
+- **WA AI Knowledge Base** (optional): Active entries for RAG context.
 - **Workers**: `bench worker --queue short,default,long` must be running (autopilot uses the `short` queue).
 
 Flow:

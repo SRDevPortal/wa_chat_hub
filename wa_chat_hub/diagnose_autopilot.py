@@ -33,16 +33,37 @@ def run():
         d = frappe.get_doc("WA LLM Provider", p.name)
         print(" -", p.name, p.provider_type, "api_key:", bool(d.get_password("api_key")))
 
+    try:
+        from wa_chat_hub.api.vector_search import search_knowledge_base
+
+        print("vector_search_import: OK")
+        print("kb_search_sample:", len(search_knowledge_base("appointment", top_k=1)))
+    except Exception as exc:
+        print("vector_search_import: FAIL", exc)
+
+    from frappe.utils import add_to_date, now_datetime
+
+    since = add_to_date(now_datetime(), hours=-2, as_datetime=True)
     errors = frappe.get_all(
         "Error Log",
-        filters={"error": ["like", "%WA AI%"]},
-        fields=["name", "creation", "error"],
+        filters={
+            "creation": [">", since],
+            "error": ["like", "%wa_chat_hub%"],
+        },
+        fields=["name", "creation", "method", "error"],
         order_by="creation desc",
         limit=5,
     )
-    print("recent_ai_errors:", len(errors))
+    print("recent_wa_chat_errors_last_2h:", len(errors))
+    if not errors:
+        print("  (none — good; older May-20 errors are from before TimestampMismatch fix)")
     for e in errors:
-        print(" ", e.creation, (e.error or "")[:100])
+        err_text = frappe.db.get_value("Error Log", e.name, "error") or ""
+        print(" ", e.creation, e.method)
+        if "convo.save" in err_text and "update_conversation_after_message" in err_text:
+            print("  WARN: old convo.save bug — restart bench worker after code update")
+        print(err_text[:800])
+        print("---")
 
     pending = frappe.get_all(
         "RQ Job",
@@ -51,3 +72,19 @@ def run():
         limit=5,
     )
     print("queued_process_message_jobs:", len(pending))
+    print(
+        "NOTE: Autopilot always enqueues async (now=False). "
+        "Run `bench worker` or `bench schedule` — developer_mode no longer runs AI inline."
+    )
+    try:
+        from wa_chat_hub.services import update_conversation_after_message
+        import inspect
+
+        src = inspect.getsource(update_conversation_after_message)
+        if "frappe.db.set_value" in src and "convo.save" not in src:
+            print("code_check: update_conversation_after_message uses set_value OK")
+        else:
+            print("code_check: FAIL — restart bench / pull latest wa_chat_hub (still uses convo.save)")
+    except Exception as exc:
+        print("code_check: error", exc)
+    print("run_e2e: bench --site localhost execute wa_chat_hub.test_autopilot_e2e.run")

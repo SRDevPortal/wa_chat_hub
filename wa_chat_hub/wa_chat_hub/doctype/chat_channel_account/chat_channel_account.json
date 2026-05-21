@@ -18,6 +18,7 @@
   "interakt_api_key",
   "interakt_base_url",
   "interakt_webhook_secret",
+  "interakt_webhook_verify_signature",
   "interakt_default_country_code",
   "interakt_default_language_code",
   "interakt_organization_id",
@@ -115,6 +116,14 @@
    "fieldname": "interakt_webhook_secret",
    "fieldtype": "Password",
    "label": "Interakt Webhook Secret"
+  },
+  {
+   "default": "1",
+   "depends_on": "eval:doc.channel_type == 'Interakt'",
+   "description": "Uncheck only for debugging if Interakt signature header format differs.",
+   "fieldname": "interakt_webhook_verify_signature",
+   "fieldtype": "Check",
+   "label": "Verify Interakt Webhook Signature"
   },
   {
    "default": "+91",

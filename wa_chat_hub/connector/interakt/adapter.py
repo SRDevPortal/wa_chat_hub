@@ -31,6 +31,55 @@ STATUS_MAP = {
 }
 
 
+def extract_interakt_customer_phone(customer: Any, payload: Dict[str, Any] | None = None) -> str:
+    """Resolve customer phone from Interakt webhook shapes (channel_phone_number, country+number, etc.)."""
+    sources: list[Dict[str, Any]] = []
+    if isinstance(customer, dict):
+        sources.append(customer)
+    if isinstance(payload, dict):
+        sources.append(payload)
+        data = payload.get("data")
+        if isinstance(data, dict):
+            sources.append(data)
+            nested_customer = data.get("customer")
+            if isinstance(nested_customer, dict) and nested_customer is not customer:
+                sources.append(nested_customer)
+
+    for source in sources:
+        for key in (
+            "channel_phone_number",
+            "channelPhoneNumber",
+            "phone_number",
+            "phoneNumber",
+            "whatsapp_phone_number",
+            "whatsappPhoneNumber",
+            "mobile",
+            "mobile_no",
+            "from",
+            "sender",
+            "sender_phone_number",
+            "senderPhoneNumber",
+            "customer_phone_number",
+            "customerPhoneNumber",
+        ):
+            value = source.get(key)
+            if value not in (None, ""):
+                return str(value).strip()
+
+        country = source.get("country_code") or source.get("countryCode") or "+91"
+        local = source.get("phone_number") or source.get("phoneNumber")
+        if local not in (None, ""):
+            country_str = str(country).strip()
+            if not country_str.startswith("+"):
+                country_str = f"+{country_str}"
+            local_str = str(local).strip()
+            if local_str.startswith("+"):
+                return local_str
+            return f"{country_str}{local_str}"
+
+    return ""
+
+
 def split_interakt_phone(phone_number: str, default_country_code: str = "+91") -> Tuple[str, str]:
     """Return Interakt's separate countryCode and phoneNumber values."""
     digits = re.sub(r"\D", "", str(phone_number or ""))
@@ -76,12 +125,16 @@ class InteraktAdapter(ConnectorAdapter):
         if media_url and not body:
             body = f"[{content_type} message received]"
 
+        phone_number = extract_interakt_customer_phone(customer, payload)
+        if not phone_number and isinstance(message, dict):
+            phone_number = extract_interakt_customer_phone(message, payload)
+
         return NormalizedEvent(
             event_type="inbound_message",
             channel_account=payload["channel_account"],
             direction="Inbound",
             sender_type="Customer",
-            phone_number=customer.get("channel_phone_number") or payload.get("phone_number"),
+            phone_number=phone_number,
             display_name=traits.get("name") or customer.get("name") or payload.get("display_name"),
             body=body,
             content_type=content_type,

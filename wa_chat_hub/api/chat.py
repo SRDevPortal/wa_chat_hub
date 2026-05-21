@@ -39,9 +39,31 @@ def get_channel_accounts():
     return {"success": True, "result": rows}
 
 
-@frappe.whitelist()
-def get_conversations(limit=50, status=None, assigned_to=None, department=None, channel_account=None):
-    filters = {}
+CONVERSATION_LIST_FIELDS = [
+    "name",
+    "channel_account",
+    "contact",
+    "department",
+    "assigned_to",
+    "status",
+    "priority",
+    "lead_score",
+    "lead_lan",
+    "lead_temperature",
+    "last_message_preview",
+    "unread_count",
+    "modified",
+]
+
+
+def _conversation_list_filters(
+    *,
+    status=None,
+    assigned_to=None,
+    department=None,
+    channel_account=None,
+) -> dict:
+    filters: dict = {}
     if status:
         filters["status"] = status
     if assigned_to:
@@ -50,46 +72,200 @@ def get_conversations(limit=50, status=None, assigned_to=None, department=None, 
         filters["department"] = department
     if channel_account and str(channel_account).strip().lower() not in {"", "all", "__all__"}:
         filters["channel_account"] = channel_account
+    return filters
+
+
+def _enrich_conversation_rows(rows: list) -> list:
+    contact_names = []
+    for row in rows:
+        data = row if isinstance(row, dict) else row.as_dict()
+        if data.get("contact"):
+            contact_names.append(data["contact"])
+    contacts: dict = {}
+    if contact_names:
+        for contact in frappe.get_all(
+            "Chat Contact",
+            filters={"name": ["in", contact_names]},
+            fields=["name", "display_name", "phone_number"],
+        ):
+            contacts[contact.name] = contact
+
+    enriched = []
+    for row in rows:
+        data = row if isinstance(row, dict) else row.as_dict()
+        contact = contacts.get(data.get("contact"), {})
+        enriched.append(
+            {
+                **data,
+                "contact_display_name": contact.get("display_name"),
+                "contact_phone_number": contact.get("phone_number"),
+            }
+        )
+    return enriched
+
+
+def _matching_contact_names(query: str) -> list[str]:
+    q_like = f"%{query}%"
+    or_filters = [
+        ["display_name", "like", q_like],
+        ["phone_number", "like", q_like],
+        ["name", "like", q_like],
+    ]
+    phone = normalize_phone(query)
+    if phone and len(phone) >= 4:
+        last10 = phone[-10:]
+        or_filters.append(["phone_number", "like", f"%{last10}%"])
+    return frappe.get_all("Chat Contact", or_filters=or_filters, pluck="name", limit_page_length=200)
+
+
+def _matching_reference_conversation_names(query: str, base_filters: dict) -> set[str]:
+    names: set[str] = set()
+    q_like = f"%{query}%"
+
+    if frappe.db.exists("DocType", "CRM Lead"):
+        lead_meta = frappe.get_meta("CRM Lead")
+        lead_or = [["lead_name", "like", q_like], ["name", "like", q_like]]
+        for fieldname in ("mobile_no", "phone", "mobile", "email"):
+            if lead_meta.has_field(fieldname):
+                lead_or.append([fieldname, "like", q_like])
+        lead_names = frappe.get_all("CRM Lead", or_filters=lead_or, pluck="name", limit_page_length=100)
+        if lead_names:
+            conv_meta = frappe.get_meta("Chat Conversation")
+            if conv_meta.has_field("linked_crm_lead"):
+                for row in frappe.get_all(
+                    "Chat Conversation",
+                    filters={**base_filters, "linked_crm_lead": ["in", lead_names]},
+                    pluck="name",
+                    limit_page_length=200,
+                ):
+                    names.add(row)
+            for row in frappe.get_all(
+                "Chat Conversation",
+                filters={
+                    **base_filters,
+                    "linked_reference_doctype": "CRM Lead",
+                    "linked_reference_name": ["in", lead_names],
+                },
+                pluck="name",
+                limit_page_length=200,
+            ):
+                names.add(row)
+
+    if frappe.db.exists("DocType", "Patient"):
+        patient_meta = frappe.get_meta("Patient")
+        patient_or = [["patient_name", "like", q_like], ["name", "like", q_like]]
+        if patient_meta.has_field("sr_patient_id"):
+            patient_or.append(["sr_patient_id", "like", q_like])
+        for fieldname in ("mobile", "mobile_no", "phone"):
+            if patient_meta.has_field(fieldname):
+                patient_or.append([fieldname, "like", q_like])
+        patient_names = frappe.get_all("Patient", or_filters=patient_or, pluck="name", limit_page_length=100)
+        if patient_names:
+            for row in frappe.get_all(
+                "Chat Conversation",
+                filters={
+                    **base_filters,
+                    "linked_reference_doctype": "Patient",
+                    "linked_reference_name": ["in", patient_names],
+                },
+                pluck="name",
+                limit_page_length=200,
+            ):
+                names.add(row)
+
+    return names
+
+
+@frappe.whitelist()
+def get_conversations(limit=50, status=None, assigned_to=None, department=None, channel_account=None):
+    filters = _conversation_list_filters(
+        status=status,
+        assigned_to=assigned_to,
+        department=department,
+        channel_account=channel_account,
+    )
 
     rows = frappe.get_all(
         "Chat Conversation",
         filters=filters,
-        fields=[
-            "name",
-            "channel_account",
-            "contact",
-            "department",
-            "assigned_to",
-            "status",
-            "priority",
-            "lead_score",
-            "lead_lan",
-            "lead_temperature",
-            "last_message_preview",
-            "unread_count",
-            "modified",
-        ],
+        fields=CONVERSATION_LIST_FIELDS,
         order_by="modified desc",
         limit_page_length=int(limit),
     )
 
-    contact_names = [row.contact for row in rows if row.contact]
-    contacts = {}
-    if contact_names:
-        for c in frappe.get_all("Chat Contact", filters={"name": ["in", contact_names]}, fields=["name", "display_name", "phone_number"]):
-            contacts[c.name] = c
+    return {"success": True, "result": _enrich_conversation_rows(rows)}
 
-    return {
-        "success": True,
-        "result": [
-            {
-                **row,
-                "contact_display_name": contacts.get(row.contact, {}).get("display_name"),
-                "contact_phone_number": contacts.get(row.contact, {}).get("phone_number"),
-            }
-            for row in rows
-        ],
-    }
+
+@frappe.whitelist()
+def search_conversations(
+    query,
+    limit=100,
+    status=None,
+    assigned_to=None,
+    department=None,
+    channel_account=None,
+):
+    """Search conversations by phone, name, lead, patient, or message preview."""
+    q = (query or "").strip()
+    if not q:
+        return get_conversations(
+            limit=limit,
+            status=status,
+            assigned_to=assigned_to,
+            department=department,
+            channel_account=channel_account,
+        )
+
+    base_filters = _conversation_list_filters(
+        status=status,
+        assigned_to=assigned_to,
+        department=department,
+        channel_account=channel_account,
+    )
+    q_like = f"%{q}%"
+    matching: set[str] = set()
+
+    contact_names = _matching_contact_names(q)
+    if contact_names:
+        for name in frappe.get_all(
+            "Chat Conversation",
+            filters={**base_filters, "contact": ["in", contact_names]},
+            pluck="name",
+            limit_page_length=int(limit),
+        ):
+            matching.add(name)
+
+    conv_or_filters = [
+        ["name", "like", q_like],
+        ["linked_reference_name", "like", q_like],
+        ["last_message_preview", "like", q_like],
+        ["channel_account", "like", q_like],
+    ]
+    if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
+        conv_or_filters.append(["linked_crm_lead", "like", q_like])
+
+    for row in frappe.get_all(
+        "Chat Conversation",
+        filters=base_filters,
+        or_filters=conv_or_filters,
+        fields=["name"],
+        limit_page_length=int(limit),
+    ):
+        matching.add(row.name)
+
+    matching.update(_matching_reference_conversation_names(q, base_filters))
+
+    if not matching:
+        return {"success": True, "result": []}
+
+    rows = frappe.get_all(
+        "Chat Conversation",
+        filters={"name": ["in", list(matching)]},
+        fields=CONVERSATION_LIST_FIELDS,
+        order_by="modified desc",
+        limit_page_length=int(limit),
+    )
+    return {"success": True, "result": _enrich_conversation_rows(rows)}
 
 
 @frappe.whitelist()

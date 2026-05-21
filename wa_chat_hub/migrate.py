@@ -47,7 +47,7 @@ def backfill_messaging_windows() -> None:
 
 
 def sync_standard_doctypes() -> None:
-    doctype_dir = Path(__file__).parent / MODULE / "doctype"
+    doctype_dir = Path(__file__).parent / "wa_chat_hub" / "doctype"
     if not doctype_dir.exists():
         return
 

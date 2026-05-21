@@ -66,13 +66,53 @@ def get_channel_account_for_patient(patient) -> str:
     return get_pipeline_map(medical_department=department)["chat_channel_account"]
 
 
-def get_pipeline_for_channel_account(channel_account: Optional[str]) -> Optional[str]:
-    if not channel_account:
+def get_pipeline_map_row_for_channel_account(channel_account: Optional[str]) -> Optional[Dict[str, Any]]:
+    """One active WA Channel Pipeline Map row per Interakt Chat Channel Account."""
+    if not channel_account or not frappe.db.exists("DocType", "WA Channel Pipeline Map"):
         return None
-    return frappe.db.get_value(
+    rows = frappe.get_all(
         "WA Channel Pipeline Map",
-        {"chat_channel_account": channel_account, "is_active": 1},
-        "sr_lead_pipeline",
+        filters={"chat_channel_account": channel_account, "is_active": 1},
+        fields=PIPELINE_MAP_FIELDS,
+        limit_page_length=1,
+    )
+    return rows[0] if rows else None
+
+
+def get_pipeline_for_channel_account(channel_account: Optional[str]) -> Optional[str]:
+    """
+    Default SR Lead Pipeline for this Interakt account (not per WhatsApp user).
+    Returns None if WA Channel Pipeline Map is missing — callers must handle without breaking inbound chat.
+    """
+    row = get_pipeline_map_row_for_channel_account(channel_account)
+    return row.get("sr_lead_pipeline") if row else None
+
+
+def get_channel_account_defaults(channel_account: Optional[str]) -> Dict[str, Any]:
+    """
+    Defaults from WA Channel Pipeline Map for one Interakt Chat Channel Account:
+    sr_lead_pipeline (every new CRM Lead) and sr_medical_department (Patient / Interakt sync — not Chat Conversation.department).
+    """
+    row = get_pipeline_map_row_for_channel_account(channel_account)
+    if not row:
+        return {}
+    return {
+        "sr_lead_pipeline": row.get("sr_lead_pipeline"),
+        "sr_medical_department": row.get("sr_medical_department"),
+        "pipeline_map": row.get("name"),
+    }
+
+
+def require_sr_lead_pipeline_for_channel_account(channel_account: str) -> str:
+    """Mandatory default pipeline for new CRM Leads on this Interakt account."""
+    pipeline = get_pipeline_for_channel_account(channel_account)
+    if pipeline:
+        return pipeline
+    frappe.throw(
+        _(
+            "WA Channel Pipeline Map is missing for Chat Channel Account {0}. "
+            "Create exactly one active row linking this Interakt account to its default SR Lead Pipeline."
+        ).format(channel_account)
     )
 
 

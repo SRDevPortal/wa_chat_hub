@@ -22,10 +22,32 @@ CONVERSATION_HISTORY_LIMIT = 40
 MEDIA_CONTENT_TYPES = frozenset({"Image", "Video", "Audio", "Document", "Sticker"})
 
 
+def _inside_append_message() -> bool:
+    return bool(
+        getattr(frappe.flags, "wa_chat_in_append_message", False)
+        or getattr(frappe.local, "wa_chat_in_append_message", False)
+    )
+
+
 def on_message_received(doc, method):
-    if doc.direction != "Inbound":
+    """Fallback when Chat Message is inserted outside append_message()."""
+    if _inside_append_message():
+        return
+    if (doc.direction or "").strip() != "Inbound":
+        return
+    if (doc.sender_type or "").strip() in ("AI", "System", "Bot"):
+        return
+    schedule_autopilot_for_message(doc.name)
+
+
+def schedule_autopilot_for_message(message_name: str) -> None:
+    """Queue AI autopilot after inbound message, lead link, and messaging window are ready."""
+    if not message_name or not frappe.db.exists("Chat Message", message_name):
         return
 
+    doc = frappe.get_doc("Chat Message", message_name)
+    if doc.direction != "Inbound":
+        return
     if not _inbound_triggers_autopilot(doc):
         return
 
@@ -35,17 +57,18 @@ def on_message_received(doc, method):
     if (settings.autopilot_mode or "Suggest Only") == "Disabled":
         return
 
-    # Run after commit so the worker can load the Chat Message row.
-    # In developer_mode, process inline (now=True) so a worker is not required locally.
-    enqueue(
-        "wa_chat_hub.api.ai_bot.process_message",
-        queue="short",
-        message_id=doc.name,
-        enqueue_after_commit=True,
-        now=bool(frappe.conf.get("developer_mode")),
-        job_id=f"wa_ai_autopilot_{doc.name}",
-        deduplicate=True,
-    )
+    try:
+        enqueue(
+            "wa_chat_hub.api.ai_bot.process_message",
+            queue="short",
+            message_id=message_name,
+            enqueue_after_commit=True,
+            now=False,
+            job_id=f"wa_ai_autopilot_{message_name}",
+            deduplicate=True,
+        )
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "WA AI Autopilot Enqueue Failed")
 
 
 def process_message(message_id):
@@ -117,7 +140,11 @@ def process_message(message_id):
         system_prompt = f"{system_prompt}\n\n{media_context}"
 
     if last_user_query:
-        kb_results = search_knowledge_base(last_user_query, top_k=3)
+        try:
+            kb_results = search_knowledge_base(last_user_query, top_k=3)
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "WA AI Knowledge Search Failed")
+            kb_results = []
         if kb_results:
             kb_blocks = [
                 f"--- {kb['title']} ---\n{kb['content']}"
@@ -269,7 +296,7 @@ def _already_replied_to_inbound(conversation: str, inbound_message_id: str) -> b
         WHERE conversation = %s
           AND direction = 'Outbound'
           AND sender_type = 'AI'
-          AND creation >= %s
+          AND creation > %s
         ORDER BY creation ASC
         LIMIT 1
         """,
@@ -325,19 +352,25 @@ def _deliver_ai_reply(conversation: str, response_text: str) -> None:
         delivery_status = "Failed"
         outbound = {"sent": False, "error": "Interakt send failed"}
 
-    append_message(
-        {
-            "channel_account": convo.channel_account,
-            "phone_number": phone_number,
-            "direction": "Outbound",
-            "sender_type": "AI",
-            "content_type": "Text",
-            "body": response_text,
-            "delivery_status": delivery_status,
-            "channel_message_id": channel_message_id,
-            "raw_transport_payload": {**outbound, "source": "ai_autopilot"},
-        }
-    )
+    frappe.flags.wa_ai_outbound_reply = True
+    frappe.local.wa_ai_outbound_reply = True
+    try:
+        append_message(
+            {
+                "channel_account": convo.channel_account,
+                "phone_number": phone_number,
+                "direction": "Outbound",
+                "sender_type": "AI",
+                "content_type": "Text",
+                "body": response_text,
+                "delivery_status": delivery_status,
+                "channel_message_id": channel_message_id,
+                "raw_transport_payload": {**outbound, "source": "ai_autopilot"},
+            }
+        )
+    finally:
+        frappe.flags.wa_ai_outbound_reply = False
+        frappe.local.wa_ai_outbound_reply = False
     frappe.db.commit()
 
 
@@ -376,7 +409,9 @@ def call_provider(provider, system_prompt, history, latest_user_text=None, curre
 
 def fetch_mcp_tools():
     settings = frappe.get_single("WA Chat Hub Settings")
-    if not settings.allow_mcp_access:
+    if not getattr(settings, "allow_mcp_access", 0):
+        return []
+    if not frappe.db.exists("DocType", "WA MCP Tool Endpoint"):
         return []
 
     tools_docs = frappe.get_all(
@@ -469,7 +504,15 @@ def call_openai_format(provider, messages, timeout=20):
         resp.raise_for_status()
 
     data = resp.json()
-    message = data["choices"][0]["message"]
+    choices = data.get("choices") or []
+    if not choices:
+        frappe.log_error(
+            f"OpenAI empty choices for model {provider.model_name}: {resp.text[:500]}",
+            "WA AI Provider API Failure",
+        )
+        return ""
+
+    message = choices[0].get("message") or {}
 
     if message.get("tool_calls"):
         messages.append(message)
@@ -493,6 +536,9 @@ def call_openai_format(provider, messages, timeout=20):
         resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
         resp.raise_for_status()
         data = resp.json()
-        return data["choices"][0]["message"].get("content", "")
+        follow_choices = data.get("choices") or []
+        if not follow_choices:
+            return ""
+        return (follow_choices[0].get("message") or {}).get("content", "") or ""
 
-    return message.get("content", "")
+    return message.get("content", "") or ""

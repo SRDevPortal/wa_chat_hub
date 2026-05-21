@@ -18,6 +18,7 @@
     "enable_multilingual_replies",
     "multilingual_reply_policy",
     "section_access",
+    "allow_mcp_access",
     "allow_erp_read",
     "allow_erp_write",
     "allowed_actions",
@@ -85,6 +86,13 @@
       "fieldname": "section_access",
       "fieldtype": "Section Break",
       "label": "ERP / Tool Access"
+    },
+    {
+      "default": "0",
+      "description": "Allow the AI bot to call tools defined in WA MCP Tool Endpoint.",
+      "fieldname": "allow_mcp_access",
+      "fieldtype": "Check",
+      "label": "Allow MCP Tool Access"
     },
     {
       "fieldname": "allow_erp_read",

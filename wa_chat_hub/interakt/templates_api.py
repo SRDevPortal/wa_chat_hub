@@ -222,7 +222,9 @@ def _build_template_list_urls(account) -> List[str]:
             org_id = match.group(1)
 
     if org_id:
-        base = f"https://api.interakt.ai/v1/organizations/{org_id}"
+        from wa_chat_hub.interakt.account_config import interakt_api_root
+
+        base = f"{interakt_api_root(account)}/organizations/{org_id}"
         for path in (
             f"{V2_TEMPLATE_PATH}/",
             "message-templates/",

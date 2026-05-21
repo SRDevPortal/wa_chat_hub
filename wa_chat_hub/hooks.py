@@ -27,6 +27,9 @@ doctype_list_js = {
 
 doc_events = {
     "Chat Message": {
-        "after_insert": "wa_chat_hub.lead_ai.on_chat_message_after_insert",
+        "after_insert": [
+            "wa_chat_hub.api.ai_bot.on_message_received",
+            "wa_chat_hub.lead_ai.on_chat_message_after_insert",
+        ],
     },
 }

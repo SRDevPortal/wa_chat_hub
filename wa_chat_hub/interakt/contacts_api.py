@@ -9,13 +9,11 @@ import requests
 from frappe import _
 
 
-INTERAKT_TRACK_USER_URL = "https://api.interakt.ai/v1/public/track/users/"
+from wa_chat_hub.interakt.account_config import get_interakt_account, track_users_api_url
 
 
 def get_interakt_api_key(channel_account: str) -> str:
-    account = frappe.get_doc("Chat Channel Account", channel_account)
-    if account.channel_type != "Interakt":
-        frappe.throw(_("Channel Account {0} is not an Interakt account.").format(channel_account))
+    account = get_interakt_account(channel_account)
     api_key = account.get_password("interakt_api_key")
     if not api_key:
         frappe.throw(_("Interakt API Key is not configured for {0}.").format(channel_account))
@@ -24,9 +22,10 @@ def get_interakt_api_key(channel_account: str) -> str:
 
 def track_user(channel_account: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     """POST /v1/public/track/users/ — create or update Interakt user."""
+    account = get_interakt_account(channel_account)
     api_key = get_interakt_api_key(channel_account)
     response = requests.post(
-        INTERAKT_TRACK_USER_URL,
+        track_users_api_url(account),
         headers={
             "Authorization": f"Basic {api_key}",
             "Content-Type": "application/json",
