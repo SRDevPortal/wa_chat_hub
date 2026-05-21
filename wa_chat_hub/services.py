@@ -665,10 +665,32 @@ def _find_existing_lead_by_phone(phone_number: str) -> Optional[tuple[str, str]]
     for doctype in ("CRM Lead", "Lead"):
         if not frappe.db.exists("DocType", doctype):
             continue
-        found = _find_by_phone(doctype, ["mobile_no", "phone", "custom_whatsapp_number"], phone_number)
+        if doctype == "CRM Lead":
+            found = _find_primary_crm_lead_by_phone(phone_number)
+        else:
+            found = _find_by_phone(doctype, ["mobile_no", "phone", "custom_whatsapp_number"], phone_number)
         if found:
             return doctype, found
     return None
+
+
+def _find_primary_crm_lead_by_phone(phone_number: str) -> Optional[str]:
+    try:
+        from crm_lead_dedupe.leads.dup_utils import get_primary_lead_name_for_mobile, get_primary_lead_name_for_lead, norm_mobile
+
+        primary = get_primary_lead_name_for_mobile(norm_mobile(phone_number))
+        if primary:
+            return primary
+
+        found = _find_by_phone("CRM Lead", ["mobile_no", "phone", "custom_whatsapp_number"], phone_number)
+        return get_primary_lead_name_for_lead(found) if found else None
+    except Exception:
+        found = _find_by_phone("CRM Lead", ["mobile_no", "phone", "custom_whatsapp_number"], phone_number)
+        if found and frappe.db.has_column("CRM Lead", "sr_duplicate_of_name"):
+            primary = frappe.db.get_value("CRM Lead", found, "sr_duplicate_of_name")
+            if primary and frappe.db.exists("CRM Lead", primary):
+                return primary
+        return found
 
 
 def _normalize_existing_lead_link(convo) -> None:
