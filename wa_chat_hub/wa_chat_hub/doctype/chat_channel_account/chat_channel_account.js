@@ -2,6 +2,19 @@ frappe.ui.form.on("Chat Channel Account", {
     refresh(frm) {
         // Toggle the WABA settings visibility just in case depends_on doesn't fire immediately
         frm.trigger("channel_type");
+
+        if (frm.doc.channel_type === "Interakt" && !frm.is_new()) {
+            const base = `${window.location.origin}/api/method/wa_chat_hub.api.webhook.receive_interakt`;
+            const webhookUrl = `${base}?channel_account=${encodeURIComponent(frm.doc.name)}`;
+            frm.set_intro(
+                `<div><strong>${__('Interakt Webhook URL')}</strong><br>`
+                + `<code style="word-break:break-all;">${frappe.utils.escape_html(webhookUrl)}</code><br>`
+                + `<span class="text-muted">${__('Use this URL in Interakt Developer Settings for this account. Each account should have its own webhook secret.')}</span></div>`,
+                "blue"
+            );
+        } else {
+            frm.set_intro("");
+        }
         
         // Add QR Button for Personal WA if not active
         if (frm.doc.channel_type === "Personal WhatsApp" && frm.doc.connector_status !== "Active") {

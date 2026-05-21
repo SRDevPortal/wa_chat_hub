@@ -1,0 +1,2 @@
+[post_model_sync]
+wa_chat_hub.patches.v1_0.set_messaging_windows_from_history

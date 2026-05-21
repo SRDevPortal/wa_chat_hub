@@ -1,6 +1,6 @@
 # WA Chat Hub Status
 
-Last updated: 2026-05-16
+Last updated: 2026-05-20
 
 WA Chat Hub is a Frappe Desk app for handling Interakt WhatsApp conversations inside ERP/Frappe. It provides a WhatsApp-style inbox, realtime message updates, media sending, assignment support, CRM actions, and contact context.
 
@@ -60,6 +60,39 @@ Route:
 
 - Works during the WhatsApp 24-hour customer service window.
 - Outbound messages sent from WA Chat Hub are saved locally immediately.
+
+### Messaging Windows (Meta / Interakt Rules)
+
+WA Chat Hub tracks and enforces WhatsApp messaging windows per **Chat Conversation** (strict server-side + UI).
+
+| Rule | Behavior in WA Chat Hub |
+|------|-------------------------|
+| **24-hour customer service** | Each inbound customer message sets `last_customer_message_at` and `customer_service_window_expires_at` (+24h). Resets on every customer reply. |
+| **72-hour CTWA ad-entry** | First inbound with CTWA/referral (`ctwa_clid`, click-to-WhatsApp payload) sets `ctwa_entry_at` and `ctwa_window_expires_at` (+72h). |
+| **Free-form send** | Text/media allowed only while CS or CTWA window is active (`evaluate_send_permission` in [`outbound.py`](../wa_chat_hub/outbound.py)). |
+| **Template send** | Always allowed. Updates `last_template_sent_at` / `last_template_category`. Does **not** open free-form; customer must reply. |
+| **AI Autopilot** | Skips auto-reply when free-form window is closed (logs `WA AI Autopilot Skipped`). |
+
+**Chat Conversation fields:** `messaging_window_mode`, `last_customer_message_at`, `customer_service_window_expires_at`, `ctwa_entry_at`, `ctwa_window_expires_at`, `last_template_sent_at`, `last_template_category`, `source_id`, `source_url`, `source`, `ctwa_clid`.
+
+**Engine:** [`wa_chat_hub/messaging/windows.py`](../wa_chat_hub/messaging/windows.py)
+
+**Webhooks to listen to (Interakt):**
+
+- `message_received` — opens/resets customer service window; may set CTWA 72h window
+- Status events (`message_api_delivered`, etc.) — delivery ticks only
+
+**API / realtime:**
+
+- `get_sidebar_context` includes `messaging_window`
+- `get_messaging_window(conversation)` for CRM/automation
+- Realtime: `wa_chat_window_updated`
+
+**UI:** Composer banner (green = free messaging until expiry; orange = template required). Composer/attach disabled when window closed; Template button emphasized.
+
+**Migrate:** `after_migrate` runs `backfill_messaging_windows_from_history()` from existing Chat Messages.
+
+Template approval timing (minutes to 24h) remains in **Interakt dashboard**, not ERP.
 
 ### Inbound Webhooks
 
@@ -198,12 +231,14 @@ Done:
 - Template button/dialog exists.
 - Manual template sending path exists.
 
-Pending:
+Done:
 
-- Fetch approved Interakt templates.
-- Show template dropdown.
-- Detect required variables.
-- Render preview automatically.
+- Fetches approved Interakt templates via API (cached 5 min per channel account).
+- Template dialog shows dropdown of approved templates (no manual template name entry).
+- Language code and body preview auto-fill from selected template.
+- Variable count hints on body/header fields.
+- Uses Interakt v2 API: `https://api.interakt.ai/v1/organizations/{org_id}/message-templates/v2/`
+- Set **Interakt Organization ID** on Chat Channel Account, or paste the full Templates API URL.
 
 ### Search And Filters
 
@@ -260,15 +295,10 @@ Pending:
 
 ### Ad Source Persistence
 
-Current:
+Done on **Chat Conversation**:
 
-- Source details are extracted from raw message/customer payload when available.
-
-Recommended:
-
-- Add dedicated fields on Chat Contact or Chat Conversation for ad attribution.
-- Persist Source ID, Source URL, Source, and `ctwa_clid` after first extraction.
-- This will make source details stable even if old raw payloads are unavailable.
+- `source_id`, `source_url`, `source`, `ctwa_clid` persisted on first CTWA/referral inbound (see Messaging Windows).
+- Sidebar still shows Ad Source from conversation fields + latest payload fallback.
 
 ### Custom Avatar
 
@@ -280,6 +310,31 @@ Possible future path:
 
 - Add `avatar_url` to Chat Contact.
 - Fill from CRM Lead/Patient image, custom Interakt trait, or manually uploaded profile image.
+
+### AI Autopilot (WhatsApp auto-reply)
+
+Setup:
+
+1. **WA Chat Hub Settings** — enable **Enable AI Autopilot**, set **Autopilot Mode** to `Limited Auto Reply`, configure **System Prompt** and guardrails.
+2. **WA LLM Provider** — active OpenAI (or compatible) provider with API key and model (e.g. `gpt-4o-mini`).
+3. **WA Knowledge Base** (optional) — Active entries with embeddings for RAG context.
+4. **Chat Channel Account** — Interakt API key and webhook configured.
+5. **Background worker** — `bench worker --queue short,default,long` must be running (autopilot uses the `short` queue).
+
+Quick setup command:
+
+```bash
+bench --site localhost execute wa_chat_hub.setup_autopilot.run
+bench restart
+```
+
+Behavior:
+
+- Inbound text message → background job → LLM reply → sent via Interakt → saved as outbound `Chat Message` with `sender_type: AI`.
+- `Suggest Only` / `Draft + Approval` modes create **Chat AI Suggestion** only (no WhatsApp send).
+- Skips empty inbound bodies, closed conversations, and duplicate AI replies within 30 seconds.
+- **Stop / start:** magic-wand icon (left header) or **AI On / AI Off** pill in the thread header toggles **Enable AI Autopilot** instantly.
+- **Multilingual:** auto-replies match the customer's language (Hindi, Hinglish, English, Tamil, Telugu, Bengali, Gujarati, Punjabi, Marathi, Kannada, Malayalam, Urdu, etc.). Toggle **Enable Multilingual Auto-Replies** in **WA Chat Hub Settings**.
 
 ### Interakt Manual Inbox Sync
 
@@ -305,6 +360,28 @@ Required from Interakt:
   - Failed outbound sends
   - Missing Interakt config
   - Recent API errors
+
+### AI Autopilot (auto-reply on WhatsApp)
+
+Setup (one-time):
+
+```bash
+bench --site <site> execute wa_chat_hub.setup_autopilot.run
+```
+
+Configure:
+
+- **WA Chat Hub Settings**: Enable AI Autopilot, Autopilot Mode = `Limited Auto Reply`, system prompt + guardrails.
+- **WA LLM Provider**: Active OpenAI (or Gemini/Custom) provider with API key and model name.
+- **WA Knowledge Base** (optional): Active entries with embeddings for RAG context.
+- **Workers**: `bench worker --queue short,default,long` must be running (autopilot uses the `short` queue).
+
+Flow:
+
+1. Inbound `Chat Message` from Interakt webhook triggers `wa_chat_hub.api.ai_bot.on_message_received`.
+2. Background job calls LLM with conversation history + knowledge-base context.
+3. When Autopilot Mode is `Limited Auto Reply`, reply is sent via Interakt and saved as outbound `sender_type: AI`.
+4. Other modes (`Suggest Only`, `Draft + Approval`) create a **Chat AI Suggestion** only.
 
 ## Recommended Next Tasks
 

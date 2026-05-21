@@ -2,11 +2,12 @@ import frappe
 import hashlib
 import hmac
 import json
+from typing import Optional
 
 from frappe import _
 
 from wa_chat_hub.connector.registry import get_adapter
-from wa_chat_hub.services import append_message
+from wa_chat_hub.services import append_message, normalize_phone
 
 
 INTERAKT_STATUS_TYPES = {
@@ -114,15 +115,21 @@ def receive_interakt():
     /api/method/wa_chat_hub.api.webhook.receive_interakt
     """
     try:
+        if frappe.request.method == "GET":
+            channel_account = frappe.form_dict.get("channel_account") or frappe.form_dict.get("account")
+            return {
+                "success": True,
+                "message": "Interakt webhook endpoint is reachable. Interakt delivers events via POST.",
+                "channel_account": channel_account,
+            }
+
         if frappe.request.method != "POST":
             frappe.local.response["http_status_code"] = 405
             return {"success": False, "message": "Only POST requests accepted"}
 
         raw_body = frappe.request.data or b"{}"
         payload = json.loads(raw_body)
-        channel_account = _resolve_interakt_channel_account(payload)
-        account = frappe.get_doc("Chat Channel Account", channel_account)
-        _verify_interakt_signature(account, raw_body)
+        channel_account = _resolve_interakt_channel_account(payload, raw_body)
 
         payload["channel_account"] = channel_account
         adapter = get_adapter("Interakt")
@@ -160,48 +167,152 @@ def receive_interakt():
         return {"success": False, "message": "Interakt webhook failed"}
 
 
-def _resolve_interakt_channel_account(payload):
+def _resolve_interakt_channel_account(payload, raw_body: bytes):
+    """Resolve Interakt channel account for single or multi-account setups."""
     requested = (
         frappe.form_dict.get("channel_account")
         or frappe.form_dict.get("account")
         or payload.get("channel_account")
     )
-    if requested:
-        if not frappe.db.exists("Chat Channel Account", requested):
-            frappe.throw(_("Unknown Chat Channel Account: {0}").format(requested))
-        return requested
-
     accounts = frappe.get_all(
         "Chat Channel Account",
         filters={"channel_type": "Interakt", "is_active": 1},
         pluck="name",
-        limit=2,
     )
-    if len(accounts) == 1:
-        return accounts[0]
     if not accounts:
         frappe.throw(_("No active Interakt Chat Channel Account found"))
-    frappe.throw(_("Multiple Interakt accounts found. Pass channel_account in webhook query string."))
+
+    if requested:
+        if requested not in accounts:
+            frappe.throw(_("Unknown Chat Channel Account: {0}").format(requested))
+        account = frappe.get_doc("Chat Channel Account", requested)
+        _verify_interakt_signature(account, raw_body)
+        return requested
+
+    if len(accounts) == 1:
+        account = frappe.get_doc("Chat Channel Account", accounts[0])
+        _verify_interakt_signature(account, raw_body)
+        return accounts[0]
+
+    from_payload = _match_interakt_channel_from_payload(payload, accounts)
+    if from_payload:
+        account = frappe.get_doc("Chat Channel Account", from_payload)
+        _verify_interakt_signature(account, raw_body)
+        return from_payload
+
+    signature_matches = _match_interakt_channels_by_signature(accounts, raw_body)
+    if len(signature_matches) == 1:
+        return signature_matches[0]
+    if len(signature_matches) > 1:
+        frappe.throw(
+            _(
+                "Ambiguous Interakt webhook: multiple channel accounts matched signature. "
+                "Use a unique webhook secret per account or pass channel_account in webhook URL."
+            )
+        )
+
+    frappe.throw(
+        _(
+            "Could not resolve Interakt channel account. "
+            "Set a unique Interakt Webhook Secret per Chat Channel Account, "
+            "or configure webhook URL with ?channel_account=<Account Name>."
+        )
+    )
+
+
+def _match_interakt_channel_from_payload(payload, account_names: list) -> Optional[str]:
+    """Best-effort account match using phone/waba identifiers in webhook payload."""
+    data = payload.get("data") or {}
+    message = data.get("message") if isinstance(data.get("message"), dict) else {}
+    customer = data.get("customer") if isinstance(data.get("customer"), dict) else {}
+
+    candidate_values = []
+    for source in (payload, data, message, customer):
+        if not isinstance(source, dict):
+            continue
+        for key in (
+            "phone_number",
+            "phone_id",
+            "waba_id",
+            "channel_phone_number",
+            "business_phone_number",
+            "from",
+            "to",
+            "receiver",
+            "sender",
+        ):
+            value = source.get(key)
+            if value:
+                candidate_values.append(str(value))
+
+    if not candidate_values:
+        return None
+
+    normalized_candidates = {normalize_phone(value) for value in candidate_values if normalize_phone(value)}
+    rows = frappe.get_all(
+        "Chat Channel Account",
+        filters={"name": ["in", account_names]},
+        fields=["name", "phone_number", "phone_id", "waba_id"],
+    )
+    matches = []
+    for row in rows:
+        row_tokens = {
+            normalize_phone(row.phone_number),
+            normalize_phone(row.phone_id),
+            str(row.waba_id or "").strip(),
+            str(row.name or "").strip(),
+        }
+        row_tokens.discard("")
+        if row_tokens.intersection(normalized_candidates):
+            matches.append(row.name)
+            continue
+        phone = normalize_phone(row.phone_number)
+        if phone and any(phone.endswith(c[-10:]) or c.endswith(phone[-10:]) for c in normalized_candidates if len(c) >= 10):
+            matches.append(row.name)
+
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _get_interakt_signature_header() -> str:
+    return (
+        frappe.get_request_header("Interakt-Signature")
+        or frappe.get_request_header("X-Interakt-Signature")
+        or ""
+    )
+
+
+def _interakt_signature_matches(secret: str, raw_body: bytes, received: str) -> bool:
+    if not secret or not received:
+        return False
+    body = raw_body if isinstance(raw_body, bytes) else raw_body.encode("utf-8")
+    expected = "sha256=" + hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(received, expected)
+
+
+def _match_interakt_channels_by_signature(account_names: list, raw_body: bytes) -> list:
+    received = _get_interakt_signature_header()
+    if not received:
+        return []
+
+    matched = []
+    for name in account_names:
+        account = frappe.get_doc("Chat Channel Account", name)
+        secret = account.get_password("interakt_webhook_secret")
+        if secret and _interakt_signature_matches(secret, raw_body, received):
+            matched.append(name)
+    return matched
 
 
 def _verify_interakt_signature(account, raw_body: bytes) -> None:
     secret = account.get_password("interakt_webhook_secret")
     if not secret:
-        frappe.throw(_("Interakt Webhook Secret is not configured"))
+        frappe.throw(_("Interakt Webhook Secret is not configured for {0}").format(account.name))
 
-    received = (
-        frappe.get_request_header("Interakt-Signature")
-        or frappe.get_request_header("X-Interakt-Signature")
-        or ""
-    )
-    expected = "sha256=" + hmac.new(
-        secret.encode("utf-8"),
-        raw_body if isinstance(raw_body, bytes) else raw_body.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-
-    if not hmac.compare_digest(received, expected):
-        frappe.throw(_("Invalid Interakt webhook signature"))
+    received = _get_interakt_signature_header()
+    if not _interakt_signature_matches(secret, raw_body, received):
+        frappe.throw(_("Invalid Interakt webhook signature for {0}").format(account.name))
 
 
 def _create_interakt_outbound_from_webhook(payload, delivery_status):

@@ -1,0 +1,71 @@
+{
+ "actions": [],
+ "creation": "2026-05-20 18:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "template_name",
+  "display_name",
+  "language_code",
+  "category",
+  "body_preview",
+  "body_variable_count",
+  "header_variable_count"
+ ],
+ "fields": [
+  {
+   "fieldname": "template_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Template Name (API code)",
+   "reqd": 1
+  },
+  {
+   "fieldname": "display_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Display Name"
+  },
+  {
+   "default": "en",
+   "fieldname": "language_code",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Language Code"
+  },
+  {
+   "fieldname": "category",
+   "fieldtype": "Data",
+   "label": "Category"
+  },
+  {
+   "fieldname": "body_preview",
+   "fieldtype": "Small Text",
+   "label": "Body Preview"
+  },
+  {
+   "default": "0",
+   "fieldname": "body_variable_count",
+   "fieldtype": "Int",
+   "label": "Body Variable Count"
+  },
+  {
+   "default": "0",
+   "fieldname": "header_variable_count",
+   "fieldtype": "Int",
+   "label": "Header Variable Count"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-05-20 18:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "WA Chat Hub",
+ "name": "WA Interakt Template Catalog",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

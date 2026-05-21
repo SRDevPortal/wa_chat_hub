@@ -1,0 +1,54 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "field:chat_channel_account",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "chat_channel_account",
+  "sr_lead_pipeline",
+  "is_active"
+ ],
+ "fields": [
+  {
+   "fieldname": "chat_channel_account",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Interakt Channel Account",
+   "options": "Chat Channel Account",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "sr_lead_pipeline",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "SR Lead Pipeline",
+   "options": "SR Lead Pipeline",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "label": "Is Active"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "module": "WA Chat Hub",
+ "name": "WA Channel Pipeline Map",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

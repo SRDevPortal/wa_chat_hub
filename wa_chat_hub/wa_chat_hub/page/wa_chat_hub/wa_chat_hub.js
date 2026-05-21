@@ -1,5 +1,5 @@
 frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
-    const cssVersion = '20260516-image-preview-bracket-v1';
+    const cssVersion = '20260520-messaging-window-v2';
     const existingCss = document.querySelector('link[data-wa-chat-hub-css="1"]');
     if (existingCss && existingCss.getAttribute('data-wa-chat-hub-version') !== cssVersion) {
         existingCss.remove();
@@ -21,7 +21,12 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     $(wrapper).addClass('wa-chat-hub-page');
 
     let currentConversation = null;
+    let sidebarContextCache = null;
+    let messagingWindowCache = null;
     let conversationRefreshTimer = null;
+    let preselectedConversation = (frappe.route_options || {}).conversation || null;
+    let selectedChannelAccount = '';
+    let channelAccounts = [];
 
     page.add_inner_button(__('List View'), () => {
         frappe.set_route('List', 'Chat Conversation');
@@ -33,6 +38,9 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
                 <div class="wa-pane-heading wa-left-header">
                     <div class="wa-pane-title">WA Chat Hub</div>
                     <div class="wa-left-tools">
+                        <button class="wa-left-tool wa-autopilot-toggle is-on" id="wa-autopilot-toggle" title="AI auto-reply: On" type="button" aria-pressed="true">
+                            <i class="fa fa-magic"></i>
+                        </button>
                         <button class="wa-left-tool" id="wa-list-view-btn" title="List View" type="button"><i class="fa fa-plus-square-o"></i></button>
                         <button class="wa-left-tool" title="More" type="button"><i class="fa fa-ellipsis-v"></i></button>
                     </div>
@@ -40,6 +48,12 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
                 <div class="wa-search-wrap">
                     <i class="fa fa-search"></i>
                     <input class="wa-search" id="wa-search" placeholder="Search or start a new chat" />
+                </div>
+                <div class="wa-account-filter-wrap">
+                    <label class="wa-account-filter-label" for="wa-channel-account-filter">Account</label>
+                    <select class="form-control input-sm" id="wa-channel-account-filter" title="Filter by Interakt account">
+                        <option value="">All accounts</option>
+                    </select>
                 </div>
                 <div class="wa-filter-row">
                     <button class="wa-chip active">All</button>
@@ -60,6 +74,9 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
                         </span>
                     </button>
                     <div class="wa-thread-actions">
+                        <button class="btn btn-sm wa-autopilot-pill is-on" id="wa-autopilot-pill" type="button" title="AI auto-reply: On">
+                            <i class="fa fa-magic"></i> <span id="wa-autopilot-pill-label">AI On</span>
+                        </button>
                         <button class="btn btn-default btn-sm" id="wa-ai-summary">AI Summary</button>
                         <button class="btn btn-default btn-sm" id="wa-ai-draft">AI Draft</button>
                     </div>
@@ -71,7 +88,8 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
                         <div class="wa-thread-empty-text">Select a conversation to view messages and reply.</div>
                     </div>
                 </div>
-                <div class="wa-composer">
+                <div class="wa-messaging-window-banner is-hidden" id="wa-messaging-window-banner" role="status"></div>
+                <div class="wa-composer" id="wa-composer">
                     <div class="wa-attach-wrap">
                         <button class="wa-composer-icon" id="wa-attach-btn" title="Attach" type="button">${appIcon('attach')}</button>
                         <div class="wa-attach-menu" id="wa-attach-menu">
@@ -144,24 +162,99 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     `);
 
     const api = {
-        conversations: () => frappe.call('wa_chat_hub.api.chat.get_conversations', { limit: 100 }),
+        channelAccounts: () => frappe.call('wa_chat_hub.api.chat.get_channel_accounts'),
+        conversations: () => frappe.call('wa_chat_hub.api.chat.get_conversations', {
+            limit: 100,
+            channel_account: selectedChannelAccount || null,
+        }),
         messages: (conversation) => frappe.call('wa_chat_hub.api.chat.get_messages', { conversation, limit: 200 }),
         context: (conversation) => frappe.call('wa_chat_hub.api.chat.get_sidebar_context', { conversation }),
         markRead: (conversation) => frappe.call('wa_chat_hub.api.chat.mark_read', { conversation }),
         aiSummary: (conversation) => frappe.call('wa_chat_hub.api.ai.summarize_conversation', { conversation }),
         aiDraft: (conversation) => frappe.call('wa_chat_hub.api.ai.draft_reply', { conversation }),
-        sendReply: (conversation, body, content_type = 'Text', media_url = null) => frappe.call(
-            'wa_chat_hub.api.runtime.send_reply',
-            { conversation, body, content_type, media_url }
-        ),
-        sendMediaReply: (conversation, body, content_type, media_url, display_media_url = null, file_name = null, file_size = null) => frappe.call(
-            'wa_chat_hub.api.runtime.send_reply',
-            { conversation, body, content_type, media_url, display_media_url, file_name, file_size }
-        ),
-        sendTemplate: (args) => frappe.call('wa_chat_hub.api.runtime.send_template_message', args),
+        sendReply: (conversation, body, content_type = 'Text', media_url = null) => frappe.call({
+            method: 'wa_chat_hub.api.runtime.send_reply',
+            type: 'POST',
+            args: { conversation, body, content_type, media_url },
+        }),
+        sendMediaReply: (conversation, body, content_type, media_url, display_media_url = null, file_name = null, file_size = null) => frappe.call({
+            method: 'wa_chat_hub.api.runtime.send_reply',
+            type: 'POST',
+            args: { conversation, body, content_type, media_url, display_media_url, file_name, file_size },
+        }),
+        getInteraktTemplates: (args) => frappe.call('wa_chat_hub.api.runtime.get_interakt_templates', args),
+        sendTemplate: (args) => frappe.call({
+            method: 'wa_chat_hub.api.runtime.send_template_message',
+            type: 'POST',
+            args: args,
+        }),
         createLead: (conversation) => frappe.call('wa_chat_hub.api.actions.create_lead_from_conversation', { conversation }),
         createIssue: (conversation) => frappe.call('wa_chat_hub.api.actions.create_issue_from_conversation', { conversation }),
+        getAutopilotStatus: () => frappe.call('wa_chat_hub.api.settings.get_autopilot_status'),
+        setAutopilotEnabled: (enabled) => frappe.call('wa_chat_hub.api.settings.set_autopilot_enabled', { enabled: enabled ? 1 : 0 }),
     };
+
+    function updateAutopilotToggleUI(enabled, sendsWhatsapp) {
+        const on = !!enabled;
+        const sends = !!sendsWhatsapp;
+        const title = on
+            ? (sends ? 'AI auto-reply: On (sends on WhatsApp)' : 'AI on (draft/suggest only — not sending)')
+            : 'AI auto-reply: Off — click to enable';
+        const label = on ? (sends ? 'AI On' : 'AI Draft') : 'AI Off';
+
+        $('#wa-autopilot-toggle')
+            .toggleClass('is-on', on)
+            .toggleClass('is-off', !on)
+            .attr('title', title)
+            .attr('aria-pressed', on ? 'true' : 'false');
+        $('#wa-autopilot-pill')
+            .toggleClass('is-on', on)
+            .toggleClass('is-off', !on)
+            .toggleClass('sends-whatsapp', on && sends)
+            .attr('title', title);
+        $('#wa-autopilot-pill-label').text(label);
+    }
+
+    function loadAutopilotStatus() {
+        return api.getAutopilotStatus().then((r) => {
+            const data = (r.message || {});
+            updateAutopilotToggleUI(data.enabled, data.sends_whatsapp);
+            return data;
+        });
+    }
+
+    function toggleAutopilot() {
+        const $btn = $('#wa-autopilot-toggle');
+        if ($btn.prop('disabled')) return;
+        const turnOn = !$btn.hasClass('is-on');
+        $btn.prop('disabled', true);
+        $('#wa-autopilot-pill').prop('disabled', true);
+
+        api.setAutopilotEnabled(turnOn).then((r) => {
+            const data = (r.message || {});
+            updateAutopilotToggleUI(data.enabled, data.sends_whatsapp);
+            frappe.show_alert({
+                message: data.enabled
+                    ? (data.sends_whatsapp
+                        ? __('AI auto-reply enabled — replies will be sent on WhatsApp')
+                        : __('AI is on but not sending. Open WA Chat Hub Settings and set Autopilot Mode to Limited Auto Reply.'))
+                    : __('AI auto-reply stopped'),
+                indicator: data.enabled ? (data.sends_whatsapp ? 'green' : 'orange') : 'orange',
+            });
+        }).catch((err) => {
+            frappe.show_alert({ message: err.message || __('Could not update AI setting'), indicator: 'red' });
+            return loadAutopilotStatus();
+        }).always(() => {
+            $btn.prop('disabled', false);
+            $('#wa-autopilot-pill').prop('disabled', false);
+        });
+    }
+
+    $('#wa-autopilot-toggle, #wa-autopilot-pill').on('click', function() {
+        toggleAutopilot();
+    });
+
+    loadAutopilotStatus();
 
     $('#wa-list-view-btn').on('click', function() {
         frappe.set_route('List', 'Chat Conversation');
@@ -183,6 +276,25 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         $(this).find('span').text(isOpen ? 'Show Less' : 'Show More');
     });
 
+    function renderChannelAccountFilter() {
+        const $select = $('#wa-channel-account-filter');
+        const options = ['<option value="">All accounts</option>'];
+        channelAccounts.forEach((row) => {
+            const label = row.account_name || row.name;
+            const suffix = row.channel_type ? ` (${row.channel_type})` : '';
+            options.push(`<option value="${escapeHtml(row.name)}">${escapeHtml(label + suffix)}</option>`);
+        });
+        $select.html(options.join(''));
+        $select.val(selectedChannelAccount || '');
+    }
+
+    function loadChannelAccounts() {
+        return api.channelAccounts().then((r) => {
+            channelAccounts = (r.message || {}).result || [];
+            renderChannelAccountFilter();
+        });
+    }
+
     function renderConversations(rows) {
         const html = rows.length ? rows.map(row => `
             <button class="wa-conversation-item ${row.name === currentConversation ? 'active' : ''}" data-name="${escapeHtml(row.name)}">
@@ -191,6 +303,10 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
                     <div class="wa-conversation-top">
                         <strong>${escapeHtml(row.contact_display_name || row.contact_phone_number || row.name)}</strong>
                         <span class="wa-conversation-time">${formatConversationTime(row.modified)}</span>
+                    </div>
+                    ${row.channel_account ? `<div class="wa-conversation-account">${escapeHtml(row.channel_account)}</div>` : ''}
+                    <div class="wa-conversation-meta">
+                        ${renderLeadMeta(row)}
                     </div>
                     <div class="wa-conversation-bottom">
                         ${renderConversationPreview(row.last_message_preview || '')}
@@ -203,6 +319,17 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         $('.wa-conversation-item').on('click', function() {
             loadConversation($(this).data('name'));
         });
+    }
+
+    function renderLeadMeta(row) {
+        const score = Number(row.lead_score || 0).toFixed(1);
+        const lan = escapeHtml(row.lead_lan || 'Unknown');
+        const temp = escapeHtml(row.lead_temperature || 'Cold');
+        return `
+            <span class="wa-meta-chip">lead_score: ${score}</span>
+            <span class="wa-meta-chip">lead_lan: ${lan}</span>
+            <span class="wa-meta-chip">Lead_temperature: ${temp}</span>
+        `;
     }
 
     function renderConversationPreview(preview) {
@@ -259,8 +386,24 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         return date.toLocaleDateString([], {month: 'short', day: 'numeric'});
     }
 
+    $('#wa-channel-account-filter').on('change', function() {
+        selectedChannelAccount = $(this).val() || '';
+        closeCurrentConversation();
+        refreshConversations();
+    });
+
     function refreshConversations() {
-        return api.conversations().then(r => renderConversations(r.message.result || []));
+        return api.conversations().then(r => {
+            const rows = r.message.result || [];
+            renderConversations(rows);
+            if (preselectedConversation) {
+                const target = rows.find(row => row.name === preselectedConversation);
+                if (target) {
+                    loadConversation(preselectedConversation);
+                }
+                preselectedConversation = null;
+            }
+        });
     }
 
     function escapeHtml(value) {
@@ -588,10 +731,115 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         applyMediaViewerZoom();
     }
 
+    function formatWindowExpiry(isoValue) {
+        if (!isoValue) return '';
+        const date = new Date(isoValue);
+        if (Number.isNaN(date.getTime())) return isoValue;
+        return date.toLocaleString([], {
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+        });
+    }
+
+    function messagingWindowLabel(windowState) {
+        if (!windowState) return '';
+        const reason = windowState.reason || '';
+        if (reason === 'customer_replied_within_24h') {
+            return __('24-hour customer service window');
+        }
+        if (reason === 'ctwa_72h') {
+            return __('72-hour Click-to-WhatsApp window');
+        }
+        if (reason === 'customer_service_or_ctwa_active') {
+            return __('Messaging window active');
+        }
+        return __('Messaging window');
+    }
+
+    function applyMessagingWindowUI(windowState) {
+        messagingWindowCache = windowState || null;
+        const $banner = $('#wa-messaging-window-banner');
+        const canSendFreeForm = !!(windowState && windowState.can_send_free_form);
+        const $composer = $('#wa-composer');
+        const $body = $('#wa-composer-body');
+        const $send = $('#wa-send-btn');
+        const $attach = $('#wa-attach-btn');
+        const $template = $('#wa-template-btn');
+
+        if (!currentConversation || !windowState) {
+            $banner.addClass('is-hidden').removeClass('is-open is-closed').text('');
+            $composer.removeClass('is-template-only');
+            $template.removeClass('is-emphasized');
+            $body.prop('disabled', false);
+            $send.prop('disabled', false);
+            $attach.prop('disabled', false);
+            return;
+        }
+
+        if (canSendFreeForm) {
+            const expires = formatWindowExpiry(windowState.free_form_expires_at);
+            const label = messagingWindowLabel(windowState);
+            $banner
+                .removeClass('is-hidden is-closed')
+                .addClass('is-open')
+                .html(`<strong>${escapeHtml(label)}</strong>${expires ? ` &mdash; ${__('until')} ${escapeHtml(expires)}` : ''}`);
+            $composer.removeClass('is-template-only');
+            $template.removeClass('is-emphasized');
+            $body.prop('disabled', false).attr('placeholder', __('Type a message'));
+            $send.prop('disabled', false);
+            $attach.prop('disabled', false);
+        } else {
+            $banner
+                .removeClass('is-hidden is-open')
+                .addClass('is-closed')
+                .html(`<strong>${__('Outside messaging window')}</strong> &mdash; ${__('Use Template to send an approved WhatsApp message.')}`);
+            $composer.addClass('is-template-only');
+            $template.addClass('is-emphasized');
+            $body.prop('disabled', true).attr('placeholder', __('Template required — free text not allowed'));
+            $send.prop('disabled', true);
+            $attach.prop('disabled', true);
+            $('#wa-attach-menu').removeClass('show');
+        }
+    }
+
+    function renderMessagingWindowMeta(windowState) {
+        if (!windowState) return '';
+        const rows = [];
+        if (windowState.can_send_free_form && windowState.free_form_expires_at) {
+            rows.push(`<div class="wa-meta-row"><span>${__('Free messaging until')}</span><strong>${escapeHtml(formatWindowExpiry(windowState.free_form_expires_at))}</strong></div>`);
+        } else {
+            rows.push(`<div class="wa-meta-row"><span>${__('Free messaging')}</span><strong>${__('Closed — use Template')}</strong></div>`);
+        }
+        if (windowState.last_customer_message_at) {
+            rows.push(`<div class="wa-meta-row"><span>${__('Last customer message')}</span><strong>${escapeHtml(formatWindowExpiry(windowState.last_customer_message_at))}</strong></div>`);
+        }
+        if (windowState.customer_service_active && windowState.customer_service_expires_at) {
+            rows.push(`<div class="wa-meta-row"><span>${__('24h window until')}</span><strong>${escapeHtml(formatWindowExpiry(windowState.customer_service_expires_at))}</strong></div>`);
+        } else if (windowState.customer_service_expires_at && !windowState.customer_service_active) {
+            rows.push(`<div class="wa-meta-row"><span>${__('24h window')}</span><strong>${__('Expired')} ${escapeHtml(formatWindowExpiry(windowState.customer_service_expires_at))}</strong></div>`);
+        }
+        if (windowState.ctwa_active && windowState.ctwa_expires_at) {
+            rows.push(`<div class="wa-meta-row"><span>${__('CTWA 72h until')}</span><strong>${escapeHtml(formatWindowExpiry(windowState.ctwa_expires_at))}</strong></div>`);
+        } else if (windowState.ctwa_clid && windowState.ctwa_expires_at && !windowState.ctwa_active) {
+            rows.push(`<div class="wa-meta-row"><span>${__('CTWA 72h')}</span><strong>${__('Expired')} ${escapeHtml(formatWindowExpiry(windowState.ctwa_expires_at))}</strong></div>`);
+        }
+        if (windowState.last_template_sent_at) {
+            rows.push(`<div class="wa-meta-row"><span>${__('Last template')}</span><strong>${escapeHtml(formatWindowExpiry(windowState.last_template_sent_at))}${windowState.last_template_category ? ` (${escapeHtml(windowState.last_template_category)})` : ''}</strong></div>`);
+        }
+        if (!rows.length) return '';
+        return `<div class="wa-card-title" style="margin-top:12px">${__('Messaging Window')}</div>${rows.join('')}`;
+    }
+
     function renderContext(data) {
+        sidebarContextCache = data || null;
+        messagingWindowCache = (data && data.messaging_window) || messagingWindowCache;
+        applyMessagingWindowUI(messagingWindowCache);
         const c = data.contact || {};
         const v = data.conversation || {};
         const attribution = data.attribution || {};
+        const windowMeta = renderMessagingWindowMeta(data.messaging_window);
         const displayName = c.display_name || c.phone_number || 'Thread';
         const displayPhone = formatPhoneNumber(c.phone_number);
         $('#wa-context-card').html(`
@@ -606,6 +854,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
             <div class="wa-meta-row"><span>Patient</span><strong>${formatMetaValue(c.linked_patient)}</strong></div>
             <div class="wa-meta-row"><span>Assigned</span><strong>${formatMetaValue(v.assigned_to)}</strong></div>
             <div class="wa-meta-row"><span>Department</span><strong>${formatMetaValue(v.department)}</strong></div>
+            ${windowMeta}
             ${renderAttribution(attribution)}
         `);
         $('#wa-thread-avatar').text(getAvatarText({contact_display_name: displayName}));
@@ -685,6 +934,8 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
 
     function closeCurrentConversation() {
         currentConversation = null;
+        messagingWindowCache = null;
+        applyMessagingWindowUI(null);
         $('#wa-center-pane').addClass('is-empty');
         $('#wa-chat-hub-layout').addClass('is-thread-empty');
         $('.wa-conversation-item').removeClass('active');
@@ -743,6 +994,13 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
                 refreshCurrentConversation();
             }
         });
+
+        frappe.realtime.on('wa_chat_window_updated', function(data) {
+            if (data && data.conversation === currentConversation && data.messaging_window) {
+                messagingWindowCache = data.messaging_window;
+                applyMessagingWindowUI(messagingWindowCache);
+            }
+        });
     }
 
     $('#wa-ai-summary').on('click', function() {
@@ -759,14 +1017,64 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         });
     });
 
+    function parseOutboundSendResult(response) {
+        return (response && response.message && response.message.result) || {};
+    }
+
+    function notifyOutboundSendOutcome(response, successMessage) {
+        const result = parseOutboundSendResult(response);
+        const status = String(result.delivery_status || '');
+        const errorText = result.error || result.warning || '';
+        if (status === 'Failed' || result.sent === false) {
+            frappe.msgprint({
+                title: __('Message not sent'),
+                message: errorText || __(
+                    'WhatsApp could not deliver this message. If the customer has not messaged in the last 24 hours, use the Template button instead of free text.'
+                ),
+                indicator: 'red',
+            });
+            return false;
+        }
+        if (errorText) {
+            frappe.show_alert({message: errorText, indicator: 'orange'});
+        } else {
+            frappe.show_alert({message: successMessage, indicator: 'green'});
+        }
+        return true;
+    }
+
     function sendComposerMessage() {
-        const body = $('#wa-composer-body').val();
-        if (!currentConversation || !body) return;
-        api.sendReply(currentConversation, body).then(() => {
-            $('#wa-composer-body').val('');
-            resizeComposer();
+        const body = ($('#wa-composer-body').val() || '').trim();
+        if (!currentConversation) {
+            return frappe.show_alert({message: __('Select a conversation first'), indicator: 'orange'});
+        }
+        if (!body) {
+            return frappe.show_alert({message: __('Type a message to send'), indicator: 'orange'});
+        }
+        if (messagingWindowCache && !messagingWindowCache.can_send_free_form) {
+            return frappe.show_alert({
+                message: __('Outside messaging window — use Template to send'),
+                indicator: 'orange',
+            });
+        }
+        const $btn = $('#wa-send-btn');
+        $btn.prop('disabled', true);
+        api.sendReply(currentConversation, body).then((r) => {
+            const sent = notifyOutboundSendOutcome(r, __('Message sent'));
+            if (sent) {
+                $('#wa-composer-body').val('');
+                resizeComposer();
+            }
             loadConversation(currentConversation);
-            frappe.show_alert({message: 'Reply queued', indicator: 'green'});
+        }).catch((err) => {
+            frappe.msgprint({
+                title: __('Send failed'),
+                message: (err && err.message) || __('Could not send message. Check Interakt API key and Error Log.'),
+                indicator: 'red',
+            });
+            loadConversation(currentConversation);
+        }).always(() => {
+            $btn.prop('disabled', false);
         });
     }
 
@@ -833,10 +1141,19 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
                     values.caption || '',
                     values.content_type || config.content_type,
                     values.media_url
-                ).then(() => {
-                    dialog.hide();
+                ).then((r) => {
+                    const sent = notifyOutboundSendOutcome(r, `${config.label || 'Media'} sent`);
+                    if (sent) {
+                        dialog.hide();
+                    }
                     loadConversation(currentConversation);
-                    frappe.show_alert({message: `${config.label || 'Media'} queued`, indicator: 'green'});
+                }).catch((err) => {
+                    frappe.msgprint({
+                        title: __('Send failed'),
+                        message: (err && err.message) || __('Could not send media message.'),
+                        indicator: 'red',
+                    });
+                    loadConversation(currentConversation);
                 });
             }
         });
@@ -908,13 +1225,20 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
                         upload.media_url,
                         upload.file_url
                     ))
-                    .then(() => {
-                        dialog.hide();
+                    .then((r) => {
+                        const sent = notifyOutboundSendOutcome(r, __('Image sent'));
+                        if (sent) {
+                            dialog.hide();
+                        }
                         loadConversation(currentConversation);
-                        frappe.show_alert({message: 'Image queued', indicator: 'green'});
                     })
                     .catch(error => {
-                        frappe.show_alert({message: error.message || 'Image send failed', indicator: 'red'});
+                        frappe.msgprint({
+                            title: __('Image send failed'),
+                            message: (error && error.message) || __('Image send failed'),
+                            indicator: 'red',
+                        });
+                        loadConversation(currentConversation);
                     })
                     .finally(() => {
                         dialog.get_primary_btn().prop('disabled', false).text('Upload & Send');
@@ -960,13 +1284,20 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
                         upload.file_name || file.name,
                         upload.file_size
                     ))
-                    .then(() => {
-                        dialog.hide();
+                    .then((r) => {
+                        const sent = notifyOutboundSendOutcome(r, __('Document sent'));
+                        if (sent) {
+                            dialog.hide();
+                        }
                         loadConversation(currentConversation);
-                        frappe.show_alert({message: 'Document queued', indicator: 'green'});
                     })
                     .catch(error => {
-                        frappe.show_alert({message: error.message || 'Document send failed', indicator: 'red'});
+                        frappe.msgprint({
+                            title: __('Document send failed'),
+                            message: (error && error.message) || __('Document send failed'),
+                            indicator: 'red',
+                        });
+                        loadConversation(currentConversation);
                     })
                     .finally(() => {
                         dialog.get_primary_btn().prop('disabled', false).text('Upload & Send');
@@ -1009,35 +1340,373 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         }
     });
 
-    $('#wa-template-btn').on('click', function() {
-        if (!currentConversation) return frappe.show_alert({message: 'Select a conversation first', indicator: 'orange'});
-        const dialog = new frappe.ui.Dialog({
-            title: 'Send Interakt Template',
-            fields: [
-                {fieldname: 'template_name', fieldtype: 'Data', label: 'Template Name', reqd: 1},
-                {fieldname: 'language_code', fieldtype: 'Data', label: 'Language Code', default: 'en'},
-                {fieldname: 'body_values', fieldtype: 'Small Text', label: 'Body Values', description: 'Comma-separated values for template variables'},
-                {fieldname: 'header_values', fieldtype: 'Small Text', label: 'Header Values', description: 'Comma-separated values or media URL'},
-                {fieldname: 'preview', fieldtype: 'Small Text', label: 'Message Preview'}
-            ],
-            primary_action_label: 'Send',
-            primary_action(values) {
-                const splitValues = (text) => (text || '').split(',').map(v => v.trim()).filter(Boolean);
-                api.sendTemplate({
-                    conversation: currentConversation,
-                    template_name: values.template_name,
-                    language_code: values.language_code || 'en',
-                    body_values: splitValues(values.body_values),
-                    header_values: splitValues(values.header_values),
-                    body: values.preview || `Template: ${values.template_name}`
-                }).then(() => {
-                    dialog.hide();
-                    loadConversation(currentConversation);
-                    frappe.show_alert({message: 'Template queued', indicator: 'green'});
-                });
+    function templateVariableSlots(row, section) {
+        const key = section === 'header' ? 'header_variables' : 'body_variables';
+        const fromApi = row && Array.isArray(row[key]) ? row[key] : [];
+        if (fromApi.length) {
+            return fromApi;
+        }
+        const text = section === 'header'
+            ? (row && row.header_preview) || ''
+            : (row && row.body_preview) || '';
+        let count = section === 'header'
+            ? (row && row.header_variable_count) || 0
+            : (row && row.body_variable_count) || 0;
+        if (!count && section === 'body' && row) {
+            const vp = (row.variable_present || '').toString().toLowerCase();
+            if (vp === 'yes' || row.has_variables) {
+                count = Math.max(count, 1);
+            }
+        }
+        return buildVariableSlotsFromText(text, count, section);
+    }
+
+    function buildVariableSlotsFromText(text, expectedCount, section) {
+        const indices = [];
+        const re = /\{\{(\d+)\}\}/g;
+        let match;
+        while ((match = re.exec(text || '')) !== null) {
+            const idx = parseInt(match[1], 10);
+            if (!indices.includes(idx)) {
+                indices.push(idx);
+            }
+        }
+        if (!indices.length && expectedCount > 0) {
+            for (let i = 1; i <= expectedCount; i += 1) {
+                indices.push(i);
+            }
+        }
+        return indices.map((index) => {
+            const placeholder = `{{${index}}}`;
+            return {
+                index,
+                placeholder,
+                context: variableContextSnippet(text, placeholder),
+                section,
+            };
+        });
+    }
+
+    function variableContextSnippet(text, placeholder, radius = 20) {
+        if (!text) {
+            return placeholder;
+        }
+        const pos = text.indexOf(placeholder);
+        if (pos < 0) {
+            return placeholder;
+        }
+        let snippet = text.slice(Math.max(0, pos - radius), pos + placeholder.length + radius);
+        if (pos - radius > 0) {
+            snippet = `…${snippet}`;
+        }
+        if (pos + placeholder.length + radius < text.length) {
+            snippet = `${snippet}…`;
+        }
+        return snippet;
+    }
+
+    function templateHasBodyVariables(row) {
+        if (!row) return false;
+        if (templateVariableSlots(row, 'body').length) return true;
+        const vp = (row.variable_present || '').toString().toLowerCase();
+        return vp === 'yes' || !!row.has_variables;
+    }
+
+    function templateHasHeaderVariables(row) {
+        if (!row) return false;
+        return templateVariableSlots(row, 'header').length > 0;
+    }
+
+    function templateMapFieldOptions() {
+        return [
+            {value: 'contact.display_name', label: __('Contact name')},
+            {value: 'contact.phone_number', label: __('Phone number')},
+            {value: 'contact.linked_lead', label: __('Linked lead')},
+            {value: 'contact.linked_patient', label: __('Linked patient')},
+            {value: 'conversation.department', label: __('Department')},
+            {value: 'conversation.assigned_to', label: __('Assigned to')},
+        ];
+    }
+
+    function resolveTemplateMapValue(path, ctx) {
+        if (!path || !ctx) return '';
+        const contact = ctx.contact || {};
+        const conversation = ctx.conversation || {};
+        const map = {
+            'contact.display_name': contact.display_name,
+            'contact.phone_number': contact.phone_number,
+            'contact.linked_lead': contact.linked_lead,
+            'contact.linked_patient': contact.linked_patient,
+            'conversation.department': conversation.department,
+            'conversation.assigned_to': conversation.assigned_to,
+        };
+        const value = map[path];
+        return value == null ? '' : String(value);
+    }
+
+    function buildInteraktVariableSectionHtml(title, variables, section, mapOptions) {
+        if (!variables || !variables.length) {
+            return '';
+        }
+        const rows = variables.map((slot) => {
+            const idx = slot.index;
+            const placeholder = slot.placeholder || `{{${idx}}}`;
+            const ctx = escapeHtml(slot.context || placeholder);
+            const mapOpts = mapOptions.map((opt) => (
+                `<option value="${escapeHtml(opt.value)}">${escapeHtml(opt.label)}</option>`
+            )).join('');
+            return `
+                <div class="wa-tpl-var-row" data-wa-var-row="${section}_${idx}">
+                    <div class="wa-tpl-var-context" title="${ctx}">${ctx}</div>
+                    <div class="wa-tpl-var-input-wrap">
+                        <input type="text" class="form-control wa-tpl-var-input"
+                            data-wa-var-input="${section}_${idx}"
+                            placeholder="${escapeHtml(__('Enter value of'))} ${escapeHtml(placeholder)}" />
+                    </div>
+                    <div class="wa-tpl-var-or">${__('or')}</div>
+                    <div class="wa-tpl-var-map">
+                        <select class="form-control wa-tpl-var-map-select" data-wa-var-map="${section}_${idx}">
+                            <option value="">${escapeHtml(__('Map a field to'))} ${escapeHtml(placeholder)}</option>
+                            ${mapOpts}
+                        </select>
+                    </div>
+                </div>`;
+        }).join('');
+        return `
+            <div class="wa-tpl-var-section" data-wa-var-section="${section}">
+                <div class="wa-tpl-var-section-head">
+                    <strong>${escapeHtml(title)}</strong>
+                </div>
+                <div class="wa-tpl-var-rows">${rows}</div>
+            </div>`;
+    }
+
+    function applyTemplatePreviewWithVariables(dialog, selected) {
+        if (!selected || !dialog.fields_dict.preview) return;
+        let preview = selected.body_preview || '';
+        templateVariableSlots(selected, 'body').forEach((slot) => {
+            const key = `body_${slot.index}`;
+            const value = (dialog.$wrapper.find(`[data-wa-var-input="${key}"]`).val() || '').trim();
+            if (value) {
+                preview = preview.split(slot.placeholder).join(value);
             }
         });
+        dialog.fields_dict.preview.set_value(preview || selected.body_preview || '');
+    }
+
+    function openInteraktTemplateDialog() {
+        if (!currentConversation) {
+            return frappe.show_alert({message: __('Select a conversation first'), indicator: 'orange'});
+        }
+
+        let approvedTemplates = [];
+        let dialogContext = sidebarContextCache;
+        const mapOptions = templateMapFieldOptions();
+
+        const dialog = new frappe.ui.Dialog({
+            title: __('Send Interakt Template'),
+            fields: [
+                {
+                    fieldname: 'template_help',
+                    fieldtype: 'HTML',
+                    options: `<p class="text-muted" style="margin:0">${__('Choose an approved template from your Interakt account. Templates are managed in Interakt, not here.')}</p>`,
+                },
+                {
+                    fieldname: 'template_key',
+                    fieldtype: 'Select',
+                    label: __('Approved Template'),
+                    reqd: 1,
+                    options: [],
+                },
+                {
+                    fieldname: 'language_code',
+                    fieldtype: 'Data',
+                    label: __('Language Code'),
+                    default: 'en',
+                    read_only: 1,
+                },
+                {
+                    fieldname: 'body_variables_html',
+                    fieldtype: 'HTML',
+                    label: '',
+                    options: '',
+                },
+                {
+                    fieldname: 'header_variables_html',
+                    fieldtype: 'HTML',
+                    label: '',
+                    options: '',
+                },
+                {
+                    fieldname: 'preview',
+                    fieldtype: 'Small Text',
+                    label: __('Message Preview'),
+                    read_only: 1,
+                },
+            ],
+            primary_action_label: __('Send'),
+            primary_action(values) {
+                const selected = approvedTemplates.find((row) => row._key === values.template_key);
+                if (!selected) {
+                    frappe.msgprint(__('Please select a template'));
+                    return;
+                }
+                const bodyValues = collectTemplateVariableValues(dialog, selected, 'body');
+                const headerValues = collectTemplateVariableValues(dialog, selected, 'header');
+                if (templateHasBodyVariables(selected) && bodyValues.some((v) => !v)) {
+                    frappe.msgprint(__('Please enter a value for each body variable'));
+                    return;
+                }
+                if (templateHasHeaderVariables(selected) && headerValues.some((v) => !v)) {
+                    frappe.msgprint(__('Please enter a value for each header variable'));
+                    return;
+                }
+                dialog.get_primary_btn().prop('disabled', true);
+                api.sendTemplate({
+                    conversation: currentConversation,
+                    template_name: selected.name,
+                    language_code: values.language_code || selected.language_code || 'en',
+                    body_values: bodyValues,
+                    header_values: headerValues,
+                    template_category: selected.category || '',
+                    body: values.preview || selected.body_preview || `Template: ${selected.name}`,
+                }).then((r) => {
+                    const sent = notifyOutboundSendOutcome(r, __('Template sent'));
+                    if (sent) {
+                        dialog.hide();
+                    }
+                    loadConversation(currentConversation);
+                }).catch((err) => {
+                    frappe.msgprint({
+                        title: __('Template send failed'),
+                        message: (err && err.message) || __('Could not send template via Interakt.'),
+                        indicator: 'red',
+                    });
+                    loadConversation(currentConversation);
+                }).always(() => {
+                    dialog.get_primary_btn().prop('disabled', false);
+                });
+            },
+        });
+
+        function collectTemplateVariableValues(dlg, row, section) {
+            return templateVariableSlots(row, section)
+                .sort((a, b) => a.index - b.index)
+                .map((slot) => (dlg.$wrapper.find(`[data-wa-var-input="${section}_${slot.index}"]`).val() || '').trim());
+        }
+
+        function setVariableSectionHtml(field, html) {
+            if (!field) return;
+            field.df.options = html || '<div class="wa-tpl-var-empty"></div>';
+            field.refresh();
+            if (field.$wrapper) {
+                field.$wrapper.toggle(!!html);
+            }
+        }
+
+        function bindTemplateVariableEvents(selected) {
+            dialog.$wrapper.off('.waTplVar');
+            dialog.$wrapper.on('change.waTplVar', '.wa-tpl-var-map-select', function() {
+                const key = $(this).data('wa-var-map');
+                const mapped = resolveTemplateMapValue($(this).val(), dialogContext);
+                if (mapped) {
+                    dialog.$wrapper.find(`[data-wa-var-input="${key}"]`).val(mapped);
+                    applyTemplatePreviewWithVariables(dialog, selected);
+                }
+            });
+            dialog.$wrapper.on('input.waTplVar', '.wa-tpl-var-input', function() {
+                applyTemplatePreviewWithVariables(dialog, selected);
+            });
+        }
+
+        function applyTemplateSelection(templateKey) {
+            const selected = approvedTemplates.find((row) => row._key === templateKey);
+            if (!selected) return;
+            dialog.fields_dict.language_code.set_value(selected.language_code || 'en');
+
+            const bodySlots = templateVariableSlots(selected, 'body');
+            const headerSlots = templateVariableSlots(selected, 'header');
+            const bodyHtml = bodySlots.length
+                ? buildInteraktVariableSectionHtml(__('Configure Body Variable'), bodySlots, 'body', mapOptions)
+                : '';
+            const headerHtml = headerSlots.length
+                ? buildInteraktVariableSectionHtml(__('Configure Header Variable'), headerSlots, 'header', mapOptions)
+                : '';
+
+            setVariableSectionHtml(dialog.fields_dict.body_variables_html, bodyHtml);
+            setVariableSectionHtml(dialog.fields_dict.header_variables_html, headerHtml);
+            bindTemplateVariableEvents(selected);
+            applyTemplatePreviewWithVariables(dialog, selected);
+        }
+
+        const templateField = dialog.fields_dict.template_key;
+        templateField.df.onchange = () => applyTemplateSelection(templateField.get_value());
+
         dialog.show();
+        dialog.$wrapper.closest('.modal-dialog').addClass('wa-tpl-dialog-modal');
+        dialog.get_primary_btn().prop('disabled', true);
+        setVariableSectionHtml(dialog.fields_dict.body_variables_html, '');
+        setVariableSectionHtml(dialog.fields_dict.header_variables_html, '');
+        if (templateField.$input) {
+            templateField.$input.prop('disabled', true);
+        }
+
+        const contextPromise = dialogContext
+            ? Promise.resolve(dialogContext)
+            : api.context(currentConversation).then((r) => {
+                dialogContext = (r.message || {}).result || null;
+                sidebarContextCache = dialogContext;
+                return dialogContext;
+            });
+
+        Promise.all([
+            contextPromise.catch(() => null),
+            api.getInteraktTemplates({conversation: currentConversation}),
+        ]).then(([, r]) => {
+            const payload = (r.message || {}).result || {};
+            approvedTemplates = (payload.templates || []).map((row, index) => {
+                const label = row.display_name && row.display_name !== row.name
+                    ? `${row.display_name} (${row.name})`
+                    : row.name;
+                const category = row.category ? ` · ${row.category}` : '';
+                return {
+                    ...row,
+                    _key: `${row.name}::${row.language_code || 'en'}::${index}`,
+                    _label: `${label}${category}`,
+                };
+            });
+
+            if (!approvedTemplates.length) {
+                frappe.msgprint({
+                    title: __('No approved templates'),
+                    message: __('No approved Interakt templates were returned for this channel account. Create and approve templates in Interakt first.'),
+                    indicator: 'orange',
+                });
+                dialog.hide();
+                return;
+            }
+
+            templateField.df.options = approvedTemplates.map((row) => ({
+                label: row._label,
+                value: row._key,
+            }));
+            templateField.refresh();
+            templateField.$input.prop('disabled', false);
+            templateField.set_value(approvedTemplates[0]._key);
+            applyTemplateSelection(approvedTemplates[0]._key);
+            dialog.get_primary_btn().prop('disabled', false);
+        }).catch((err) => {
+            dialog.hide();
+            frappe.msgprint({
+                title: __('Could not load templates'),
+                message: err.message || __('Failed to fetch approved templates from Interakt.'),
+                indicator: 'red',
+            });
+        });
+    }
+
+    $('#wa-template-btn').on('click', function() {
+        openInteraktTemplateDialog();
     });
 
     $('#wa-create-lead').on('click', function() {
@@ -1115,17 +1784,5 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     });
 
     bindRealtime();
-
-    const requestedConversation =
-        (frappe.route_options && frappe.route_options.conversation) ||
-        new URLSearchParams(window.location.search).get('conversation');
-    if (frappe.route_options && requestedConversation) {
-        delete frappe.route_options.conversation;
-    }
-
-    refreshConversations().then(() => {
-        if (requestedConversation) {
-            loadConversation(requestedConversation);
-        }
-    });
+    loadChannelAccounts().always(() => refreshConversations());
 };

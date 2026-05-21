@@ -20,6 +20,10 @@
   "interakt_webhook_secret",
   "interakt_default_country_code",
   "interakt_default_language_code",
+  "interakt_organization_id",
+  "interakt_templates_api_url",
+  "sb_interakt_templates",
+  "interakt_template_catalog",
   "sb_api_config",
   "provider_base_url",
   "x_api_key",
@@ -47,7 +51,7 @@
    "fieldname": "department",
    "fieldtype": "Link",
    "label": "Department",
-   "options": "Medical Department"
+   "options": "Department"
   },
   {
    "fieldname": "phone_number",
@@ -125,6 +129,34 @@
    "fieldname": "interakt_default_language_code",
    "fieldtype": "Data",
    "label": "Default Template Language"
+  },
+  {
+   "depends_on": "eval:doc.channel_type == 'Interakt'",
+   "description": "Optional. Browser URL from app.interakt.ai often returns 404 with Developer API key — use Approved Templates table below instead.",
+   "fieldname": "interakt_organization_id",
+   "fieldtype": "Data",
+   "label": "Interakt Organization ID"
+  },
+  {
+   "depends_on": "eval:doc.channel_type == 'Interakt'",
+   "description": "Optional override. Default list API: /v1/public/track/organization/templates (APPROVED, variable Yes+No).",
+   "fieldname": "interakt_templates_api_url",
+   "fieldtype": "Data",
+   "label": "Interakt Templates API URL"
+  },
+  {
+   "depends_on": "eval:doc.channel_type == 'Interakt'",
+   "fieldname": "sb_interakt_templates",
+   "fieldtype": "Section Break",
+   "label": "Approved Templates"
+  },
+  {
+   "depends_on": "eval:doc.channel_type == 'Interakt'",
+   "description": "Copy approved template names from Interakt → Templates (Active). Template Name must match Interakt element name used when sending.",
+   "fieldname": "interakt_template_catalog",
+   "fieldtype": "Table",
+   "label": "Approved Templates (manual catalog)",
+   "options": "WA Interakt Template Catalog"
   },
   {
    "depends_on": "eval:doc.channel_type == 'Official WhatsApp'",

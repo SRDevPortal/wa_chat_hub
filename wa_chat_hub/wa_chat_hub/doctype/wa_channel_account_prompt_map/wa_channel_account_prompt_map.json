@@ -1,0 +1,63 @@
+{
+ "actions": [],
+ "creation": "2026-05-20 12:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "chat_channel_account",
+  "is_active",
+  "system_prompt",
+  "medical_guardrail_policy",
+  "escalation_policy",
+  "multilingual_reply_policy"
+ ],
+ "fields": [
+  {
+   "fieldname": "chat_channel_account",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Chat Channel Account",
+   "options": "Chat Channel Account",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Is Active"
+  },
+  {
+   "fieldname": "system_prompt",
+   "fieldtype": "Long Text",
+   "label": "System Prompt"
+  },
+  {
+   "fieldname": "medical_guardrail_policy",
+   "fieldtype": "Long Text",
+   "label": "Medical Guardrail Policy"
+  },
+  {
+   "fieldname": "escalation_policy",
+   "fieldtype": "Long Text",
+   "label": "Escalation Policy"
+  },
+  {
+   "fieldname": "multilingual_reply_policy",
+   "fieldtype": "Long Text",
+   "label": "Multilingual Reply Policy"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-05-20 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "WA Chat Hub",
+ "name": "WA Channel Account Prompt Map",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

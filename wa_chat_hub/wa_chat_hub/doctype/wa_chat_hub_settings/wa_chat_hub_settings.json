@@ -15,13 +15,17 @@
     "autopilot_mode",
     "default_model",
     "system_prompt",
+    "enable_multilingual_replies",
+    "multilingual_reply_policy",
     "section_access",
     "allow_erp_read",
     "allow_erp_write",
     "allowed_actions",
     "section_guardrails",
     "medical_guardrail_policy",
-    "escalation_policy"
+    "escalation_policy",
+    "section_account_prompts",
+    "account_prompt_maps"
   ],
   "fields": [
     {
@@ -59,9 +63,23 @@
       "label": "Default Model"
     },
     {
+      "description": "Default for all channel accounts. Overridden when a matching row exists in Per Account AI Prompts.",
       "fieldname": "system_prompt",
       "fieldtype": "Long Text",
-      "label": "System Prompt"
+      "label": "System Prompt (Global Default)"
+    },
+    {
+      "default": "1",
+      "fieldname": "enable_multilingual_replies",
+      "fieldtype": "Check",
+      "label": "Enable Multilingual Auto-Replies"
+    },
+    {
+      "depends_on": "eval:doc.enable_multilingual_replies",
+      "description": "Appended to the system prompt when Enable Multilingual Auto-Replies is on.",
+      "fieldname": "multilingual_reply_policy",
+      "fieldtype": "Long Text",
+      "label": "Multilingual Reply Policy"
     },
     {
       "fieldname": "section_access",
@@ -98,6 +116,19 @@
       "fieldname": "escalation_policy",
       "fieldtype": "Long Text",
       "label": "Escalation Policy"
+    },
+    {
+      "collapsible": 1,
+      "description": "Map each Chat Channel Account to its own system prompt and policies. Used when the conversation's channel account matches an active row; otherwise global fields above apply.",
+      "fieldname": "section_account_prompts",
+      "fieldtype": "Section Break",
+      "label": "Per Account AI Prompts"
+    },
+    {
+      "fieldname": "account_prompt_maps",
+      "fieldtype": "Table",
+      "label": "Account Prompt Maps",
+      "options": "WA Channel Account Prompt Map"
     }
   ],
   "permissions": [

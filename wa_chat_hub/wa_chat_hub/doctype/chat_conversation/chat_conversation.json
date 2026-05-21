@@ -11,11 +11,28 @@
   "assigned_to",
   "status",
   "priority",
+  "lead_score",
+  "lead_lan",
+  "lead_temperature",
   "last_message_preview",
   "unread_count",
   "ai_summary",
+  "linked_crm_lead",
   "linked_reference_doctype",
-  "linked_reference_name"
+  "linked_reference_name",
+  "sb_messaging_window",
+  "messaging_window_mode",
+  "last_customer_message_at",
+  "customer_service_window_expires_at",
+  "ctwa_entry_at",
+  "ctwa_window_expires_at",
+  "last_template_sent_at",
+  "last_template_category",
+  "sb_ad_attribution",
+  "source_id",
+  "source_url",
+  "source",
+  "ctwa_clid"
  ],
  "fields": [
   {
@@ -64,6 +81,28 @@
    "options": "Low\nMedium\nHigh\nUrgent"
   },
   {
+   "default": "0",
+   "fieldname": "lead_score",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "lead_score",
+   "precision": "2"
+  },
+  {
+   "fieldname": "lead_lan",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "lead_lan"
+  },
+  {
+   "default": "Cold",
+   "fieldname": "lead_temperature",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Lead_temperature",
+   "options": "Cold\nWarm\nHot"
+  },
+  {
    "fieldname": "last_message_preview",
    "fieldtype": "Small Text",
    "in_list_view": 1,
@@ -82,18 +121,107 @@
    "label": "AI Summary"
   },
   {
+   "fieldname": "linked_crm_lead",
+   "fieldtype": "Link",
+   "label": "CRM Lead",
+   "options": "CRM Lead"
+  },
+  {
    "fieldname": "linked_reference_doctype",
    "fieldtype": "Data",
-   "label": "Linked Reference Doctype"
+   "hidden": 1,
+   "label": "Linked Reference Doctype",
+   "read_only": 1
   },
   {
    "fieldname": "linked_reference_name",
    "fieldtype": "Data",
-   "label": "Linked Reference Name"
+   "hidden": 1,
+   "label": "Linked Reference Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sb_messaging_window",
+   "fieldtype": "Section Break",
+   "label": "Messaging Window"
+  },
+  {
+   "default": "template_only",
+   "fieldname": "messaging_window_mode",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Messaging Window Mode",
+   "options": "free_form\ntemplate_only\nclosed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_customer_message_at",
+   "fieldtype": "Datetime",
+   "label": "Last Customer Message At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "customer_service_window_expires_at",
+   "fieldtype": "Datetime",
+   "label": "Customer Service Window Expires At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "ctwa_entry_at",
+   "fieldtype": "Datetime",
+   "label": "CTWA Entry At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "ctwa_window_expires_at",
+   "fieldtype": "Datetime",
+   "label": "CTWA Window Expires At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_template_sent_at",
+   "fieldtype": "Datetime",
+   "label": "Last Template Sent At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_template_category",
+   "fieldtype": "Data",
+   "label": "Last Template Category",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sb_ad_attribution",
+   "fieldtype": "Section Break",
+   "label": "Ad Attribution"
+  },
+  {
+   "fieldname": "source_id",
+   "fieldtype": "Data",
+   "label": "Source ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "source_url",
+   "fieldtype": "Data",
+   "label": "Source URL",
+   "read_only": 1
+  },
+  {
+   "fieldname": "source",
+   "fieldtype": "Data",
+   "label": "Source",
+   "read_only": 1
+  },
+  {
+   "fieldname": "ctwa_clid",
+   "fieldtype": "Data",
+   "label": "CTWA Click ID",
+   "read_only": 1
   }
  ],
  "links": [],
- "modified": "2026-04-09 10:53:50.209298",
+ "modified": "2026-05-20 20:00:00.000000",
  "modified_by": "Administrator",
  "module": "WA Chat Hub",
  "name": "Chat Conversation",

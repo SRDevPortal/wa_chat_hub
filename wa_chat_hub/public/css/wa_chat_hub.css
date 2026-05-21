@@ -333,6 +333,61 @@
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: center;
+}
+
+.wa-conversation-meta {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.wa-meta-chip {
+  font-size: 11px;
+  line-height: 1.2;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid #d0d5dd;
+  background: #f8fafc;
+  color: #344054;
+}
+
+.wa-left-tool.wa-autopilot-toggle {
+  position: relative;
+}
+
+.wa-left-tool.wa-autopilot-toggle.is-on {
+  color: #15803d;
+  background: #dcfce7;
+}
+
+.wa-left-tool.wa-autopilot-toggle.is-off {
+  color: #b42318;
+  background: #fee4e2;
+}
+
+.wa-autopilot-pill {
+  border: 1px solid transparent;
+  font-weight: 600;
+}
+
+.wa-autopilot-pill.is-on {
+  background: #dcfce7;
+  border-color: #86efac;
+  color: #166534;
+}
+
+.wa-autopilot-pill.is-off {
+  background: #f2f4f7;
+  border-color: #d0d5dd;
+  color: #667085;
+}
+
+.wa-autopilot-pill.is-on:not(.sends-whatsapp) {
+  background: #fef9c3;
+  border-color: #fde047;
+  color: #854d0e;
 }
 
 .wa-search-wrap {
@@ -367,6 +422,42 @@
 .wa-search:focus {
   box-shadow: none;
   outline: none;
+}
+
+.wa-account-filter-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 20px 10px;
+}
+
+.wa-account-filter-label {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #667085;
+  white-space: nowrap;
+}
+
+.wa-account-filter-wrap select {
+  flex: 1;
+  min-width: 0;
+  height: 34px;
+  border-radius: 8px;
+  border-color: #d6dee8;
+  background: #fff;
+  color: #1f2937;
+  font-size: 13px;
+}
+
+.wa-conversation-account {
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #64748b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .wa-filter-row {
@@ -1237,6 +1328,126 @@ body.wa-media-viewer-open {
   border: 1px solid #dce4ee;
   border-radius: 8px;
   background: #fff;
+}
+
+/* Messaging window banner (Meta 24h / CTWA 72h rules) */
+.wa-messaging-window-banner {
+  margin: 0 16px 8px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.wa-messaging-window-banner.is-hidden {
+  display: none;
+}
+
+.wa-messaging-window-banner.is-open {
+  background: #e8f7ee;
+  border: 1px solid #b8e6c8;
+  color: #1b5e3b;
+}
+
+.wa-messaging-window-banner.is-closed {
+  background: #fff4e5;
+  border: 1px solid #ffd89b;
+  color: #8a4b00;
+}
+
+.wa-composer.is-template-only {
+  opacity: 0.92;
+}
+
+.wa-composer.is-template-only #wa-composer-body:disabled {
+  background: #f3f5f7;
+  cursor: not-allowed;
+}
+
+#wa-template-btn.is-emphasized {
+  box-shadow: 0 0 0 2px rgba(13, 110, 110, 0.35);
+  border-radius: 50%;
+}
+
+/* Interakt-style template variable configuration */
+.wa-tpl-dialog-modal {
+  max-width: 920px;
+  width: min(920px, 96vw);
+}
+
+.wa-tpl-var-section {
+  margin: 12px 0 4px;
+  border: 1px solid #e3e8ef;
+  border-radius: 8px;
+  background: #fafbfc;
+  overflow: hidden;
+}
+
+.wa-tpl-var-section-head {
+  padding: 10px 14px;
+  border-bottom: 1px solid #e3e8ef;
+  background: #fff;
+  font-size: 13px;
+}
+
+.wa-tpl-var-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.wa-tpl-var-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1.1fr) minmax(160px, 1.4fr) auto minmax(180px, 1.2fr);
+  align-items: center;
+  gap: 10px 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid #edf1f5;
+  background: #fff;
+}
+
+.wa-tpl-var-row:last-child {
+  border-bottom: none;
+}
+
+.wa-tpl-var-context {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #f3f5f7;
+  color: #4b5563;
+  font-size: 12px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.wa-tpl-var-input-wrap .wa-tpl-var-input {
+  min-height: 36px;
+  font-size: 13px;
+}
+
+.wa-tpl-var-or {
+  color: #9aa5b1;
+  font-size: 12px;
+  text-align: center;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+
+.wa-tpl-var-map-select {
+  min-height: 36px;
+  font-size: 12px;
+  color: #0d6e6e;
+}
+
+@media (max-width: 720px) {
+  .wa-tpl-var-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .wa-tpl-var-or {
+    display: none;
+  }
 }
 
 @media (max-width: 1200px) {

@@ -4,15 +4,18 @@ import frappe
 import requests
 from frappe import _
 
+from wa_chat_hub.interakt.templates_api import (
+    fetch_approved_templates,
+    resolve_channel_account_from_conversation,
+)
+from wa_chat_hub.mcp import build_mcp_runtime_context, invoke_mcp_tool
 from wa_chat_hub.outbound import send_interakt_template_message, send_outbound_message
 from wa_chat_hub.services import append_message
 
 
 @frappe.whitelist()
 def get_runtime_context(department=None):
-    from wa_chat_hub.settings import get_active_knowledge_base
-
-    return {"success": True, "result": {"knowledge_base": get_active_knowledge_base(department=department)}}
+    return {"success": True, "result": build_mcp_runtime_context(department=department)}
 
 
 @frappe.whitelist(methods=["POST"])
@@ -156,6 +159,28 @@ def send_reply():
     return {"success": True, "result": {**outbound, **result}}
 
 
+@frappe.whitelist()
+def get_interakt_templates(conversation=None, channel_account=None, force_refresh=0):
+    """Return approved Interakt templates for the conversation's channel account."""
+    if conversation and not channel_account:
+        channel_account = resolve_channel_account_from_conversation(conversation)
+    if not channel_account:
+        frappe.throw(_("conversation or channel_account is required"))
+
+    templates = fetch_approved_templates(
+        channel_account,
+        force_refresh=bool(int(force_refresh or 0)),
+    )
+    return {
+        "success": True,
+        "result": {
+            "channel_account": channel_account,
+            "templates": templates,
+            "count": len(templates),
+        },
+    }
+
+
 @frappe.whitelist(methods=["POST"])
 def send_template_message():
     payload = frappe.local.form_dict or {}
@@ -179,6 +204,7 @@ def send_template_message():
         "file_name": payload.get("file_name"),
         "callback_data": payload.get("callback_data"),
         "campaign_id": payload.get("campaign_id"),
+        "template_category": payload.get("template_category"),
     }
 
     try:
@@ -207,13 +233,21 @@ def send_template_message():
         "delivery_status": delivery_status,
         "channel_message_id": outbound.get("provider_message_id"),
         "raw_transport_payload": outbound,
+        "template_category": template.get("template_category"),
     })
     return {"success": True, "result": {**outbound, **result}}
 
 
 @frappe.whitelist(methods=["POST"])
 def call_mcp_tool():
-    frappe.throw(_("MCP tool execution has been removed from WA Chat Hub."))
+    payload = frappe.local.form_dict or {}
+    if frappe.request and frappe.request.get_json(silent=True):
+        payload = frappe.request.get_json()
+    return invoke_mcp_tool(
+        server_name=payload.get("server_name"),
+        tool_name=payload.get("tool_name"),
+        payload=payload.get("payload") or {},
+    )
 
 
 def _list_or_json(value):

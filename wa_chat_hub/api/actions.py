@@ -3,6 +3,8 @@ from __future__ import annotations
 import frappe
 from frappe import _
 
+from wa_chat_hub.ai.lead_scoring import score_and_sync_conversation, sync_to_linked_lead
+
 
 def _load_payload():
     payload = frappe.local.form_dict or {}
@@ -34,6 +36,11 @@ def create_lead_from_conversation():
     convo.linked_reference_doctype = "Lead"
     convo.linked_reference_name = doc.name
     convo.save(ignore_permissions=True)
+    try:
+        score_and_sync_conversation(conversation)
+        sync_to_linked_lead(conversation)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "Lead Sync Failed After Lead Creation")
     return {"success": True, "result": {"doctype": "Lead", "name": doc.name}}
 
 

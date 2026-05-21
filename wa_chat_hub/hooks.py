@@ -21,7 +21,13 @@ fixtures = [
     {"dt": "DocType", "filters": [["module", "=", "WA Chat Hub"]]},
     {"dt": "Page", "filters": [["module", "=", "WA Chat Hub"]]},
     {"dt": "Workspace", "filters": [["module", "=", "WA Chat Hub"]]},
+    {"dt": "Custom Field", "filters": [["dt", "=", "Lead"], ["fieldname", "in", ["lead_score", "lead_lan", "lead_temperature"]]]},
+    {"dt": "Custom Field", "filters": [["dt", "=", "CRM Lead"], ["fieldname", "in", ["lead_score", "lead_lan", "lead_temperature"]]]},
 ]
+
+doctype_list_js = {
+    "CRM Lead": "public/js/crm_lead_list_chat.js",
+}
 
 doc_events = {
     "Chat Message": {

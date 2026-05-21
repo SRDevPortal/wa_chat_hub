@@ -5,8 +5,10 @@ from typing import Any, Dict
 
 import frappe
 import requests
+from frappe import _
 
 from wa_chat_hub.connector.registry import get_adapter
+from wa_chat_hub.messaging.windows import evaluate_send_permission
 
 
 def build_outbound_message_payload(
@@ -20,6 +22,12 @@ def build_outbound_message_payload(
     contact = frappe.get_doc("Chat Contact", convo.contact)
     account = frappe.get_doc("Chat Channel Account", convo.channel_account)
     adapter = get_adapter(account.channel_type)
+
+    if not (contact.phone_number or "").strip():
+        frappe.throw(
+            _("Contact phone number is missing on this conversation. Cannot send WhatsApp messages."),
+            title=_("Missing Phone Number"),
+        )
 
     normalized = {
         "phone_number": contact.phone_number,
@@ -47,6 +55,7 @@ def send_outbound_message(
     file_name: str | None = None,
 ) -> Dict[str, Any]:
     """Build and send an outbound WhatsApp message through the configured provider."""
+    evaluate_send_permission(conversation, content_type).ensure_allowed(content_type)
     outbound = build_outbound_message_payload(conversation, body, content_type, media_url, file_name=file_name)
     convo = frappe.get_doc("Chat Conversation", conversation)
     account = frappe.get_doc("Chat Channel Account", convo.channel_account)
@@ -160,11 +169,15 @@ def send_interakt_message(account, outbound: Dict[str, Any]) -> Dict[str, Any]:
     }
     response = requests.post(url, headers=headers, json=outbound["payload"], timeout=20)
     if not response.ok:
+        detail = (response.text or "")[:800]
         frappe.log_error(
-            f"Interakt API Error {response.status_code}: {response.text}\nPayload: {frappe.as_json(outbound['payload'])}",
+            f"Interakt API Error {response.status_code}: {detail}\nPayload: {frappe.as_json(outbound['payload'])}",
             "Interakt Message API Failure",
         )
-    response.raise_for_status()
+        frappe.throw(
+            _extract_interakt_error_message(response.status_code, detail),
+            title=_("Interakt Send Failed"),
+        )
 
     result = response.json() if response.content else {}
     provider_message_id = None
@@ -180,3 +193,29 @@ def send_interakt_message(account, outbound: Dict[str, Any]) -> Dict[str, Any]:
         "provider_message_id": provider_message_id,
         "raw_provider_response": json.dumps(result),
     }
+
+
+def _extract_interakt_error_message(status_code: int, detail: str) -> str:
+    message = detail
+    try:
+        payload = json.loads(detail)
+        if isinstance(payload, dict):
+            message = (
+                payload.get("message")
+                or payload.get("error")
+                or payload.get("detail")
+                or payload.get("result")
+                or detail
+            )
+            if isinstance(message, dict):
+                message = message.get("message") or message.get("error") or detail
+    except Exception:
+        pass
+    message = str(message or detail or "Unknown error").strip()
+    lowered = message.lower()
+    if "24" in lowered or "session" in lowered or "template" in lowered:
+        return _(
+            "{0} WhatsApp only allows free-text replies within 24 hours of the customer's last message. "
+            "Use the Template button to send an approved template."
+        ).format(message)
+    return _("Interakt API returned HTTP {0}: {1}").format(status_code, message)

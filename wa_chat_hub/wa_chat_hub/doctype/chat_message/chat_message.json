@@ -11,6 +11,7 @@
   "content_type",
   "body",
   "media_url",
+  "attachment_file",
   "channel_message_id",
   "provider_message_id",
   "delivery_status",
@@ -56,6 +57,12 @@
    "fieldname": "media_url",
    "fieldtype": "Small Text",
    "label": "Media URL"
+  },
+  {
+   "fieldname": "attachment_file",
+   "fieldtype": "Link",
+   "label": "Attachment File",
+   "options": "File"
   },
   {
    "fieldname": "channel_message_id",
