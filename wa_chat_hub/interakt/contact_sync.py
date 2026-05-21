@@ -281,6 +281,10 @@ def _crm_lead_names_for_map(row) -> List[str]:
     if not meta.has_field("sr_lead_pipeline"):
         return []
     filters = {"sr_lead_pipeline": row.sr_lead_pipeline}
+    if meta.has_field("sr_is_archived"):
+        filters["sr_is_archived"] = 0
+    if meta.has_field("converted"):
+        filters["converted"] = 0
     for field in ("mobile_no", "phone", "mobile"):
         if meta.has_field(field):
             filters[field] = ["is", "set"]
