@@ -68,7 +68,6 @@ def get_conversation_crm_lead(conversation: str | Any) -> Optional[str]:
 
 def set_conversation_crm_lead(convo, lead_name: str) -> None:
     """Link conversation to CRM Lead using Link field + legacy sync."""
-    lead_name = _resolve_primary_crm_lead(lead_name) or lead_name
     if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
         convo.linked_crm_lead = lead_name
     convo.linked_reference_doctype = "CRM Lead"

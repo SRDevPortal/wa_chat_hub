@@ -1,3 +1,9 @@
+frappe.pages['wa-chat-hub'].on_page_show = function(wrapper) {
+    if (wrapper && typeof wrapper.wa_chat_hub_handle_route_options === 'function') {
+        wrapper.wa_chat_hub_handle_route_options();
+    }
+};
+
 frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     const cssVersion = '20260520-messaging-window-v2';
     const existingCss = document.querySelector('link[data-wa-chat-hub-css="1"]');
@@ -25,7 +31,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     let messagingWindowCache = null;
     let conversationRefreshTimer = null;
     let conversationSearchTimer = null;
-    let preselectedConversation = (frappe.route_options || {}).conversation || null;
+    let preselectedConversation = null;
     let selectedChannelAccount = '';
     let channelAccounts = [];
     let conversationRowsCache = [];
@@ -441,6 +447,24 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
             }
         });
     }
+
+    function consumeRouteConversation() {
+        const routeConversation = (frappe.route_options || {}).conversation;
+        if (!routeConversation) {
+            return false;
+        }
+
+        if (frappe.route_options) {
+            delete frappe.route_options.conversation;
+        }
+        if (currentConversation !== routeConversation) {
+            loadConversation(routeConversation);
+        }
+        refreshConversations();
+        return true;
+    }
+
+    wrapper.wa_chat_hub_handle_route_options = consumeRouteConversation;
 
     function debounceConversationSearch(fn, waitMs) {
         return function (...args) {
@@ -1856,5 +1880,9 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     });
 
     bindRealtime();
-    loadChannelAccounts().always(() => refreshConversations());
+    loadChannelAccounts().always(() => {
+        if (!consumeRouteConversation()) {
+            refreshConversations();
+        }
+    });
 };

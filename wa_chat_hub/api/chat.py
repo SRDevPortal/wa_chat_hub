@@ -416,11 +416,18 @@ def get_messaging_window(conversation):
     return {"success": True, "result": get_messaging_window_state(conversation)}
 
 
-def _conversation_for_reference(reference_doctype: str, reference_name: str | None) -> str | None:
+def _conversation_for_reference(
+    reference_doctype: str,
+    reference_name: str | None,
+    *,
+    include_crm_lead_aliases: bool = False,
+) -> str | None:
     if not reference_doctype or not reference_name:
         return None
 
-    reference_names = _crm_lead_reference_names(reference_name) if reference_doctype == "CRM Lead" else [reference_name]
+    reference_names = [reference_name]
+    if reference_doctype == "CRM Lead" and include_crm_lead_aliases:
+        reference_names = _crm_lead_reference_names(reference_name)
 
     if reference_doctype == "CRM Lead" and frappe.get_meta("Chat Conversation").has_field(
         "linked_crm_lead"
@@ -666,6 +673,11 @@ def resolve_chat_for_reference(reference_doctype, reference_name=None, phone_num
         conv = _conversation_for_reference(reference_doctype, reference_name)
         if conv:
             return {"success": True, "result": {"conversation": conv}}
+        created = _try_create_conversation_for_reference(reference_doctype, reference_name)
+        if created:
+            return {"success": True, "result": {"conversation": created, "created": True}}
+        if reference_doctype == "CRM Lead":
+            return {"success": True, "result": {"conversation": None}}
 
     normalized = normalize_phone(phone_number)
     if normalized:
