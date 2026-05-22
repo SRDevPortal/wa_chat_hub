@@ -14,6 +14,7 @@ def search_knowledge_base(
     query: str,
     top_k: int = 3,
     department: Optional[str] = None,
+    channel_account: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Return relevant knowledge snippets for the user query.
@@ -23,7 +24,7 @@ def search_knowledge_base(
     if not query or not frappe.db.exists("DocType", "WA AI Knowledge Base"):
         return []
 
-    rows = get_active_knowledge_base(department=department)
+    rows = get_active_knowledge_base(department=department, channel_account=channel_account)
     if not rows:
         return []
 

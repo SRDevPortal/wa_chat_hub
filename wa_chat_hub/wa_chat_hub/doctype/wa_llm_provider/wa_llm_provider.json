@@ -63,7 +63,8 @@
   {
    "fieldname": "api_key",
    "fieldtype": "Password",
-   "label": "API Key"
+   "label": "API Key",
+   "length": 240
   },
   {
    "description": "Used if overriding default API host (e.g. for Groq or local endpoints).",

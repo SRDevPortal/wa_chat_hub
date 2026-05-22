@@ -103,7 +103,14 @@ def process_message(message_id):
     history_before_current = [row for row in history if str(row.name) != str(message_id)]
 
     settings = frappe.get_single("WA Chat Hub Settings")
-    channel_account = frappe.db.get_value("Chat Conversation", conversation, "channel_account")
+    conversation_context = frappe.db.get_value(
+        "Chat Conversation",
+        conversation,
+        ["channel_account", "department"],
+        as_dict=True,
+    ) or {}
+    channel_account = conversation_context.get("channel_account")
+    department = conversation_context.get("department")
     prompt_config = get_effective_prompt_config(channel_account)
 
     content_type = str(msg_doc.content_type or "Text").title()
@@ -141,7 +148,12 @@ def process_message(message_id):
 
     if last_user_query:
         try:
-            kb_results = search_knowledge_base(last_user_query, top_k=3)
+            kb_results = search_knowledge_base(
+                last_user_query,
+                top_k=3,
+                department=department,
+                channel_account=channel_account,
+            )
         except Exception:
             frappe.log_error(frappe.get_traceback(), "WA AI Knowledge Search Failed")
             kb_results = []

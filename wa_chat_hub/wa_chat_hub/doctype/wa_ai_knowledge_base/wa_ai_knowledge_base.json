@@ -6,6 +6,7 @@
  "field_order": [
   "kb_label",
   "kb_type",
+  "chat_channel_account",
   "department",
   "source_path",
   "source_url",
@@ -27,6 +28,12 @@
    "label": "Knowledge Base Type",
    "options": "FAQ\nSOP\nDepartment Playbook\nTreatment Safety Guide\nWebsite\nDocument\nAPI Spec\nPrompt Pack",
    "reqd": 1
+  },
+  {
+   "fieldname": "chat_channel_account",
+   "fieldtype": "Link",
+   "label": "Chat Channel Account",
+   "options": "Chat Channel Account"
   },
   {
    "fieldname": "department",
