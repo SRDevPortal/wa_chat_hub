@@ -517,6 +517,7 @@ def _finalize_crm_lead_after_inbound(
 ) -> None:
     """Ad attribution → CRM Lead meta tab; lead scoring/OCR fields after link exists."""
     convo = frappe.get_cached_doc("Chat Conversation", conversation)
+    _sync_crm_lead_pipeline_for_channel(lead_name, getattr(convo, "channel_account", None))
     try:
         from wa_chat_hub.messaging.crm_lead_meta import sync_crm_lead_meta_from_conversation
 
@@ -530,6 +531,30 @@ def _finalize_crm_lead_after_inbound(
         auto_update_lead_from_conversation(lead_name, conversation=conversation)
     except Exception:
         frappe.log_error(frappe.get_traceback(), "WA Lead AI Auto Update Failed")
+
+
+def _sync_crm_lead_pipeline_for_channel(lead_name: str, channel_account: Optional[str]) -> None:
+    """Keep inbound CRM Lead pipeline aligned with the Interakt account that received the chat."""
+    if not lead_name or not channel_account or not frappe.db.exists("CRM Lead", lead_name):
+        return
+
+    pipeline_fieldname = _get_lead_pipeline_fieldname("CRM Lead")
+    if not pipeline_fieldname:
+        return
+
+    pipeline = _default_sr_lead_pipeline_for_channel(channel_account)
+    if not pipeline:
+        return
+
+    current = frappe.db.get_value("CRM Lead", lead_name, pipeline_fieldname)
+    if current == pipeline:
+        return
+
+    try:
+        with _crm_lead_field_guard_bypass(True):
+            frappe.db.set_value("CRM Lead", lead_name, pipeline_fieldname, pipeline, update_modified=True)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "WA Chat Hub CRM Lead Pipeline Sync Failed")
 
 
 def _inbound_lead_first_name(display_name: Optional[str], phone_number: str) -> str:
