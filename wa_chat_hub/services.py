@@ -902,9 +902,16 @@ def _sync_inbound_attachment_to_linked_record(
 
 def _fetch_media_bytes(media_url: str) -> Optional[bytes]:
     try:
-        response = requests.get(media_url, timeout=30)
+        response = requests.get(
+            media_url,
+            headers={
+                "Accept": "*/*",
+                "User-Agent": "wa-chat-hub/1.0",
+            },
+            timeout=30,
+        )
         if response.ok and response.content:
             return response.content
     except Exception:
-        pass
+        frappe.log_error(frappe.get_traceback(), "WA Attachment Media Download Failed")
     return None

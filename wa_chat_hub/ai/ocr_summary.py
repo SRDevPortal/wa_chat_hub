@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import base64
 from datetime import datetime
+from io import BytesIO
+import mimetypes
 from typing import Dict, Optional
 
 import frappe
@@ -121,7 +124,7 @@ def _build_sr_lead_notes_block(
         OCR_NOTE_SEPARATOR,
         _normalize_summary_sections(summary.strip()),
         OCR_NOTE_SEPARATOR,
-        f"Source: {media_url[:200]}",
+        f"Source: {media_url}",
     ])
     return "\n".join(lines)
 
@@ -197,26 +200,97 @@ def _trim_notes_to_limit(existing: str, new_block: str, max_len: int) -> str:
 
 def _extract_text_from_media(media_url: str, content_type: str) -> str:
     if content_type in ("Image", "Document"):
+        # Prefer the provider reading Interakt's full signed URL directly.
         text = _extract_with_openai_vision(media_url)
         if text:
             return text
 
-    # Lightweight fallback for text files / public URLs
+    # Fallback: fetch once server-side, then OCR from bytes or parse text/PDF locally.
+    media = _download_media(media_url)
+    if media and _is_pdf_media(media_url, media.get("mime_type")):
+        text = _extract_text_from_pdf(media.get("content") or b"")
+        if text:
+            return text
+
+    if media and content_type in ("Image", "Document"):
+        text = _extract_with_openai_vision(
+            media_url,
+            media_bytes=media.get("content"),
+            mime_type=media.get("mime_type"),
+        )
+        if text:
+            return text
+
+    # Lightweight fallback for text files / public URLs.
     try:
-        resp = requests.get(media_url, timeout=20)
-        if not resp.ok:
+        if not media:
             return ""
-        mime = str(resp.headers.get("Content-Type") or "").lower()
+        mime = str(media.get("mime_type") or "").lower()
         if "text/plain" in mime or "application/json" in mime or media_url.lower().endswith(".txt"):
-            return resp.text[:12000]
+            return media.get("content", b"").decode("utf-8", errors="ignore")[:12000]
     except Exception:
         return ""
     return ""
 
 
-def _extract_with_openai_vision(media_url: str) -> str:
+def _is_pdf_media(media_url: str, mime_type: str | None) -> bool:
+    return str(mime_type or "").lower() == "application/pdf" or str(media_url or "").split("?", 1)[0].lower().endswith(".pdf")
+
+
+def _extract_text_from_pdf(content: bytes) -> str:
+    if not content:
+        return ""
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(BytesIO(content))
+        chunks = []
+        for page in reader.pages[:10]:
+            text = page.extract_text() or ""
+            if text.strip():
+                chunks.append(text.strip())
+            if sum(len(chunk) for chunk in chunks) >= 12000:
+                break
+        return "\n\n".join(chunks)[:12000]
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "WA OCR PDF Text Extraction Failed")
+        return ""
+
+
+def _download_media(media_url: str) -> Optional[Dict]:
+    try:
+        resp = requests.get(
+            media_url,
+            headers={
+                "Accept": "*/*",
+                "User-Agent": "wa-chat-hub/1.0",
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        content = resp.content or b""
+        if not content:
+            return None
+        mime_type = str(resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if not mime_type:
+            mime_type = mimetypes.guess_type(str(media_url).split("?", 1)[0])[0] or "application/octet-stream"
+        return {"content": content, "mime_type": mime_type}
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "WA OCR Media Download Failed")
+        return None
+
+
+def _extract_with_openai_vision(
+    media_url: str,
+    media_bytes: bytes | None = None,
+    mime_type: str | None = None,
+) -> str:
     provider = _get_openai_compatible_provider()
     if not provider:
+        return ""
+
+    image_url = _build_vision_image_url(media_url, media_bytes, mime_type)
+    if not image_url:
         return ""
 
     base_url = provider["base_url"] or "https://api.openai.com/v1/chat/completions"
@@ -230,7 +304,7 @@ def _extract_with_openai_vision(media_url: str) -> str:
                 "role": "user",
                 "content": [
                     {"type": "text", "text": "Extract all readable medical/report text from this image."},
-                    {"type": "image_url", "image_url": {"url": media_url}},
+                    {"type": "image_url", "image_url": {"url": image_url}},
                 ],
             }
         ],
@@ -251,6 +325,21 @@ def _extract_with_openai_vision(media_url: str) -> str:
     except Exception:
         frappe.log_error(frappe.get_traceback(), "OCR Vision Extraction Failed")
         return ""
+
+
+def _build_vision_image_url(media_url: str, media_bytes: bytes | None, mime_type: str | None) -> str:
+    mime_type = str(mime_type or "").split(";", 1)[0].strip().lower()
+    if media_bytes and (mime_type.startswith("image/") or _looks_like_image_url(media_url)):
+        if not mime_type or not mime_type.startswith("image/"):
+            mime_type = mimetypes.guess_type(str(media_url).split("?", 1)[0])[0] or "image/jpeg"
+        encoded = base64.b64encode(media_bytes).decode("ascii")
+        return f"data:{mime_type};base64,{encoded}"
+    return media_url
+
+
+def _looks_like_image_url(media_url: str) -> bool:
+    path = str(media_url or "").split("?", 1)[0].lower()
+    return path.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif"))
 
 
 def _summarize_report_text(extracted: str, body_hint: str, content_type: str) -> str:
