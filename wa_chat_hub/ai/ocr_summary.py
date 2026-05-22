@@ -285,7 +285,7 @@ def _extract_with_openai_vision(
     media_bytes: bytes | None = None,
     mime_type: str | None = None,
 ) -> str:
-    provider = _get_openai_compatible_provider()
+    provider = _get_openai_compatible_provider(require_vision=True)
     if not provider:
         return ""
 
@@ -398,7 +398,7 @@ def _summarize_with_model(provider: Dict, extracted_text: str) -> str:
         return ""
 
 
-def _get_openai_compatible_provider() -> Optional[Dict]:
+def _get_openai_compatible_provider(require_vision: bool = False) -> Optional[Dict]:
     rows = frappe.get_all(
         "WA LLM Provider",
         filters={"is_active": 1},
@@ -406,9 +406,22 @@ def _get_openai_compatible_provider() -> Optional[Dict]:
         order_by="priority asc",
         limit=5,
     )
+    candidates = []
     for row in rows:
         if row.provider_type not in {"OpenAI", "Gemini", "Custom"}:
             continue
+        if require_vision and not _looks_like_vision_model(row.provider_type, row.model_name):
+            continue
+        candidates.append(row)
+
+    if require_vision and not candidates:
+        frappe.log_error(
+            "No active vision-capable WA LLM Provider found for OCR. Configure a vision model such as gpt-4o-mini, gpt-4.1-mini, or Gemini 1.5/2.x.",
+            "WA OCR Vision Provider Missing",
+        )
+        return None
+
+    for row in candidates:
         doc = frappe.get_doc("WA LLM Provider", row.name)
         api_key = doc.get_password("api_key")
         if not api_key:
@@ -421,6 +434,29 @@ def _get_openai_compatible_provider() -> Optional[Dict]:
             "api_key": api_key,
         }
     return None
+
+
+def _looks_like_vision_model(provider_type: str, model_name: str | None) -> bool:
+    provider_type = str(provider_type or "").lower()
+    model_name = str(model_name or "").lower()
+    if provider_type == "gemini":
+        return True
+    vision_tokens = (
+        "gpt-4o",
+        "gpt-4.1",
+        "gpt-4.5",
+        "o3",
+        "o4",
+        "vision",
+        "gemini",
+        "llava",
+        "pixtral",
+        "qwen-vl",
+    )
+    text_only_tokens = ("gpt-3.5", "text-", "embedding", "babbage", "davinci")
+    return any(token in model_name for token in vision_tokens) and not any(
+        token in model_name for token in text_only_tokens
+    )
 
 
 def build_attachment_filename(payload: Dict, media_url: str, fallback_prefix: str = "wa-attachment") -> str:
