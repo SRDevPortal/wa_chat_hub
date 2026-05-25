@@ -55,6 +55,8 @@ CONVERSATION_LIST_FIELDS = [
     "modified",
 ]
 
+MAX_REFERENCE_STATUS_NAMES = 500
+
 
 def _conversation_list_filters(
     *,
@@ -495,6 +497,49 @@ def _resolve_primary_crm_lead(lead_name: str | None) -> str | None:
     return lead_name
 
 
+def _crm_lead_reference_lookup(reference_names: list[str]) -> dict[str, str]:
+    """Map CRM Lead aliases to the requested lead name in one batch."""
+    names = [name for name in reference_names if name]
+    lookup = {name: name for name in names}
+    if not names or not frappe.db.exists("DocType", "CRM Lead"):
+        return lookup
+
+    if not frappe.db.has_column("CRM Lead", "sr_duplicate_of_name"):
+        return lookup
+
+    primary_for_requested: dict[str, str] = {}
+    for row in frappe.get_all(
+        "CRM Lead",
+        filters={"name": ["in", names]},
+        fields=["name", "sr_duplicate_of_name"],
+        limit_page_length=0,
+    ):
+        primary = row.get("sr_duplicate_of_name")
+        if primary:
+            lookup[primary] = row.name
+            primary_for_requested[row.name] = primary
+        else:
+            primary_for_requested[row.name] = row.name
+
+    primary_to_requested: dict[str, str] = {}
+    for requested, primary in primary_for_requested.items():
+        primary_to_requested.setdefault(primary, requested)
+
+    primary_names = list(primary_to_requested)
+    if primary_names:
+        for row in frappe.get_all(
+            "CRM Lead",
+            filters={"sr_duplicate_of_name": ["in", primary_names]},
+            fields=["name", "sr_duplicate_of_name"],
+            limit_page_length=0,
+        ):
+            requested = primary_to_requested.get(row.get("sr_duplicate_of_name"))
+            if requested:
+                lookup[row.name] = requested
+
+    return lookup
+
+
 @frappe.whitelist()
 def get_conversation_for_reference(reference_doctype, reference_name):
     if not reference_doctype or not reference_name:
@@ -587,7 +632,7 @@ def get_reference_chat_statuses(reference_doctype, reference_names=None):
     if not reference_doctype:
         frappe.throw(_("reference_doctype is required"))
 
-    names = _parse_reference_names(reference_names)
+    names = _parse_reference_names(reference_names)[:MAX_REFERENCE_STATUS_NAMES]
     result = {
         name: {"unread_count": 0, "conversation_count": 0, "last_message_time": ""}
         for name in names
@@ -595,16 +640,16 @@ def get_reference_chat_statuses(reference_doctype, reference_names=None):
     if not names:
         return {"success": True, "result": result}
 
-    conv_rows: dict[str, list[dict]] = {name: [] for name in names}
+    conv_stats: dict[str, dict] = {
+        name: {"unread_count": 0, "conversation_count": 0, "last_message_time": ""}
+        for name in names
+    }
     meta = frappe.get_meta("Chat Conversation")
     reference_lookup = {name: name for name in names}
     query_names = names
 
     if reference_doctype == "CRM Lead":
-        reference_lookup = {}
-        for name in names:
-            for alias in _crm_lead_reference_names(name):
-                reference_lookup[alias] = name
+        reference_lookup = _crm_lead_reference_lookup(names)
         query_names = list(reference_lookup) or names
 
     if reference_doctype == "CRM Lead" and meta.has_field("linked_crm_lead"):
@@ -613,7 +658,11 @@ def get_reference_chat_statuses(reference_doctype, reference_names=None):
             filters={"linked_crm_lead": ["in", query_names]},
             fields=["name", "linked_crm_lead", "unread_count", "modified"],
         ):
-            conv_rows.setdefault(reference_lookup.get(row.linked_crm_lead, row.linked_crm_lead), []).append(row)
+            _accumulate_reference_chat_status(
+                conv_stats,
+                reference_lookup.get(row.linked_crm_lead, row.linked_crm_lead),
+                row,
+            )
 
     for row in frappe.get_all(
         "Chat Conversation",
@@ -623,45 +672,52 @@ def get_reference_chat_statuses(reference_doctype, reference_names=None):
         },
         fields=["name", "linked_reference_name", "unread_count", "modified"],
     ):
-        conv_rows.setdefault(reference_lookup.get(row.linked_reference_name, row.linked_reference_name), []).append(row)
+        _accumulate_reference_chat_status(
+            conv_stats,
+            reference_lookup.get(row.linked_reference_name, row.linked_reference_name),
+            row,
+        )
 
     if reference_doctype == "Patient Encounter":
+        encounter_patient = {}
         for enc in frappe.get_all(
             "Patient Encounter",
             filters={"name": ["in", names]},
             fields=["name", "patient"],
         ):
-            if not enc.patient:
-                continue
-            patient_conv = _conversation_for_reference("Patient", enc.patient)
-            if not patient_conv:
-                continue
-            stats = frappe.db.get_value(
+            if enc.patient:
+                encounter_patient[enc.patient] = enc.name
+
+        if encounter_patient:
+            for row in frappe.get_all(
                 "Chat Conversation",
-                patient_conv,
-                ["unread_count", "modified"],
-                as_dict=True,
-            )
-            if stats:
-                conv_rows.setdefault(enc.name, []).append(
-                    {
-                        "name": patient_conv,
-                        "unread_count": stats.unread_count,
-                        "modified": stats.modified,
-                    }
-                )
+                filters={
+                    "linked_reference_doctype": "Patient",
+                    "linked_reference_name": ["in", list(encounter_patient)],
+                },
+                fields=["name", "linked_reference_name", "unread_count", "modified"],
+            ):
+                encounter = encounter_patient.get(row.linked_reference_name)
+                if encounter:
+                    _accumulate_reference_chat_status(conv_stats, encounter, row)
 
     for name in names:
-        rows = conv_rows.get(name) or []
-        if not rows:
-            continue
-        result[name] = {
-            "unread_count": sum(cint(row.get("unread_count")) for row in rows),
-            "conversation_count": len(rows),
-            "last_message_time": max((row.get("modified") or "") for row in rows),
-        }
+        stats = conv_stats.get(name)
+        if stats and stats["conversation_count"]:
+            result[name] = stats
 
     return {"success": True, "result": result}
+
+
+def _accumulate_reference_chat_status(stats_by_name: dict, reference_name: str | None, row) -> None:
+    if not reference_name or reference_name not in stats_by_name:
+        return
+    stats = stats_by_name[reference_name]
+    stats["unread_count"] += cint(row.get("unread_count"))
+    stats["conversation_count"] += 1
+    modified = row.get("modified") or ""
+    if str(modified) > str(stats["last_message_time"] or ""):
+        stats["last_message_time"] = modified
 
 
 @frappe.whitelist()

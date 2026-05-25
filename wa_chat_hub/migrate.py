@@ -108,9 +108,15 @@ def ensure_lead_scoring_fields() -> None:
 
 def ensure_chat_message_indexes() -> None:
     try:
-        from wa_chat_hub.patches.v1_0.add_chat_message_indexes import ensure_chat_message_indexes
+        from wa_chat_hub.patches.v1_0.add_chat_message_indexes import (
+            ensure_chat_conversation_indexes,
+            ensure_chat_message_indexes,
+            ensure_crm_lead_indexes,
+        )
 
         ensure_chat_message_indexes()
+        ensure_chat_conversation_indexes()
+        ensure_crm_lead_indexes()
     except Exception:
         frappe.log_error(frappe.get_traceback(), "Chat Message Index Sync Failed")
 
