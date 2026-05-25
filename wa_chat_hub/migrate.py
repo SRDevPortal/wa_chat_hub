@@ -20,6 +20,7 @@ def after_migrate() -> None:
     except Exception:
         frappe.log_error(frappe.get_traceback(), "WA Chat Hub Workspace Sync Failed")
     ensure_lead_scoring_fields()
+    ensure_chat_message_indexes()
     migrate_conversation_crm_lead_links()
     backfill_messaging_windows()
 
@@ -103,6 +104,15 @@ def ensure_lead_scoring_fields() -> None:
         ]
     if custom_fields:
         create_custom_fields(custom_fields, update=True)
+
+
+def ensure_chat_message_indexes() -> None:
+    try:
+        from wa_chat_hub.patches.v1_0.add_chat_message_indexes import ensure_chat_message_indexes
+
+        ensure_chat_message_indexes()
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "Chat Message Index Sync Failed")
 
 
 def migrate_conversation_crm_lead_links() -> None:

@@ -8,7 +8,6 @@ import requests
 from frappe import _
 from frappe.utils.file_manager import save_file
 
-from wa_chat_hub.ai.lead_scoring import score_and_sync_conversation
 from wa_chat_hub.ai.ocr_summary import build_attachment_filename, process_attachment_for_lead_summary
 from wa_chat_hub.prompts import (
     get_conversation_crm_lead,
@@ -266,10 +265,11 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
         frappe.log_error(frappe.get_traceback(), "Inbound Attachment Persistence Failed")
 
     update_conversation_after_message(conversation, payload)
-    try:
-        score_and_sync_conversation(conversation)
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "Lead Scoring Update Failed")
+    if direction == "Inbound":
+        try:
+            _enqueue_lead_scoring(conversation)
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "Lead Scoring Enqueue Failed")
     if attachment_file and direction == "Inbound":
         try:
             _sync_inbound_attachment_to_linked_record(
@@ -304,6 +304,23 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
         after_commit=True,
     )
     return {"contact": contact, "conversation": conversation, "message": message.name}
+
+
+def _enqueue_lead_scoring(conversation: str) -> None:
+    """Score after commit so inbound webhooks are not held by lead/LLM work."""
+    if not conversation:
+        return
+
+    frappe.enqueue(
+        "wa_chat_hub.ai.lead_scoring.score_and_sync_conversation",
+        queue="short",
+        conversation=conversation,
+        timeout=90,
+        enqueue_after_commit=True,
+        now=frappe.flags.in_test,
+        job_id=f"wa_lead_score_{conversation}",
+        deduplicate=True,
+    )
 
 
 def cint_safe(value: Any) -> int:
