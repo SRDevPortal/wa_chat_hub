@@ -1,9 +1,29 @@
 import frappe
 
 
+def _doctype_ready(doctype, fields):
+    try:
+        if not frappe.db.table_exists(doctype):
+            return False
+        return all(frappe.db.has_column(doctype, fieldname) for fieldname in fields)
+    except Exception:
+        return False
+
+
+def _notifications_ready():
+    return (
+        _doctype_ready("Chat Conversation", ["status", "unread_count", "contact"])
+        and _doctype_ready("Chat Message", ["conversation", "direction", "body"])
+        and _doctype_ready("Chat Contact", ["display_name", "phone_number"])
+    )
+
+
 @frappe.whitelist()
 def get_unread_count():
     try:
+        if not _doctype_ready("Chat Conversation", ["status", "unread_count"]):
+            return 0
+
         count = frappe.db.sql("""
             select coalesce(sum(unread_count), 0)
             from `tabChat Conversation`
@@ -18,6 +38,9 @@ def get_unread_count():
 @frappe.whitelist()
 def get_recent_messages():
     try:
+        if not _notifications_ready():
+            return []
+
         # Fetch 10 most recent inbound messages with their contact names
         res = frappe.db.sql("""
             select 
