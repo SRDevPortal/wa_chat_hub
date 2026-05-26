@@ -7,7 +7,7 @@ import json
 import frappe
 
 
-WORKSPACE_ICON = "chat"
+WORKSPACE_ICON = "message"
 
 
 def run():
@@ -43,7 +43,7 @@ def run():
 
     shortcuts = [
         {"label": "WA Chat Hub", "link_to": "wa-chat-hub", "type": "Page", "icon": "home"},
-        {"label": "Chat Conversation", "link_to": "Chat Conversation", "type": "DocType", "icon": "chat"},
+        {"label": "Chat Conversation", "link_to": "Chat Conversation", "type": "DocType", "icon": "message"},
         {"label": "Chat Contact", "link_to": "Chat Contact", "type": "DocType", "icon": "user"},
         {"label": "Chat Message", "link_to": "Chat Message", "type": "DocType", "icon": "comment"},
         {"label": "Chat Channel Account", "link_to": "Chat Channel Account", "type": "DocType", "icon": "users"},
