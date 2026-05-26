@@ -14,6 +14,7 @@
 					existingOnload(listview);
 				}
 				install_reference_chat_status(listview);
+				install_collective_patient_chat_button(listview);
 			},
 			button: {
 				show() {
@@ -30,6 +31,27 @@
 				},
 			},
 		};
+	}
+
+	function install_collective_patient_chat_button(listview) {
+		if (listview.doctype !== "Patient" || listview.__wa_patient_hub_button_installed) {
+			return;
+		}
+
+		listview.__wa_patient_hub_button_installed = true;
+		listview.page.add_inner_button(__("WA Chat Hub"), function () {
+			frappe.call({
+				method: "wa_chat_hub.api.chat.set_chat_hub_scope",
+				type: "POST",
+				args: {
+					reference_doctype: "Patient",
+					locked: 1,
+				},
+				callback() {
+					window.location.href = "/app/wa-chat-hub?reference_doctype=Patient&lock_reference_filter=1";
+				},
+			});
+		});
 	}
 
 	function install_reference_chat_status(listview) {

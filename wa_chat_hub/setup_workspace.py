@@ -42,7 +42,7 @@ def run():
     ]
 
     shortcuts = [
-        {"label": "WA Chat Hub", "link_to": "wa-chat-hub", "type": "Page", "icon": "home"},
+        {"label": "WA Chat Hub", "url": "/app/wa-chat-hub?scope=all", "type": "URL", "icon": "home"},
         {"label": "Chat Conversation", "link_to": "Chat Conversation", "type": "DocType", "icon": "message"},
         {"label": "Chat Contact", "link_to": "Chat Contact", "type": "DocType", "icon": "user"},
         {"label": "Chat Message", "link_to": "Chat Message", "type": "DocType", "icon": "comment"},
@@ -66,7 +66,8 @@ def run():
             "shortcuts",
             {
                 "label": shortcut["label"],
-                "link_to": shortcut["link_to"],
+                "link_to": shortcut.get("link_to"),
+                "url": shortcut.get("url"),
                 "type": shortcut["type"],
                 "icon": shortcut.get("icon"),
             },

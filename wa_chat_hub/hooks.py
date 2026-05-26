@@ -25,6 +25,10 @@ doctype_list_js = {
     "Patient Encounter": "public/js/reference_open_chat_list.js",
 }
 
+doctype_js = {
+    "Patient": "public/js/patient_chat_button.js",
+}
+
 doc_events = {
     "Chat Message": {
         "after_insert": [

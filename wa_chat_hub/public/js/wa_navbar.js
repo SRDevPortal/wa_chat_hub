@@ -41,6 +41,14 @@ wa_chat_hub.realtime = {
 };
 
 wa_chat_hub.notifications = {
+    active_category: "all",
+    categories: [
+        { key: "all", label: "All" },
+        { key: "crm_leads", label: "CRM Leads" },
+        { key: "patients", label: "Patients" },
+        { key: "ai_replies", label: "AI Replies" },
+    ],
+
     setup: function() {
         if (!frappe.ui.toolbar) {
             setTimeout(wa_chat_hub.notifications.setup, 500);
@@ -70,7 +78,14 @@ wa_chat_hub.notifications = {
                 <div class="dropdown-menu dropdown-menu-right wa-dropdown-box" style="width: 340px; max-height: 400px; overflow-y: auto; padding: 0; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
                     <div class="dropdown-header d-flex justify-content-between align-items-center" style="background: #f8f9fa; border-bottom: 1px solid #e2e2e2; padding: 12px;">
                         <strong style="color: #333;"><i class="fa fa-whatsapp"></i> WhatsApp Live Desk</strong>
-                        <a href="/app/wa-chat-hub" class="text-primary" style="font-size: 12px;"><i class="fa fa-external-link"></i> Open Hub</a>
+                        <a href="/app/wa-chat-hub" class="text-primary wa-open-all-hub" style="font-size: 12px;"><i class="fa fa-external-link"></i> Open Hub</a>
+                    </div>
+                    <div class="wa-notification-tabs" style="display:flex; gap:4px; padding:8px 8px 0; background:#fff; border-bottom:1px solid #eef0f2;">
+                        ${wa_chat_hub.notifications.categories.map((tab) => `
+                            <button type="button" class="btn btn-xs btn-default wa-notification-tab" data-category="${tab.key}" style="border-radius: 14px; font-size: 11px;">
+                                ${tab.label} <span class="wa-tab-count" data-count-for="${tab.key}" style="display:none;"></span>
+                            </button>
+                        `).join("")}
                     </div>
                     <div class="wa-notifications-list">
                         <!-- Loaded dynamically -->
@@ -89,8 +104,34 @@ wa_chat_hub.notifications = {
         
         // On dropdown open, fetch limits
         $('.custom-wa-dropdown').on('show.bs.dropdown', function () {
+            wa_chat_hub.notifications.active_category = wa_chat_hub.notifications.route_category();
+            wa_chat_hub.notifications.render_active_tab();
             wa_chat_hub.notifications.load_recent();
             wa_chat_hub.notifications.refresh_count();
+        });
+
+        $('.custom-wa-dropdown').on('click', '.wa-notification-tab', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            wa_chat_hub.notifications.active_category = $(this).attr('data-category') || 'all';
+            wa_chat_hub.notifications.render_active_tab();
+            wa_chat_hub.notifications.load_recent();
+        });
+
+        $('.custom-wa-dropdown').on('click', '.wa-notification-row', function(e) {
+            e.preventDefault();
+            const conversation = $(this).attr('data-conversation');
+            if (conversation) {
+                frappe.route_options = frappe.route_options || {};
+                frappe.route_options.conversation = conversation;
+            }
+            frappe.set_route('wa-chat-hub');
+            $('.custom-wa-dropdown .nav-link').dropdown('hide');
+        });
+
+        $('.custom-wa-dropdown').on('click', '.wa-open-all-hub', function(e) {
+            e.preventDefault();
+            wa_chat_hub.notifications.clear_scope_and_open_all();
         });
     },
 
@@ -99,18 +140,27 @@ wa_chat_hub.notifications = {
         list_container.html('<div class="p-4 text-center text-muted"><i class="fa fa-spinner fa-spin fa-2x"></i></div>');
         
         frappe.call({
-            method: "wa_chat_hub.api.notifications.get_recent_messages",
+            method: "wa_chat_hub.api.notifications.get_recent_notifications",
+            args: {
+                category: wa_chat_hub.notifications.active_category || "all",
+                limit: 10,
+            },
             callback: function(r) {
                 if (r.message && r.message.length > 0) {
                     let items_html = r.message.map(m => {
-                        let short_body = m.body ? m.body.substring(0, 50) + (m.body.length > 50 ? '...' : '') : '[Media]';
+                        let short_body = wa_chat_hub.notifications.preview_text(m);
+                        let sender = wa_chat_hub.notifications.escape(m.sender_name || m.phone_number || 'WhatsApp');
+                        let badge = wa_chat_hub.notifications.row_badge(m);
                         return `
-                            <a class="dropdown-item d-flex flex-column border-bottom" href="/app/wa-chat-hub" style="padding: 12px; white-space: normal;">
+                            <a class="dropdown-item d-flex flex-column border-bottom wa-notification-row" href="/app/wa-chat-hub" data-conversation="${wa_chat_hub.notifications.escape(m.conversation || '')}" style="padding: 12px; white-space: normal;">
                                 <div class="d-flex justify-content-between w-100 mb-1">
-                                    <strong style="font-size: 13px; color: #1f272e;">${m.sender_name}</strong>
+                                    <strong style="font-size: 13px; color: #1f272e;">${sender}</strong>
                                     <small class="text-muted" style="font-size: 11px;">${frappe.datetime.comment_when(m.creation)}</small>
                                 </div>
-                                <div class="text-muted" style="font-size: 12px;">${short_body}</div>
+                                <div class="d-flex justify-content-between align-items-center" style="gap:8px;">
+                                    <div class="text-muted" style="font-size: 12px; overflow:hidden; text-overflow:ellipsis;">${short_body}</div>
+                                    ${badge}
+                                </div>
                             </a>
                         `;
                     }).join("");
@@ -124,10 +174,21 @@ wa_chat_hub.notifications = {
     
     refresh_count: function() {
         frappe.call({
-            method: "wa_chat_hub.api.notifications.get_unread_count",
+            method: "wa_chat_hub.api.notifications.get_notification_counts",
             callback: function(r) {
-                wa_chat_hub.notifications.render_count(r.message || 0);
+                wa_chat_hub.notifications.render_counts(r.message || {});
             }
+        });
+    },
+
+    render_counts: function(counts) {
+        counts = counts || {};
+        wa_chat_hub.notifications.render_count(counts.all || 0);
+        wa_chat_hub.notifications.categories.forEach((tab) => {
+            const count = cint(counts[tab.key] || 0);
+            const $count = $(`.wa-tab-count[data-count-for="${tab.key}"]`);
+            if (!$count.length) return;
+            $count.text(count > 99 ? "99+" : count).toggle(count > 0);
         });
     },
 
@@ -143,15 +204,75 @@ wa_chat_hub.notifications = {
         }
     },
 
+    render_active_tab: function() {
+        const active = wa_chat_hub.notifications.active_category || "all";
+        $('.wa-notification-tab').each(function() {
+            const isActive = $(this).attr('data-category') === active;
+            $(this).toggleClass('btn-primary', isActive).toggleClass('btn-default', !isActive);
+        });
+    },
+
+    route_category: function() {
+        const route = (frappe.get_route ? frappe.get_route() : []).join('/').toLowerCase();
+        if (route.indexOf('crm-lead') !== -1 || route.indexOf('crm lead') !== -1) {
+            return 'crm_leads';
+        }
+        if (route.indexOf('patient-encounter') !== -1 || route.indexOf('patient encounter') !== -1 || route.indexOf('patient') !== -1) {
+            return 'patients';
+        }
+        return 'all';
+    },
+
+    preview_text: function(row) {
+        let body = row.body || '';
+        if (!body) {
+            body = row.direction === 'Outbound' && row.sender_type === 'AI' ? '[AI reply]' : '[Media]';
+        }
+        if (row.direction === 'Outbound' && row.sender_type === 'AI') {
+            body = `AI: ${body}`;
+        }
+        const shortBody = body.substring(0, 58) + (body.length > 58 ? '...' : '');
+        return wa_chat_hub.notifications.escape(shortBody);
+    },
+
+    row_badge: function(row) {
+        if (row.direction === 'Outbound' && row.sender_type === 'AI') {
+            return '<span class="badge badge-info" style="font-size:10px;">AI</span>';
+        }
+        const ref = row.linked_crm_lead || row.linked_reference_doctype || '';
+        if (!ref) return '';
+        const label = row.linked_crm_lead ? 'CRM' : row.linked_reference_doctype;
+        return `<span class="badge badge-light" style="font-size:10px;">${wa_chat_hub.notifications.escape(label)}</span>`;
+    },
+
+    escape: function(value) {
+        return $('<div>').text(value == null ? '' : String(value)).html();
+    },
+
+    clear_scope_and_open_all: function() {
+        frappe.call({
+            method: "wa_chat_hub.api.chat.clear_chat_hub_scope",
+            type: "POST",
+            always: function() {
+                window.location.href = "/app/wa-chat-hub?scope=all";
+            },
+        });
+    },
+
     bind_events: function() {
         frappe.realtime.on("wa_chat_new_message", function(data) {
-            if (data.message && data.message.direction === "Inbound") {
+            const message = (data || {}).message || {};
+            const shouldRefresh = message.direction === "Inbound"
+                || (message.direction === "Outbound" && message.sender_type === "AI");
+            if (shouldRefresh) {
                 // If dropdown is open, refresh it. Else, increment counter.
                 if ($('.custom-wa-dropdown').hasClass('show')) {
                     wa_chat_hub.notifications.load_recent();
                 }
                 wa_chat_hub.notifications.refresh_count();
-                frappe.utils.play_sound("notification");
+                if (message.direction === "Inbound") {
+                    frappe.utils.play_sound("notification");
+                }
             }
         });
     }

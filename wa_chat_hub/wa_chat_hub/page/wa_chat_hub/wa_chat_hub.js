@@ -5,7 +5,7 @@ frappe.pages['wa-chat-hub'].on_page_show = function(wrapper) {
 };
 
 frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
-    const cssVersion = '20260520-messaging-window-v2';
+    const cssVersion = '20260526-patient-filter-v1';
     const existingCss = document.querySelector('link[data-wa-chat-hub-css="1"]');
     if (existingCss && existingCss.getAttribute('data-wa-chat-hub-version') !== cssVersion) {
         existingCss.remove();
@@ -37,6 +37,8 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     let conversationRowsCache = [];
     let conversationSearchQuery = '';
     let activeConversationFilter = 'all';
+    let selectedReferenceDoctype = '';
+    let referenceFilterLocked = false;
 
     page.add_inner_button(__('List View'), () => {
         frappe.set_route('List', 'Chat Conversation');
@@ -48,7 +50,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
                 <div class="wa-pane-heading wa-left-header">
                     <div class="wa-pane-title">WA Chat Hub</div>
                     <div class="wa-left-tools">
-                        <button class="wa-left-tool wa-autopilot-toggle is-on" id="wa-autopilot-toggle" title="AI auto-reply: On" type="button" aria-pressed="true">
+                        <button class="wa-left-tool wa-autopilot-toggle is-on hidden" id="wa-autopilot-toggle" title="AI auto-reply: On" type="button" aria-pressed="true">
                             <i class="fa fa-magic"></i>
                         </button>
                         <button class="wa-left-tool" id="wa-list-view-btn" title="List View" type="button"><i class="fa fa-plus-square-o"></i></button>
@@ -64,6 +66,10 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
                     <select class="form-control input-sm" id="wa-channel-account-filter" title="Filter by Interakt account">
                         <option value="">All accounts</option>
                     </select>
+                </div>
+                <div class="wa-reference-filter-bar hidden" id="wa-reference-filter-bar">
+                    <span id="wa-reference-filter-label"></span>
+                    <button type="button" id="wa-reference-filter-clear" title="Clear filter"><i class="fa fa-times"></i></button>
                 </div>
                 <div class="wa-filter-row">
                     <button class="wa-chip active">All</button>
@@ -176,11 +182,13 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         conversations: () => frappe.call('wa_chat_hub.api.chat.get_conversations', {
             limit: 100,
             channel_account: selectedChannelAccount || null,
+            reference_doctype: selectedReferenceDoctype || null,
         }),
         searchConversations: (query) => frappe.call('wa_chat_hub.api.chat.search_conversations', {
             query,
             limit: 100,
             channel_account: selectedChannelAccount || null,
+            reference_doctype: selectedReferenceDoctype || null,
         }),
         messages: (conversation) => frappe.call('wa_chat_hub.api.chat.get_messages', { conversation, limit: 200 }),
         context: (conversation) => frappe.call('wa_chat_hub.api.chat.get_sidebar_context', { conversation }),
@@ -207,6 +215,11 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         createIssue: (conversation) => frappe.call('wa_chat_hub.api.actions.create_issue_from_conversation', { conversation }),
         getAutopilotStatus: () => frappe.call('wa_chat_hub.api.settings.get_autopilot_status'),
         setAutopilotEnabled: (enabled) => frappe.call('wa_chat_hub.api.settings.set_autopilot_enabled', { enabled: enabled ? 1 : 0 }),
+        getChatHubScope: () => frappe.call('wa_chat_hub.api.chat.get_chat_hub_scope'),
+        clearChatHubScope: () => frappe.call({
+            method: 'wa_chat_hub.api.chat.clear_chat_hub_scope',
+            type: 'POST',
+        }),
     };
 
     function updateAutopilotToggleUI(enabled, sendsWhatsapp) {
@@ -317,7 +330,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
                 <div class="wa-conversation-main">
                     <div class="wa-conversation-top">
                         <strong>${escapeHtml(row.contact_display_name || row.contact_phone_number || row.name)}</strong>
-                        <span class="wa-conversation-time">${formatConversationTime(row.modified)}</span>
+                        <span class="wa-conversation-time">${formatConversationTime(row.last_message_time || row.modified)}</span>
                     </div>
                     ${row.channel_account ? `<div class="wa-conversation-account">${escapeHtml(row.channel_account)}</div>` : ''}
                     <div class="wa-conversation-meta">
@@ -409,6 +422,33 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         refreshConversations();
     });
 
+    function renderReferenceFilter() {
+        const $bar = $('#wa-reference-filter-bar');
+        if (!selectedReferenceDoctype) {
+            $bar.addClass('hidden');
+            $('#wa-reference-filter-label').text('');
+            return;
+        }
+        const label = selectedReferenceDoctype === 'Patient'
+            ? __('Patients')
+            : selectedReferenceDoctype;
+        $('#wa-reference-filter-label').text(__('Showing {0} chats', [label]));
+        $('#wa-reference-filter-clear').toggleClass('hidden', referenceFilterLocked);
+        $bar.removeClass('hidden');
+    }
+
+    $('#wa-reference-filter-clear').on('click', function() {
+        if (referenceFilterLocked) {
+            return;
+        }
+        selectedReferenceDoctype = '';
+        referenceFilterLocked = false;
+        renderReferenceFilter();
+        persistWaRouteQuery('', '', false);
+        closeCurrentConversation();
+        refreshConversations();
+    });
+
     function applyClientConversationFilters(rows) {
         let filtered = rows || [];
         if (activeConversationFilter === 'unread') {
@@ -449,19 +489,91 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     }
 
     function consumeRouteConversation() {
-        const routeConversation = (frappe.route_options || {}).conversation;
-        if (!routeConversation) {
-            return false;
+        const queryOptions = getWaRouteQueryOptions();
+        const routeOptions = {
+            conversation: (frappe.route_options || {}).conversation || queryOptions.conversation,
+            reference_doctype: (frappe.route_options || {}).reference_doctype || queryOptions.reference_doctype,
+            lock_reference_filter: cint(
+                (frappe.route_options || {}).lock_reference_filter || queryOptions.lock_reference_filter
+            ),
+        };
+        const routeConversation = routeOptions.conversation;
+        const routeReferenceDoctype = routeOptions.reference_doctype;
+        const routeLockReferenceFilter = routeOptions.lock_reference_filter;
+        if (queryOptions.scope === 'all') {
+            selectedReferenceDoctype = '';
+            referenceFilterLocked = false;
+            renderReferenceFilter();
+            return api.clearChatHubScope().then(() => {
+                persistWaRouteQuery('', '', false);
+                return false;
+            });
+        }
+        if (!routeConversation && !routeReferenceDoctype) {
+            return api.getChatHubScope().then((r) => {
+                const scope = ((r.message || {}).scope) || {};
+                if (!scope.reference_doctype || !scope.locked) {
+                    return false;
+                }
+                applyRouteScope({
+                    reference_doctype: scope.reference_doctype,
+                    lock_reference_filter: 1,
+                });
+                refreshConversations();
+                return true;
+            });
         }
 
         if (frappe.route_options) {
             delete frappe.route_options.conversation;
+            delete frappe.route_options.reference_doctype;
+            delete frappe.route_options.lock_reference_filter;
         }
-        if (currentConversation !== routeConversation) {
+        applyRouteScope(routeOptions);
+        if (routeConversation && currentConversation !== routeConversation) {
             loadConversation(routeConversation);
         }
         refreshConversations();
         return true;
+    }
+
+    function applyRouteScope(options) {
+        if (!options.reference_doctype) {
+            return;
+        }
+        selectedReferenceDoctype = options.reference_doctype;
+        referenceFilterLocked = !!cint(options.lock_reference_filter);
+        renderReferenceFilter();
+        persistWaRouteQuery(options.conversation, options.reference_doctype, referenceFilterLocked);
+        conversationSearchQuery = '';
+        $('#wa-search').val('');
+    }
+
+    function getWaRouteQueryOptions() {
+        const params = new URLSearchParams(window.location.search || '');
+        return {
+            conversation: params.get('conversation') || '',
+            reference_doctype: params.get('reference_doctype') || '',
+            lock_reference_filter: params.get('lock_reference_filter') || '',
+            scope: params.get('scope') || '',
+        };
+    }
+
+    function persistWaRouteQuery(conversation, referenceDoctype, lockReferenceFilter) {
+        const params = new URLSearchParams();
+        if (referenceDoctype) {
+            params.set('reference_doctype', referenceDoctype);
+        }
+        if (lockReferenceFilter) {
+            params.set('lock_reference_filter', '1');
+        }
+        if (conversation) {
+            params.set('conversation', conversation);
+        }
+        const nextUrl = params.toString() ? `/app/wa-chat-hub?${params.toString()}` : '/app/wa-chat-hub';
+        if (window.location.pathname === '/app/wa-chat-hub' && window.location.search !== `?${params.toString()}`) {
+            window.history.replaceState(window.history.state, '', nextUrl);
+        }
     }
 
     wrapper.wa_chat_hub_handle_route_options = consumeRouteConversation;
@@ -1881,8 +1993,10 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
 
     bindRealtime();
     loadChannelAccounts().always(() => {
-        if (!consumeRouteConversation()) {
-            refreshConversations();
-        }
+        Promise.resolve(consumeRouteConversation()).then((consumed) => {
+            if (!consumed) {
+                refreshConversations();
+            }
+        });
     });
 };

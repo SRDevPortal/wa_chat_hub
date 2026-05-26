@@ -450,6 +450,40 @@
   font-size: 13px;
 }
 
+.wa-reference-filter-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 20px 10px;
+  padding: 7px 10px;
+  border: 1px solid #bbf7d0;
+  border-radius: 8px;
+  background: #f0fdf4;
+  color: #166534;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.wa-reference-filter-bar.hidden {
+  display: none;
+}
+
+.wa-reference-filter-bar button {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #166534;
+  line-height: 1;
+}
+
+.wa-reference-filter-bar button:hover {
+  background: #dcfce7;
+}
+
 .wa-conversation-account {
   margin-top: 2px;
   font-size: 11px;
