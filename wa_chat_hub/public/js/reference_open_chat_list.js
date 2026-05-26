@@ -56,6 +56,9 @@
 	}
 
 	function schedule_status_refresh(listview) {
+		if (listview.__wa_reference_chat_status_disabled) {
+			return;
+		}
 		clearTimeout(listview.__wa_reference_chat_status_timer);
 		listview.__wa_reference_chat_status_timer = setTimeout(() => {
 			refresh_chat_statuses(listview);
@@ -63,6 +66,10 @@
 	}
 
 	function refresh_chat_statuses(listview) {
+		if (listview.__wa_reference_chat_status_disabled) {
+			return;
+		}
+
 		const names = (listview.data || []).map((doc) => doc.name).filter(Boolean);
 		if (!names.length) {
 			return;
@@ -78,6 +85,12 @@
 				const statuses = (r.message && r.message.result) || {};
 				apply_chat_statuses(listview, statuses);
 				promote_unread_rows(listview, statuses);
+			},
+			error(r) {
+				if (r && [401, 403].includes(cint(r.status))) {
+					listview.__wa_reference_chat_status_disabled = true;
+					return;
+				}
 			},
 		});
 	}

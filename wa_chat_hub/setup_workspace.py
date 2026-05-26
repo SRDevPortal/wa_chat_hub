@@ -7,6 +7,9 @@ import json
 import frappe
 
 
+WORKSPACE_ICON = "chat"
+
+
 def run():
     frappe.flags.in_patch = True
 
@@ -22,6 +25,7 @@ def run():
         doc.title = workspace_name
 
     doc.module = "WA Chat Hub"
+    doc.icon = WORKSPACE_ICON
     doc.public = 1
     doc.is_standard = 1
 

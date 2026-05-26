@@ -1,13 +1,44 @@
 frappe.provide("wa_chat_hub.notifications");
+frappe.provide("wa_chat_hub.realtime");
 
 $(document).ready(function() {
+    wa_chat_hub.realtime.patch_unsaved_doc_subscriptions();
     wa_chat_hub.notifications.setup();
     frappe.router.on('change', function() {
         setTimeout(function() {
+            wa_chat_hub.realtime.patch_unsaved_doc_subscriptions();
             wa_chat_hub.notifications.insert_icon();
         }, 100);
     });
 });
+
+wa_chat_hub.realtime = {
+    patch_unsaved_doc_subscriptions: function() {
+        if (!frappe.realtime || frappe.realtime.__wa_skip_unsaved_docs_patched) {
+            return;
+        }
+
+        ["doc_subscribe", "doc_open", "doc_close", "doc_unsubscribe"].forEach(function(method) {
+            if (typeof frappe.realtime[method] !== "function") {
+                return;
+            }
+
+            const original = frappe.realtime[method].bind(frappe.realtime);
+            frappe.realtime[method] = function(doctype, docname) {
+                if (wa_chat_hub.realtime.is_unsaved_docname(docname)) {
+                    return;
+                }
+                return original(doctype, docname);
+            };
+        });
+
+        frappe.realtime.__wa_skip_unsaved_docs_patched = true;
+    },
+
+    is_unsaved_docname: function(docname) {
+        return typeof docname === "string" && docname.indexOf("new-") === 0;
+    }
+};
 
 wa_chat_hub.notifications = {
     setup: function() {
