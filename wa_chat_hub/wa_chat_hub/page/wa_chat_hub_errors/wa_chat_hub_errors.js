@@ -151,6 +151,12 @@ frappe.pages['wa-chat-hub-errors'].on_page_load = function(wrapper) {
             if (related.crm_lead) {
                 links.push(`<a href="/app/crm-lead/${frappe.utils.escape_html(related.crm_lead)}">CRM Lead ${frappe.utils.escape_html(related.crm_lead)}</a>`);
             }
+            const contextHtml = event.wa_context
+                ? `<div><b>WA Context:</b></div><pre>${frappe.utils.escape_html(JSON.stringify(event.wa_context, null, 2))}</pre>`
+                : '';
+            const payloadHtml = event.crm_lead_payload
+                ? `<div><b>CRM Lead Payload:</b></div><pre>${frappe.utils.escape_html(JSON.stringify(event.crm_lead_payload, null, 2))}</pre>`
+                : '';
 
             const dialog = new frappe.ui.Dialog({
                 title: event.method || 'WA Chat Hub Error',
@@ -166,6 +172,8 @@ frappe.pages['wa-chat-hub-errors'].on_page_load = function(wrapper) {
                                 <div><b>Reason:</b> ${frappe.utils.escape_html(event.short_reason || '')}</div>
                                 <div><b>Suggested fix:</b> ${frappe.utils.escape_html(event.suggestion || '')}</div>
                                 <div><b>Related:</b> ${links.join(' &middot; ') || '<span class="text-muted">No related records detected</span>'}</div>
+                                ${payloadHtml}
+                                ${contextHtml}
                                 <pre>${frappe.utils.escape_html(event.error || '')}</pre>
                             </div>
                         `

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from datetime import timedelta
 from typing import Any, Dict, Optional
@@ -58,6 +59,9 @@ ERROR_CATEGORIES = {
         "suggestion": "Check Interakt account config and contact sync payload.",
     },
 }
+
+WA_LEAD_CONTEXT_MARKER = "WA_CHAT_HUB_CONTEXT_JSON"
+WA_LEAD_PAYLOAD_MARKER = "WA_CHAT_HUB_PAYLOAD_JSON"
 
 
 def _ensure_error_access() -> None:
@@ -119,7 +123,9 @@ def get_error_detail(error_log: str):
         "conversation": _extract_conversation(row.error),
         "suggestion": "Review the traceback and related records.",
     }
-    event["error"] = row.error
+    event["error"] = _strip_json_blocks(row.error)
+    event["wa_context"] = _extract_json_block(row.error, WA_LEAD_CONTEXT_MARKER)
+    event["crm_lead_payload"] = _extract_json_block(row.error, WA_LEAD_PAYLOAD_MARKER)
     event["related"] = _related_records(event)
     return {"success": True, "result": event}
 
@@ -173,11 +179,35 @@ def _classify_error(method: str, error: str) -> Optional[str]:
 
 
 def _short_reason(error: str) -> str:
-    lines = [line.strip() for line in str(error or "").splitlines() if line.strip()]
+    lines = [line.strip() for line in _strip_json_blocks(error).splitlines() if line.strip()]
     for line in reversed(lines):
         if line.startswith(("frappe.", "pymysql.", "requests.", "Exception", "ValidationError")) or ":" in line:
             return line[:300]
     return (lines[-1] if lines else "No error details")[:300]
+
+
+def _extract_json_block(text: str, marker: str) -> Optional[Dict[str, Any]]:
+    pattern = rf"--- {re.escape(marker)} ---\s*(.*?)\s*--- END_{re.escape(marker)} ---"
+    match = re.search(pattern, text or "", flags=re.S)
+    if not match:
+        return None
+    try:
+        parsed = json.loads(match.group(1))
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else {"value": parsed}
+
+
+def _strip_json_blocks(text: str) -> str:
+    cleaned = str(text or "")
+    for marker in (WA_LEAD_CONTEXT_MARKER, WA_LEAD_PAYLOAD_MARKER):
+        cleaned = re.sub(
+            rf"\n*\s*--- {re.escape(marker)} ---\s*.*?\s*--- END_{re.escape(marker)} ---",
+            "",
+            cleaned,
+            flags=re.S,
+        )
+    return cleaned.strip()
 
 
 def _extract_phone(text: str) -> str:

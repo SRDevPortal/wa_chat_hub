@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 from typing import Any, Dict, Optional
 
@@ -17,6 +18,8 @@ from wa_chat_hub.prompts import (
 
 
 DEFAULT_CONVERSATION_STATUS = "Open"
+WA_LEAD_CONTEXT_MARKER = "WA_CHAT_HUB_CONTEXT_JSON"
+WA_LEAD_PAYLOAD_MARKER = "WA_CHAT_HUB_PAYLOAD_JSON"
 
 
 @contextmanager
@@ -29,6 +32,22 @@ def _crm_lead_field_guard_bypass(enabled: bool = True):
         yield
     finally:
         frappe.flags.sr_bypass_field_guard = previous
+
+
+def _json_block(marker: str, value: Dict[str, Any]) -> str:
+    return (
+        f"\n\n--- {marker} ---\n"
+        f"{json.dumps(value, indent=2, sort_keys=True, default=str, ensure_ascii=False)}\n"
+        f"--- END_{marker} ---"
+    )
+
+
+def _lead_creation_error_details(traceback: str, payload: Dict[str, Any], context: Dict[str, Any]) -> str:
+    return (
+        traceback
+        + _json_block(WA_LEAD_CONTEXT_MARKER, context)
+        + _json_block(WA_LEAD_PAYLOAD_MARKER, payload)
+    )
 
 
 def normalize_phone(phone: Optional[str]) -> str:
@@ -482,16 +501,12 @@ def _link_or_create_master_record(
         lead_doctype = _preferred_lead_doctype()
         if not lead_doctype:
             return
-        try:
-            lead_name = _create_lead_for_inbound(
-                doctype=lead_doctype,
-                phone_number=phone_number,
-                display_name=display_name or contact.display_name,
-                channel_account=convo.channel_account,
-            )
-        except Exception:
-            frappe.log_error(frappe.get_traceback(), "WA Chat Hub Inbound Lead Create Failed")
-            return
+        lead_name = _create_lead_for_inbound(
+            doctype=lead_doctype,
+            phone_number=phone_number,
+            display_name=display_name or contact.display_name,
+            channel_account=convo.channel_account,
+        )
     if not lead_name:
         return
 
@@ -588,6 +603,23 @@ def _default_sr_lead_pipeline_for_channel(channel_account: Optional[str]) -> Opt
     return get_pipeline_for_channel_account(channel_account)
 
 
+def _default_crm_lead_status() -> Optional[str]:
+    if not frappe.db.exists("DocType", "CRM Lead Status"):
+        return None
+
+    for status in ("Fresh", "New"):
+        if frappe.db.exists("CRM Lead Status", status):
+            return status
+
+    rows = frappe.get_all(
+        "CRM Lead Status",
+        pluck="name",
+        order_by="position asc, modified asc",
+        limit=1,
+    )
+    return rows[0] if rows else None
+
+
 def _create_lead_for_inbound(
     doctype: str,
     phone_number: str,
@@ -595,65 +627,75 @@ def _create_lead_for_inbound(
     channel_account: Optional[str] = None,
 ) -> Optional[str]:
     payload: Dict[str, Any] = {"doctype": doctype}
-    meta = frappe.get_meta(doctype)
-    lead_title = display_name or phone_number
-    first_name = _inbound_lead_first_name(display_name, phone_number)
+    context = {
+        "lead_doctype": doctype,
+        "phone_number": phone_number,
+        "display_name": display_name,
+        "channel_account": channel_account,
+        "source_event": "Inbound WhatsApp",
+    }
+    try:
+        meta = frappe.get_meta(doctype)
+        lead_title = display_name or phone_number
+        first_name = _inbound_lead_first_name(display_name, phone_number)
 
-    if meta.has_field("first_name"):
-        payload["first_name"] = first_name
-    if meta.has_field("lead_name"):
-        payload["lead_name"] = lead_title
-    if meta.has_field("mobile_no"):
-        payload["mobile_no"] = phone_number
-    elif meta.has_field("phone"):
-        payload["phone"] = phone_number
-    if meta.has_field("source"):
-        source_value = _resolve_whatsapp_source_value(meta)
-        if source_value:
-            payload["source"] = source_value
-    if meta.has_field("sr_lead_platform"):
-        platform_value = _resolve_whatsapp_platform_value(meta)
-        if platform_value:
-            payload["sr_lead_platform"] = platform_value
+        if meta.has_field("first_name"):
+            payload["first_name"] = first_name
+        if meta.has_field("lead_name"):
+            payload["lead_name"] = lead_title
+        if meta.has_field("mobile_no"):
+            payload["mobile_no"] = phone_number
+        elif meta.has_field("phone"):
+            payload["phone"] = phone_number
+        if meta.has_field("source"):
+            source_value = _resolve_whatsapp_source_value(meta)
+            if source_value:
+                payload["source"] = source_value
+        if meta.has_field("sr_lead_platform"):
+            platform_value = _resolve_whatsapp_platform_value(meta)
+            if platform_value:
+                payload["sr_lead_platform"] = platform_value
 
-    if doctype == "CRM Lead":
-        if meta.has_field("status") and not payload.get("status"):
-            if frappe.db.exists("CRM Lead Status", "New"):
-                payload["status"] = "New"
-            else:
-                open_status = frappe.get_all(
-                    "CRM Lead Status",
-                    filters={"type": "Open"},
-                    pluck="name",
-                    limit=1,
+        if doctype == "CRM Lead":
+            if meta.has_field("status") and not payload.get("status"):
+                payload["status"] = _default_crm_lead_status()
+
+        pipeline_fieldname = _get_lead_pipeline_fieldname(doctype)
+        pipeline = _default_sr_lead_pipeline_for_channel(channel_account)
+        context["pipeline_fieldname"] = pipeline_fieldname
+        context["resolved_pipeline"] = pipeline
+        if pipeline_fieldname:
+            if pipeline:
+                payload[pipeline_fieldname] = pipeline
+            elif meta.get_field(pipeline_fieldname) and meta.get_field(pipeline_fieldname).reqd:
+                frappe.log_error(
+                    _(
+                        "Skipped CRM Lead for WhatsApp {0}: no WA Channel Pipeline Map for Interakt account {1}. "
+                        "Add one active row on WA Channel Pipeline Map with the default SR Lead Pipeline for that account."
+                    ).format(phone_number, channel_account or _("(unknown)"))
+                    + _json_block(WA_LEAD_CONTEXT_MARKER, context)
+                    + _json_block(WA_LEAD_PAYLOAD_MARKER, payload),
+                    "WA Chat Hub Inbound Lead Skipped",
                 )
-                if open_status:
-                    payload["status"] = open_status[0]
-
-    pipeline_fieldname = _get_lead_pipeline_fieldname(doctype)
-    pipeline = _default_sr_lead_pipeline_for_channel(channel_account)
-    if pipeline_fieldname:
-        if pipeline:
-            payload[pipeline_fieldname] = pipeline
-        elif meta.get_field(pipeline_fieldname) and meta.get_field(pipeline_fieldname).reqd:
+                return None
+        elif pipeline:
             frappe.log_error(
-                _(
-                    "Skipped CRM Lead for WhatsApp {0}: no WA Channel Pipeline Map for Interakt account {1}. "
-                    "Add one active row on WA Channel Pipeline Map with the default SR Lead Pipeline for that account."
-                ).format(phone_number, channel_account or _("(unknown)")),
-                "WA Chat Hub Inbound Lead Skipped",
+                f"Default SR Lead Pipeline '{pipeline}' for {channel_account}, but {doctype} has no pipeline Link field."
+                + _json_block(WA_LEAD_CONTEXT_MARKER, context)
+                + _json_block(WA_LEAD_PAYLOAD_MARKER, payload),
+                "WA Channel Pipeline Mapping",
             )
-            return None
-    elif pipeline:
-        frappe.log_error(
-            f"Default SR Lead Pipeline '{pipeline}' for {channel_account}, but {doctype} has no pipeline Link field.",
-            "WA Channel Pipeline Mapping",
-        )
 
-    doc = frappe.get_doc(payload)
-    with _crm_lead_field_guard_bypass(doctype == "CRM Lead"):
-        doc.insert(ignore_permissions=True)
-    return doc.name
+        doc = frappe.get_doc(payload)
+        with _crm_lead_field_guard_bypass(doctype == "CRM Lead"):
+            doc.insert(ignore_permissions=True)
+        return doc.name
+    except Exception:
+        frappe.log_error(
+            _lead_creation_error_details(frappe.get_traceback(), payload, context),
+            "WA Chat Hub Inbound Lead Create Failed",
+        )
+        return None
 
 
 def _find_by_phone(doctype: str, phone_fields: list[str], phone_number: str) -> Optional[str]:
