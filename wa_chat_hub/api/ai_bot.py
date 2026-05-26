@@ -93,13 +93,7 @@ def process_message(message_id):
         )
         return
 
-    history = frappe.get_all(
-        "Chat Message",
-        filters={"conversation": conversation},
-        fields=["name", "direction", "body", "content_type", "media_url"],
-        order_by="creation asc",
-        limit=CONVERSATION_HISTORY_LIMIT,
-    )
+    history = _load_recent_conversation_history(conversation)
     history_before_current = [row for row in history if str(row.name) != str(message_id)]
 
     settings = frappe.get_single("WA Chat Hub Settings")
@@ -241,6 +235,17 @@ def _meaningful_body(body: str, content_type: str = "Text") -> str:
     if normalized in GENERIC_MEDIA_BODIES:
         return ""
     return text
+
+
+def _load_recent_conversation_history(conversation: str):
+    rows = frappe.get_all(
+        "Chat Message",
+        filters={"conversation": conversation},
+        fields=["name", "direction", "body", "content_type", "media_url"],
+        order_by="creation desc, name desc",
+        limit=CONVERSATION_HISTORY_LIMIT,
+    )
+    return list(reversed(rows))
 
 
 def _format_history_line(row) -> str:

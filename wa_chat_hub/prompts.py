@@ -13,6 +13,16 @@ PROMPT_FIELDS = (
     "multilingual_reply_policy",
 )
 
+CONVERSATION_MEMORY_POLICY = """
+Conversation memory rule:
+- Before replying, first use the recent chat history, not only the latest user message.
+- Continue naturally from previous user messages and previous assistant replies.
+- Respect corrections from the user. If the user already said they want message-only support, do not offer a callback or consultation arrangement again unless they ask for it.
+- Do not repeat questions, requests for reports, or offers that were already answered in the recent conversation.
+- If reports, symptoms, history, preferences, or constraints were already shared, use them in the next reply.
+- The conversation must feel continuous, natural, and human-like.
+""".strip()
+
 
 def get_effective_prompt_config(channel_account: Optional[str] = None) -> Any:
     """Merge global WA Chat Hub Settings with per-account overrides (non-empty fields only)."""
@@ -39,6 +49,7 @@ def build_system_prompt_from_config(config: Any) -> str:
         value = (getattr(config, fieldname, None) or "").strip()
         if value:
             parts.append(value)
+    parts.append(CONVERSATION_MEMORY_POLICY)
     return "\n\n".join(parts)
 
 
