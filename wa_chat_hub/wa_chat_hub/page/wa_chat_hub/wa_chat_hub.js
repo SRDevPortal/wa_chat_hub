@@ -84,7 +84,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
                         </span>
                     </button>
                     <div class="wa-thread-actions">
-                        <button class="btn btn-sm wa-autopilot-pill is-on" id="wa-autopilot-pill" type="button" title="AI auto-reply: On">
+                        <button class="btn btn-sm wa-autopilot-pill is-on hidden" id="wa-autopilot-pill" type="button" title="AI auto-reply: On">
                             <i class="fa fa-magic"></i> <span id="wa-autopilot-pill-label">AI On</span>
                         </button>
                         <button class="btn btn-default btn-sm" id="wa-ai-summary">AI Summary</button>
