@@ -189,17 +189,19 @@ def _conversation_last_message_times(conversation_names: list[str]) -> dict[str,
     if not conversation_names:
         return {}
 
-    times = {}
-    for row in frappe.get_all(
-        "Chat Message",
-        filters={"conversation": ["in", conversation_names]},
-        fields=["conversation", "creation"],
-        order_by="creation desc",
-        limit_page_length=0,
-    ):
-        if row.conversation not in times:
-            times[row.conversation] = row.creation
-    return times
+    return {
+        row.conversation: row.last_message_time
+        for row in frappe.db.sql(
+            """
+            select conversation, max(creation) as last_message_time
+            from `tabChat Message`
+            where conversation in %(conversation_names)s
+            group by conversation
+            """,
+            {"conversation_names": tuple(conversation_names)},
+            as_dict=True,
+        )
+    }
 
 
 def _matching_contact_names(query: str) -> list[str]:
