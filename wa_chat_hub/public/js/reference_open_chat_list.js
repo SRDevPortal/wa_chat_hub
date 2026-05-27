@@ -84,11 +84,15 @@
 		clearTimeout(listview.__wa_reference_chat_status_timer);
 		listview.__wa_reference_chat_status_timer = setTimeout(() => {
 			refresh_chat_statuses(listview);
-		}, 80);
+		}, 750);
 	}
 
 	function refresh_chat_statuses(listview) {
 		if (listview.__wa_reference_chat_status_disabled) {
+			return;
+		}
+		if (listview.__wa_reference_chat_status_in_flight) {
+			listview.__wa_reference_chat_status_pending = true;
 			return;
 		}
 
@@ -97,6 +101,7 @@
 			return;
 		}
 
+		listview.__wa_reference_chat_status_in_flight = true;
 		frappe.call({
 			method: "wa_chat_hub.api.chat.get_reference_chat_statuses",
 			args: {
@@ -112,6 +117,13 @@
 				if (r && [401, 403].includes(cint(r.status))) {
 					listview.__wa_reference_chat_status_disabled = true;
 					return;
+				}
+			},
+			always() {
+				listview.__wa_reference_chat_status_in_flight = false;
+				if (listview.__wa_reference_chat_status_pending) {
+					listview.__wa_reference_chat_status_pending = false;
+					schedule_status_refresh(listview);
 				}
 			},
 		});
