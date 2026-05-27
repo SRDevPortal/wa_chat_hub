@@ -30,6 +30,9 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     let sidebarContextCache = null;
     let messagingWindowCache = null;
     let conversationRefreshTimer = null;
+    let conversationRefreshInFlight = false;
+    let conversationRefreshPending = false;
+    let lastConversationRefreshAt = 0;
     let conversationSearchTimer = null;
     let preselectedConversation = null;
     let selectedChannelAccount = '';
@@ -474,7 +477,23 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     }
 
     function refreshConversations() {
-        return api.conversations().then((r) => {
+        if (conversationRefreshInFlight) {
+            conversationRefreshPending = true;
+            return Promise.resolve();
+        }
+
+        const now = Date.now();
+        if (lastConversationRefreshAt && now - lastConversationRefreshAt < 1500) {
+            conversationRefreshPending = true;
+            scheduleConversationRefresh(1500 - (now - lastConversationRefreshAt));
+            return Promise.resolve();
+        }
+
+        conversationRefreshInFlight = true;
+        conversationRefreshPending = false;
+        lastConversationRefreshAt = now;
+
+        return Promise.resolve(api.conversations()).then((r) => {
             conversationRowsCache = (r.message || {}).result || [];
             return applyConversationListView();
         }).then(() => {
@@ -484,6 +503,12 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
                     loadConversation(preselectedConversation);
                 }
                 preselectedConversation = null;
+            }
+        }).finally(() => {
+            conversationRefreshInFlight = false;
+            if (conversationRefreshPending) {
+                conversationRefreshPending = false;
+                scheduleConversationRefresh(1500);
             }
         });
     }
@@ -1175,12 +1200,21 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         });
     }
 
-    function scheduleConversationRefresh() {
+    function scheduleConversationRefresh(waitMs) {
+        if (document.hidden) {
+            conversationRefreshPending = true;
+            return;
+        }
         clearTimeout(conversationRefreshTimer);
-        conversationRefreshTimer = setTimeout(refreshConversations, 250);
+        conversationRefreshTimer = setTimeout(refreshConversations, waitMs || 1500);
     }
 
     function bindRealtime() {
+        if (wrapper.wa_chat_hub_realtime_bound) {
+            return;
+        }
+        wrapper.wa_chat_hub_realtime_bound = true;
+
         frappe.realtime.on('wa_chat_new_message', function(data) {
             scheduleConversationRefresh();
             if (data && data.conversation === currentConversation) {
@@ -1989,6 +2023,13 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         if (!viewerOpen) return;
         if (e.key === 'ArrowLeft') moveMediaViewer(-1);
         if (e.key === 'ArrowRight') moveMediaViewer(1);
+    });
+
+    document.addEventListener('visibilitychange', function() {
+        if (!document.hidden && conversationRefreshPending) {
+            conversationRefreshPending = false;
+            scheduleConversationRefresh(250);
+        }
     });
 
     bindRealtime();
