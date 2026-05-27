@@ -2,17 +2,28 @@ frappe.provide("wa_chat_hub.notifications");
 frappe.provide("wa_chat_hub.realtime");
 
 $(document).ready(function() {
-    wa_chat_hub.realtime.patch_unsaved_doc_subscriptions();
+    wa_chat_hub.realtime.patch_unsaved_doc_subscriptions_soon();
     wa_chat_hub.notifications.setup();
     frappe.router.on('change', function() {
         setTimeout(function() {
-            wa_chat_hub.realtime.patch_unsaved_doc_subscriptions();
+            wa_chat_hub.realtime.patch_unsaved_doc_subscriptions_soon();
             wa_chat_hub.notifications.insert_icon();
         }, 100);
     });
 });
 
 wa_chat_hub.realtime = {
+    patch_unsaved_doc_subscriptions_soon: function(attempt) {
+        attempt = attempt || 0;
+        if (frappe.realtime) {
+            this.patch_unsaved_doc_subscriptions();
+            return;
+        }
+        if (attempt < 20) {
+            setTimeout(() => this.patch_unsaved_doc_subscriptions_soon(attempt + 1), 100);
+        }
+    },
+
     patch_unsaved_doc_subscriptions: function() {
         if (!frappe.realtime || frappe.realtime.__wa_skip_unsaved_docs_patched) {
             return;
@@ -39,6 +50,8 @@ wa_chat_hub.realtime = {
         return typeof docname === "string" && docname.indexOf("new-") === 0;
     }
 };
+
+wa_chat_hub.realtime.patch_unsaved_doc_subscriptions_soon();
 
 wa_chat_hub.notifications = {
     active_category: "all",
@@ -173,10 +186,29 @@ wa_chat_hub.notifications = {
     },
     
     refresh_count: function() {
+        const now = Date.now();
+        if (this.count_in_flight) {
+            this.count_refresh_pending = true;
+            return;
+        }
+        if (this.last_count_refresh_at && now - this.last_count_refresh_at < 3000) {
+            clearTimeout(this.count_refresh_timer);
+            this.count_refresh_timer = setTimeout(() => this.refresh_count(), 3000);
+            return;
+        }
+        this.count_in_flight = true;
+        this.last_count_refresh_at = now;
         frappe.call({
             method: "wa_chat_hub.api.notifications.get_notification_counts",
             callback: function(r) {
                 wa_chat_hub.notifications.render_counts(r.message || {});
+            },
+            always: function() {
+                wa_chat_hub.notifications.count_in_flight = false;
+                if (wa_chat_hub.notifications.count_refresh_pending) {
+                    wa_chat_hub.notifications.count_refresh_pending = false;
+                    wa_chat_hub.notifications.refresh_count();
+                }
             }
         });
     },
@@ -260,6 +292,10 @@ wa_chat_hub.notifications = {
     },
 
     bind_events: function() {
+        if (this.events_bound) {
+            return;
+        }
+        this.events_bound = true;
         frappe.realtime.on("wa_chat_new_message", function(data) {
             const message = (data || {}).message || {};
             const shouldRefresh = message.direction === "Inbound"
