@@ -69,10 +69,10 @@ def has_unrestricted_chat_access(user: str | None = None) -> bool:
 
 
 def get_conversation_crm_lead(conversation_or_row) -> str | None:
-    if isinstance(conversation_or_row, str):
+    if isinstance(conversation_or_row, (str, int)):
         fields = ["linked_crm_lead", "linked_reference_doctype", "linked_reference_name"]
-        row = frappe.db.get_value("Chat Conversation", conversation_or_row, fields, as_dict=True)
-    elif hasattr(conversation_or_row, "as_dict"):
+        row = frappe.db.get_value("Chat Conversation", str(conversation_or_row), fields, as_dict=True)
+    elif callable(getattr(conversation_or_row, "as_dict", None)):
         row = conversation_or_row.as_dict()
     else:
         row = conversation_or_row or {}
