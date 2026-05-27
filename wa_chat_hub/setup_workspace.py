@@ -8,6 +8,7 @@ import frappe
 
 
 WORKSPACE_ICON = "message"
+ADMIN_WORKSPACE_ROLES = ("System Manager", "WA Chat Manager")
 
 
 def _shortcut(label, link_to=None, url=None, shortcut_type="DocType", icon=None):
@@ -32,14 +33,12 @@ def _header(block_id, text):
     }
 
 
-def run():
-    frappe.flags.in_patch = True
-
-    workspace_name = "WhatsApp"
+def _build_workspace(workspace_name, sections, roles=None):
     if frappe.db.exists("Workspace", workspace_name):
         doc = frappe.get_doc("Workspace", workspace_name)
         doc.links = []
         doc.shortcuts = []
+        doc.roles = []
     else:
         doc = frappe.new_doc("Workspace")
         doc.name = workspace_name
@@ -51,49 +50,9 @@ def run():
     doc.public = 1
     doc.is_standard = 1
 
-    sections = [
-        (
-            "WhatsApp Operations Hub",
-            [
-                _shortcut("WA Chat Hub", url="/app/wa-chat-hub?scope=all", shortcut_type="URL", icon="home"),
-                _shortcut("Chat Conversation", "Chat Conversation", icon="message"),
-                _shortcut("Chat Contact", "Chat Contact", icon="user"),
-                _shortcut("Chat Message", "Chat Message", icon="comment"),
-            ],
-        ),
-        (
-            "Messaging Setup",
-            [
-                _shortcut("Chat Channel Account", "Chat Channel Account", icon="settings"),
-                _shortcut("Chat Channel Session", "Chat Channel Session", icon="phone"),
-                _shortcut("WA Channel Pipeline Map", "WA Channel Pipeline Map", icon="branch"),
-                _shortcut("WA Channel Context", "WA Channel Context", icon="file"),
-                _shortcut("WA Chat Hub Settings", "WA Chat Hub Settings", icon="settings"),
-            ],
-        ),
-        (
-            "Automation and AI",
-            [
-                _shortcut("WA AI Knowledge Base", "WA AI Knowledge Base", icon="book"),
-                _shortcut("WA LLM Provider", "WA LLM Provider", icon="cpu"),
-                _shortcut("WA MCP Server", "WA MCP Server", icon="server"),
-                _shortcut("WA MCP Tool Endpoint", "WA MCP Tool Endpoint", icon="tool"),
-                _shortcut("WA AI Tool Permission", "WA AI Tool Permission", icon="lock"),
-                _shortcut("Chat AI Suggestion", "Chat AI Suggestion", icon="sparkles"),
-                _shortcut("WA Lead AI Insight", "WA Lead AI Insight", icon="chart"),
-                _shortcut("WA Lead OCR Result", "WA Lead OCR Result", icon="file-search"),
-            ],
-        ),
-        (
-            "Operations Admin",
-            [
-                _shortcut("Chat Assignment Rule", "Chat Assignment Rule", icon="assign"),
-                _shortcut("Chat Queue Event", "Chat Queue Event", icon="list"),
-                _shortcut("Chat Action Log", "Chat Action Log", icon="activity"),
-                _shortcut("Chat Contact Channel Profile", "Chat Contact Channel Profile", icon="contact"),
-            ],
-        ),
-    ]
+    for role in roles or []:
+        if frappe.db.exists("Role", role):
+            doc.append("roles", {"role": role})
 
     content_blocks = []
     shortcut_index = 0
@@ -129,5 +88,60 @@ def run():
     doc.content = json.dumps(content_blocks)
     doc.flags.ignore_links = True
     doc.save(ignore_permissions=True)
-    frappe.db.commit()
     print(f"Workspace '{workspace_name}' created / updated successfully.")
+
+
+def run():
+    frappe.flags.in_patch = True
+
+    operations_sections = [
+        (
+            "WhatsApp Operations Hub",
+            [
+                _shortcut("WA Chat Hub", url="/app/wa-chat-hub?scope=all", shortcut_type="URL", icon="home"),
+                _shortcut("Chat Conversation", "Chat Conversation", icon="message"),
+                _shortcut("Chat Contact", "Chat Contact", icon="user"),
+                _shortcut("Chat Message", "Chat Message", icon="comment"),
+            ],
+        ),
+    ]
+
+    admin_sections = [
+        *operations_sections,
+        (
+            "Messaging Setup",
+            [
+                _shortcut("Chat Channel Account", "Chat Channel Account", icon="settings"),
+                _shortcut("Chat Channel Session", "Chat Channel Session", icon="phone"),
+                _shortcut("WA Channel Pipeline Map", "WA Channel Pipeline Map", icon="branch"),
+                _shortcut("WA Channel Context", "WA Channel Context", icon="file"),
+                _shortcut("WA Chat Hub Settings", "WA Chat Hub Settings", icon="settings"),
+            ],
+        ),
+        (
+            "Automation and AI",
+            [
+                _shortcut("WA AI Knowledge Base", "WA AI Knowledge Base", icon="book"),
+                _shortcut("WA LLM Provider", "WA LLM Provider", icon="cpu"),
+                _shortcut("WA MCP Server", "WA MCP Server", icon="server"),
+                _shortcut("WA MCP Tool Endpoint", "WA MCP Tool Endpoint", icon="tool"),
+                _shortcut("WA AI Tool Permission", "WA AI Tool Permission", icon="lock"),
+                _shortcut("Chat AI Suggestion", "Chat AI Suggestion", icon="sparkles"),
+                _shortcut("WA Lead AI Insight", "WA Lead AI Insight", icon="chart"),
+                _shortcut("WA Lead OCR Result", "WA Lead OCR Result", icon="file-search"),
+            ],
+        ),
+        (
+            "Operations Admin",
+            [
+                _shortcut("Chat Assignment Rule", "Chat Assignment Rule", icon="assign"),
+                _shortcut("Chat Queue Event", "Chat Queue Event", icon="list"),
+                _shortcut("Chat Action Log", "Chat Action Log", icon="activity"),
+                _shortcut("Chat Contact Channel Profile", "Chat Contact Channel Profile", icon="contact"),
+            ],
+        ),
+    ]
+
+    _build_workspace("WhatsApp", operations_sections)
+    _build_workspace("WhatsApp Admin", admin_sections, roles=ADMIN_WORKSPACE_ROLES)
+    frappe.db.commit()
