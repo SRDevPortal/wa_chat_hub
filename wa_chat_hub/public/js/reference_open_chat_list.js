@@ -1,5 +1,6 @@
 (function () {
 	const doctypes = ["CRM Lead", "Patient", "Patient Encounter"];
+	const statusDoctypes = ["CRM Lead"];
 
 	doctypes.forEach((doctype) => setup_reference_chat_button(doctype));
 
@@ -13,7 +14,9 @@
 				if (typeof existingOnload === "function") {
 					existingOnload(listview);
 				}
-				install_reference_chat_status(listview);
+				if (statusDoctypes.includes(listview.doctype)) {
+					install_reference_chat_status(listview);
+				}
 				install_collective_patient_chat_button(listview);
 			},
 			button: {
@@ -96,7 +99,9 @@
 			return;
 		}
 
-		const names = (listview.data || []).map((doc) => doc.name).filter(Boolean);
+		const names = (listview.data || [])
+			.map((doc) => doc.name)
+			.filter((name) => name && !String(name).startsWith("new-"));
 		if (!names.length) {
 			return;
 		}
