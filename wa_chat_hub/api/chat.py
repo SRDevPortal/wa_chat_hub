@@ -869,6 +869,9 @@ def get_reference_chat_statuses(reference_doctype, reference_names=None):
     if not names:
         return {"success": True, "result": result}
 
+    if reference_doctype != "CRM Lead":
+        return {"success": True, "result": result}
+
     allowed_names = filter_accessible_reference_names(reference_doctype, names)
     if not allowed_names:
         return {"success": True, "result": result}
