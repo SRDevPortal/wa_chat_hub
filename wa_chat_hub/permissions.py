@@ -193,6 +193,55 @@ def chat_conversation_has_permission(doc, user: str | None = None, ptype: str | 
     return can_read_conversation(doc, user=user)
 
 
+def contact_access_sql_condition(contact_alias: str = "tabChat Contact", user: str | None = None) -> str:
+    user = _user(user)
+    if has_unrestricted_chat_access(user):
+        return "1=1"
+
+    condition = conversation_access_sql_condition("wa_conversation", user=user)
+    return f"""
+        EXISTS (
+            SELECT 1
+            FROM `tabChat Conversation` `wa_conversation`
+            WHERE `wa_conversation`.`contact` = `{contact_alias}`.`name`
+              AND ({condition})
+        )
+    """
+
+
+def chat_contact_pqc(user: str | None = None) -> str:
+    return contact_access_sql_condition("tabChat Contact", user=user)
+
+
+def can_read_contact(contact_or_doc, user: str | None = None) -> bool:
+    user = _user(user)
+    if has_unrestricted_chat_access(user):
+        return True
+
+    if isinstance(contact_or_doc, str):
+        contact = contact_or_doc
+    elif isinstance(contact_or_doc, dict):
+        contact = contact_or_doc.get("name")
+    else:
+        contact = getattr(contact_or_doc, "name", None)
+
+    if not contact:
+        return False
+
+    rows = frappe.get_all(
+        "Chat Conversation",
+        filters={"contact": contact},
+        fields=["name", "linked_crm_lead", "linked_reference_doctype", "linked_reference_name"],
+        limit_page_length=50,
+        ignore_permissions=True,
+    )
+    return any(can_read_conversation(row, user=user) for row in rows)
+
+
+def chat_contact_has_permission(doc, user: str | None = None, ptype: str | None = None) -> bool:
+    return can_read_contact(doc, user=user)
+
+
 def chat_message_pqc(user: str | None = None) -> str:
     condition = conversation_access_sql_condition("wa_conversation", user=user)
     return f"""

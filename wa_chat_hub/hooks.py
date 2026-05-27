@@ -31,11 +31,13 @@ doctype_js = {
 
 permission_query_conditions = {
     "Chat Conversation": "wa_chat_hub.permissions.chat_conversation_pqc",
+    "Chat Contact": "wa_chat_hub.permissions.chat_contact_pqc",
     "Chat Message": "wa_chat_hub.permissions.chat_message_pqc",
 }
 
 has_permission = {
     "Chat Conversation": "wa_chat_hub.permissions.chat_conversation_has_permission",
+    "Chat Contact": "wa_chat_hub.permissions.chat_contact_has_permission",
     "Chat Message": "wa_chat_hub.permissions.chat_message_has_permission",
 }
 
