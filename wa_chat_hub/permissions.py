@@ -198,13 +198,47 @@ def contact_access_sql_condition(contact_alias: str = "tabChat Contact", user: s
     if has_unrestricted_chat_access(user):
         return "1=1"
 
-    condition = conversation_access_sql_condition("wa_conversation", user=user)
+    lead_condition = crm_lead_permission_condition(user, alias="wa_lead")
+    if not lead_condition or lead_condition == "1=0":
+        return "1=0"
+
+    linked_crm_lead = "1=0"
+    if frappe.db.has_column("Chat Conversation", "linked_crm_lead"):
+        linked_crm_lead = f"""
+            (
+                IFNULL(`wa_conversation`.`linked_crm_lead`, '') != ''
+                AND EXISTS (
+                    SELECT 1
+                    FROM `tabCRM Lead` `wa_lead`
+                    WHERE `wa_lead`.`name` = `wa_conversation`.`linked_crm_lead`
+                      AND ({lead_condition})
+                )
+            )
+        """
+
+    linked_reference = "1=0"
+    if frappe.db.has_column("Chat Conversation", "linked_reference_doctype") and frappe.db.has_column(
+        "Chat Conversation", "linked_reference_name"
+    ):
+        linked_reference = f"""
+            (
+                `wa_conversation`.`linked_reference_doctype` IN ('CRM Lead', 'Lead')
+                AND IFNULL(`wa_conversation`.`linked_reference_name`, '') != ''
+                AND EXISTS (
+                    SELECT 1
+                    FROM `tabCRM Lead` `wa_lead`
+                    WHERE `wa_lead`.`name` = `wa_conversation`.`linked_reference_name`
+                      AND ({lead_condition})
+                )
+            )
+        """
+
     return f"""
         EXISTS (
             SELECT 1
             FROM `tabChat Conversation` `wa_conversation`
             WHERE `wa_conversation`.`contact` = `{contact_alias}`.`name`
-              AND ({condition})
+              AND (({linked_crm_lead}) OR ({linked_reference}))
         )
     """
 
