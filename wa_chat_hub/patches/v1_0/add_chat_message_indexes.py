@@ -63,6 +63,11 @@ def ensure_chat_conversation_indexes() -> None:
                 ["linked_crm_lead", "modified"],
                 index_name="idx_chat_conversation_linked_crm_lead",
             )
+            frappe.db.add_index(
+                "Chat Conversation",
+                ["contact", "linked_crm_lead"],
+                index_name="idx_chat_conversation_contact_crm_lead",
+            )
         if frappe.db.has_column("Chat Conversation", "linked_reference_doctype") and frappe.db.has_column(
             "Chat Conversation", "linked_reference_name"
         ):
@@ -70,6 +75,11 @@ def ensure_chat_conversation_indexes() -> None:
                 "Chat Conversation",
                 ["linked_reference_doctype", "linked_reference_name", "modified"],
                 index_name="idx_chat_conversation_reference",
+            )
+            frappe.db.add_index(
+                "Chat Conversation",
+                ["contact", "linked_reference_doctype", "linked_reference_name"],
+                index_name="idx_chat_conversation_contact_reference",
             )
     finally:
         frappe.flags.in_migrate = previous
