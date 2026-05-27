@@ -123,6 +123,30 @@ CONVERSATION_LIST_FIELDS = [
 ]
 
 MAX_REFERENCE_STATUS_NAMES = 500
+CONVERSATION_CACHE_TTL = 2
+REFERENCE_STATUS_CACHE_TTL = 5
+
+
+def _short_cache_get(key: str):
+    try:
+        return frappe.cache().get_value(key)
+    except Exception:
+        return None
+
+
+def _short_cache_set(key: str, value, ttl: int) -> None:
+    try:
+        frappe.cache().set_value(key, value, expires_in_sec=ttl)
+    except Exception:
+        pass
+
+
+def _api_cache_key(prefix: str, payload: dict) -> str:
+    data = {
+        "user": frappe.session.user,
+        **payload,
+    }
+    return "wa_chat_hub:" + prefix + ":" + json.dumps(data, sort_keys=True, default=str)
 
 
 def _conversation_list_filters(
@@ -307,6 +331,21 @@ def get_conversations(
     reference_doctype=None,
 ):
     reference_doctype = _force_scoped_reference_doctype(reference_doctype)
+    cache_key = _api_cache_key(
+        "get_conversations",
+        {
+            "limit": limit,
+            "status": status,
+            "assigned_to": assigned_to,
+            "department": department,
+            "channel_account": channel_account,
+            "reference_doctype": reference_doctype,
+        },
+    )
+    cached = _short_cache_get(cache_key)
+    if cached is not None:
+        return {"success": True, "result": cached}
+
     filters = _conversation_list_filters(
         status=status,
         assigned_to=assigned_to,
@@ -323,7 +362,9 @@ def get_conversations(
         limit_page_length=_conversation_fetch_limit(limit),
     )
 
-    return {"success": True, "result": _enrich_conversation_rows(_limit_visible_rows(rows, limit))}
+    result = _enrich_conversation_rows(_limit_visible_rows(rows, limit))
+    _short_cache_set(cache_key, result, CONVERSATION_CACHE_TTL)
+    return {"success": True, "result": result}
 
 
 @frappe.whitelist()
@@ -872,6 +913,17 @@ def get_reference_chat_statuses(reference_doctype, reference_names=None):
     if reference_doctype != "CRM Lead":
         return {"success": True, "result": result}
 
+    cache_key = _api_cache_key(
+        "reference_statuses",
+        {
+            "reference_doctype": reference_doctype,
+            "names": names,
+        },
+    )
+    cached = _short_cache_get(cache_key)
+    if cached is not None:
+        return {"success": True, "result": cached}
+
     allowed_names = filter_accessible_reference_names(reference_doctype, names)
     if not allowed_names:
         return {"success": True, "result": result}
@@ -942,6 +994,7 @@ def get_reference_chat_statuses(reference_doctype, reference_names=None):
         if stats and stats["conversation_count"]:
             result[name] = stats
 
+    _short_cache_set(cache_key, result, REFERENCE_STATUS_CACHE_TTL)
     return {"success": True, "result": result}
 
 

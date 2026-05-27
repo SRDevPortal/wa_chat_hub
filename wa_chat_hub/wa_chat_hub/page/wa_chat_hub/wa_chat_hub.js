@@ -5,6 +5,11 @@ frappe.pages['wa-chat-hub'].on_page_show = function(wrapper) {
 };
 
 frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
+    if (wrapper.wa_chat_hub_initialized) {
+        return;
+    }
+    wrapper.wa_chat_hub_initialized = true;
+
     const cssVersion = '20260526-patient-filter-v1';
     const existingCss = document.querySelector('link[data-wa-chat-hub-css="1"]');
     if (existingCss && existingCss.getAttribute('data-wa-chat-hub-version') !== cssVersion) {
@@ -27,12 +32,17 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     $(wrapper).addClass('wa-chat-hub-page');
 
     let currentConversation = null;
+    let conversationLoadInFlightName = null;
+    let conversationLoadToken = 0;
     let sidebarContextCache = null;
     let messagingWindowCache = null;
-    let conversationRefreshTimer = null;
-    let conversationRefreshInFlight = false;
-    let conversationRefreshPending = false;
-    let lastConversationRefreshAt = 0;
+    const conversationRefreshState = wrapper.wa_chat_hub_refresh_state || {
+        timer: null,
+        inFlight: false,
+        pending: false,
+        lastAt: 0,
+    };
+    wrapper.wa_chat_hub_refresh_state = conversationRefreshState;
     let conversationSearchTimer = null;
     let preselectedConversation = null;
     let selectedChannelAccount = '';
@@ -477,21 +487,21 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     }
 
     function refreshConversations() {
-        if (conversationRefreshInFlight) {
-            conversationRefreshPending = true;
+        if (conversationRefreshState.inFlight) {
+            conversationRefreshState.pending = true;
             return Promise.resolve();
         }
 
         const now = Date.now();
-        if (lastConversationRefreshAt && now - lastConversationRefreshAt < 1500) {
-            conversationRefreshPending = true;
-            scheduleConversationRefresh(1500 - (now - lastConversationRefreshAt));
+        if (conversationRefreshState.lastAt && now - conversationRefreshState.lastAt < 1500) {
+            conversationRefreshState.pending = true;
+            scheduleConversationRefresh(1500 - (now - conversationRefreshState.lastAt));
             return Promise.resolve();
         }
 
-        conversationRefreshInFlight = true;
-        conversationRefreshPending = false;
-        lastConversationRefreshAt = now;
+        conversationRefreshState.inFlight = true;
+        conversationRefreshState.pending = false;
+        conversationRefreshState.lastAt = now;
 
         return Promise.resolve(api.conversations()).then((r) => {
             conversationRowsCache = (r.message || {}).result || [];
@@ -505,9 +515,9 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
                 preselectedConversation = null;
             }
         }).finally(() => {
-            conversationRefreshInFlight = false;
-            if (conversationRefreshPending) {
-                conversationRefreshPending = false;
+            conversationRefreshState.inFlight = false;
+            if (conversationRefreshState.pending) {
+                conversationRefreshState.pending = false;
                 scheduleConversationRefresh(1500);
             }
         });
@@ -1150,17 +1160,37 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     }
 
     function loadConversation(name) {
+        if (conversationLoadInFlightName === name) {
+            return;
+        }
+        const loadToken = ++conversationLoadToken;
+        conversationLoadInFlightName = name;
         currentConversation = name;
         $('#wa-center-pane').removeClass('is-empty');
         closeContextDrawer();
         $('.wa-conversation-item').removeClass('active');
         $(`.wa-conversation-item[data-name="${name}"]`).addClass('active');
-        api.messages(name).then(r => renderMessages(r.message.result || []));
-        api.context(name).then(r => renderContext(r.message.result || {}));
-        api.markRead(name).then(() => {
+
+        const messagesPromise = Promise.resolve(api.messages(name)).then(r => {
+            if (loadToken === conversationLoadToken) {
+                renderMessages(r.message.result || []);
+            }
+        });
+        const contextPromise = Promise.resolve(api.context(name)).then(r => {
+            if (loadToken === conversationLoadToken) {
+                renderContext(r.message.result || {});
+            }
+        });
+        const markReadPromise = Promise.resolve(api.markRead(name)).then(() => {
             refreshConversations();
             if (window.wa_chat_hub && wa_chat_hub.notifications && wa_chat_hub.notifications.refresh_count) {
                 wa_chat_hub.notifications.refresh_count();
+            }
+        });
+
+        Promise.allSettled([messagesPromise, contextPromise, markReadPromise]).finally(() => {
+            if (loadToken === conversationLoadToken) {
+                conversationLoadInFlightName = null;
             }
         });
     }
@@ -1191,22 +1221,16 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
 
     function refreshCurrentConversation() {
         if (!currentConversation) return;
-        api.messages(currentConversation).then(r => renderMessages(r.message.result || []));
-        api.context(currentConversation).then(r => renderContext(r.message.result || {}));
-        api.markRead(currentConversation).then(() => {
-            if (window.wa_chat_hub && wa_chat_hub.notifications && wa_chat_hub.notifications.refresh_count) {
-                wa_chat_hub.notifications.refresh_count();
-            }
-        });
+        loadConversation(currentConversation);
     }
 
     function scheduleConversationRefresh(waitMs) {
         if (document.hidden) {
-            conversationRefreshPending = true;
+            conversationRefreshState.pending = true;
             return;
         }
-        clearTimeout(conversationRefreshTimer);
-        conversationRefreshTimer = setTimeout(refreshConversations, waitMs || 1500);
+        clearTimeout(conversationRefreshState.timer);
+        conversationRefreshState.timer = setTimeout(refreshConversations, waitMs || 1500);
     }
 
     function bindRealtime() {
@@ -2026,8 +2050,8 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     });
 
     document.addEventListener('visibilitychange', function() {
-        if (!document.hidden && conversationRefreshPending) {
-            conversationRefreshPending = false;
+        if (!document.hidden && conversationRefreshState.pending) {
+            conversationRefreshState.pending = false;
             scheduleConversationRefresh(250);
         }
     });

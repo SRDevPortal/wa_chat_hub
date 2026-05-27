@@ -3,6 +3,28 @@ from frappe.utils import add_to_date, cint, now_datetime
 
 from wa_chat_hub.permissions import conversation_access_sql_condition
 
+NOTIFICATION_CACHE_TTL = 3
+
+
+def _cache_key(prefix, **kwargs):
+    parts = [f"user={frappe.session.user}"]
+    parts.extend(f"{key}={value}" for key, value in sorted(kwargs.items()))
+    return f"wa_chat_hub:notifications:{prefix}:" + "|".join(parts)
+
+
+def _cache_get(key):
+    try:
+        return frappe.cache().get_value(key)
+    except Exception:
+        return None
+
+
+def _cache_set(key, value, ttl=NOTIFICATION_CACHE_TTL):
+    try:
+        frappe.cache().set_value(key, value, expires_in_sec=ttl)
+    except Exception:
+        pass
+
 
 def _doctype_ready(doctype, fields):
     try:
@@ -112,7 +134,13 @@ def _recent_ai_reply_count():
 @frappe.whitelist()
 def get_unread_count():
     try:
-        return _unread_count_for_category() + _recent_ai_reply_count()
+        key = _cache_key("unread_count")
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        value = _unread_count_for_category() + _recent_ai_reply_count()
+        _cache_set(key, value)
+        return value
     except Exception as e:
         frappe.log_error(str(e), "Navbar Unread Count Error")
         return 0
@@ -121,12 +149,18 @@ def get_unread_count():
 @frappe.whitelist()
 def get_notification_counts():
     try:
-        return {
+        key = _cache_key("counts")
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        value = {
             "all": _unread_count_for_category() + _recent_ai_reply_count(),
             "crm_leads": _unread_count_for_category("crm_leads"),
             "patients": _unread_count_for_category("patients"),
             "ai_replies": _recent_ai_reply_count(),
         }
+        _cache_set(key, value)
+        return value
     except Exception:
         frappe.log_error(frappe.get_traceback(), "Navbar Notification Count Error")
         return {"all": 0, "crm_leads": 0, "patients": 0, "ai_replies": 0}
@@ -164,6 +198,11 @@ def get_recent_notifications(category="all", limit=10):
             return []
 
         limit = max(1, min(cint(limit) or 10, 50))
+        key = _cache_key("recent", category=category or "all", limit=limit)
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+
         condition, values = _category_condition(category)
         fields = [
             "m.name",
@@ -184,7 +223,7 @@ def get_recent_notifications(category="all", limit=10):
         else:
             fields.append("'' as linked_crm_lead")
 
-        return frappe.db.sql(
+        rows = frappe.db.sql(
             f"""
             select {", ".join(fields)}
             from `tabChat Message` m
@@ -198,6 +237,8 @@ def get_recent_notifications(category="all", limit=10):
             values + [limit],
             as_dict=True,
         )
+        _cache_set(key, rows)
+        return rows
     except Exception:
         frappe.log_error(frappe.get_traceback(), "Navbar Recent Notifications Error")
         return []
