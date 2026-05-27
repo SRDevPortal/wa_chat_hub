@@ -4,6 +4,7 @@ import frappe
 from frappe import _
 
 from wa_chat_hub.ai.lead_scoring import score_and_sync_conversation, sync_to_linked_lead
+from wa_chat_hub.permissions import ensure_can_read_conversation
 
 
 def _load_payload():
@@ -20,6 +21,7 @@ def create_lead_from_conversation():
     if not conversation:
         frappe.throw(_("conversation is required"))
 
+    ensure_can_read_conversation(conversation)
     convo = frappe.get_doc("Chat Conversation", conversation)
     contact = frappe.get_doc("Chat Contact", convo.contact)
 
@@ -52,6 +54,7 @@ def create_issue_from_conversation():
     if not conversation:
         frappe.throw(_("conversation is required"))
 
+    ensure_can_read_conversation(conversation)
     convo = frappe.get_doc("Chat Conversation", conversation)
     contact = frappe.get_doc("Chat Contact", convo.contact)
 
@@ -78,6 +81,7 @@ def create_patient_encounter_from_conversation():
     if not patient:
         frappe.throw(_("patient is required"))
 
+    ensure_can_read_conversation(conversation)
     doc = frappe.get_doc({
         "doctype": "Patient Encounter",
         "patient": patient,

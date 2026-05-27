@@ -9,6 +9,10 @@ from frappe.utils import cint, now_datetime
 
 from wa_chat_hub.messaging.attribution import get_conversation_attribution
 from wa_chat_hub.messaging.windows import get_messaging_window_state
+from wa_chat_hub.permissions import can_read_crm_lead
+from wa_chat_hub.permissions import ensure_can_read_conversation
+from wa_chat_hub.permissions import filter_accessible_conversation_rows
+from wa_chat_hub.permissions import filter_accessible_reference_names
 from wa_chat_hub.services import append_message, build_erp_actions, mark_conversation_read
 from wa_chat_hub.services import normalize_phone
 
@@ -147,6 +151,23 @@ def _conversation_list_filters(
         else:
             filters["linked_reference_doctype"] = reference_doctype
     return filters
+
+
+def _as_int(value, default=50, minimum=1, maximum=500) -> int:
+    try:
+        value = int(value)
+    except Exception:
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+def _conversation_fetch_limit(limit) -> int:
+    limit = _as_int(limit)
+    return min(max(limit * 5, limit), 1000)
+
+
+def _limit_visible_rows(rows: list, limit) -> list:
+    return filter_accessible_conversation_rows(rows)[: _as_int(limit)]
 
 
 def _enrich_conversation_rows(rows: list) -> list:
@@ -299,10 +320,10 @@ def get_conversations(
         filters=filters,
         fields=CONVERSATION_LIST_FIELDS,
         order_by="modified desc",
-        limit_page_length=int(limit),
+        limit_page_length=_conversation_fetch_limit(limit),
     )
 
-    return {"success": True, "result": _enrich_conversation_rows(rows)}
+    return {"success": True, "result": _enrich_conversation_rows(_limit_visible_rows(rows, limit))}
 
 
 @frappe.whitelist()
@@ -344,7 +365,7 @@ def search_conversations(
             "Chat Conversation",
             filters={**base_filters, "contact": ["in", contact_names]},
             pluck="name",
-            limit_page_length=int(limit),
+            limit_page_length=_conversation_fetch_limit(limit),
         ):
             matching.add(name)
 
@@ -362,7 +383,7 @@ def search_conversations(
         filters=base_filters,
         or_filters=conv_or_filters,
         fields=["name"],
-        limit_page_length=int(limit),
+        limit_page_length=_conversation_fetch_limit(limit),
     ):
         matching.add(row.name)
 
@@ -376,13 +397,14 @@ def search_conversations(
         filters={"name": ["in", list(matching)]},
         fields=CONVERSATION_LIST_FIELDS,
         order_by="modified desc",
-        limit_page_length=int(limit),
+        limit_page_length=_conversation_fetch_limit(limit),
     )
-    return {"success": True, "result": _enrich_conversation_rows(rows)}
+    return {"success": True, "result": _enrich_conversation_rows(_limit_visible_rows(rows, limit))}
 
 
 @frappe.whitelist()
 def get_messages(conversation, limit=100):
+    ensure_can_read_conversation(conversation)
     rows = frappe.get_all(
         "Chat Message",
         filters={"conversation": conversation},
@@ -407,6 +429,7 @@ def get_messages(conversation, limit=100):
 
 @frappe.whitelist(methods=["POST"])
 def mark_read(conversation):
+    ensure_can_read_conversation(conversation)
     mark_conversation_read(conversation)
     return {"success": True}
 
@@ -491,6 +514,7 @@ def add_external_outbound_message(conversation, body, delivery_status="Sent", ch
 def get_sidebar_context(conversation):
     from wa_chat_hub.messaging.windows import _ensure_messaging_window_schema
 
+    ensure_can_read_conversation(conversation)
     _ensure_messaging_window_schema()
     convo = frappe.get_doc("Chat Conversation", conversation)
     try:
@@ -526,6 +550,7 @@ def get_sidebar_context(conversation):
 def get_messaging_window(conversation):
     if not conversation:
         frappe.throw(_("conversation is required"))
+    ensure_can_read_conversation(conversation)
     return {"success": True, "result": get_messaging_window_state(conversation)}
 
 
@@ -655,13 +680,17 @@ def _crm_lead_reference_lookup(reference_names: list[str]) -> dict[str, str]:
 def get_conversation_for_reference(reference_doctype, reference_name):
     if not reference_doctype or not reference_name:
         frappe.throw(_("reference_doctype and reference_name are required"))
+    if reference_doctype == "CRM Lead" and not can_read_crm_lead(reference_name):
+        frappe.throw(_("Not permitted to access this CRM Lead chat"), frappe.PermissionError)
 
     conversation = _conversation_for_reference(reference_doctype, reference_name)
     if conversation:
+        ensure_can_read_conversation(conversation)
         return {"success": True, "conversation": conversation}
 
     created = _try_create_conversation_for_reference(reference_doctype, reference_name)
     if created:
+        ensure_can_read_conversation(created)
         return {"success": True, "conversation": created, "created": True}
 
     message = _("No WhatsApp conversation found for this record.")
@@ -805,6 +834,7 @@ def get_existing_conversation_for_patient(patient):
 
     linked = _conversation_for_reference("Patient", patient)
     if linked:
+        ensure_can_read_conversation(linked)
         return {"success": True, "conversation": linked, "matched_by": "reference"}
 
     doc = frappe.get_doc("Patient", patient)
@@ -812,6 +842,7 @@ def get_existing_conversation_for_patient(patient):
     for phone_number in phone_numbers:
         conversation = _find_existing_conversation_by_phone(phone_number)
         if conversation:
+            ensure_can_read_conversation(conversation)
             return {
                 "success": True,
                 "conversation": conversation,
@@ -838,17 +869,21 @@ def get_reference_chat_statuses(reference_doctype, reference_names=None):
     if not names:
         return {"success": True, "result": result}
 
+    allowed_names = filter_accessible_reference_names(reference_doctype, names)
+    if not allowed_names:
+        return {"success": True, "result": result}
+
     conv_stats: dict[str, dict] = {
         name: {"unread_count": 0, "conversation_count": 0, "last_message_time": ""}
-        for name in names
+        for name in allowed_names
     }
     meta = frappe.get_meta("Chat Conversation")
-    reference_lookup = {name: name for name in names}
-    query_names = names
+    reference_lookup = {name: name for name in allowed_names}
+    query_names = allowed_names
 
     if reference_doctype == "CRM Lead":
-        reference_lookup = _crm_lead_reference_lookup(names)
-        query_names = list(reference_lookup) or names
+        reference_lookup = _crm_lead_reference_lookup(allowed_names)
+        query_names = list(reference_lookup) or allowed_names
 
     if reference_doctype == "CRM Lead" and meta.has_field("linked_crm_lead"):
         for row in frappe.get_all(
@@ -880,7 +915,7 @@ def get_reference_chat_statuses(reference_doctype, reference_names=None):
         encounter_patient = {}
         for enc in frappe.get_all(
             "Patient Encounter",
-            filters={"name": ["in", names]},
+            filters={"name": ["in", allowed_names]},
             fields=["name", "patient"],
         ):
             if enc.patient:
@@ -924,11 +959,15 @@ def resolve_chat_for_reference(reference_doctype, reference_name=None, phone_num
         frappe.throw(_("reference_doctype is required"))
 
     if reference_name:
+        if reference_doctype == "CRM Lead" and not can_read_crm_lead(reference_name):
+            frappe.throw(_("Not permitted to access this CRM Lead chat"), frappe.PermissionError)
         conv = _conversation_for_reference(reference_doctype, reference_name)
         if conv:
+            ensure_can_read_conversation(conv)
             return {"success": True, "result": {"conversation": conv}}
         created = _try_create_conversation_for_reference(reference_doctype, reference_name)
         if created:
+            ensure_can_read_conversation(created)
             return {"success": True, "result": {"conversation": created, "created": True}}
         if reference_doctype == "CRM Lead":
             return {"success": True, "result": {"conversation": None}}
@@ -939,6 +978,7 @@ def resolve_chat_for_reference(reference_doctype, reference_name=None, phone_num
         if contact:
             conv = frappe.db.get_value("Chat Conversation", {"contact": contact, "status": ["!=", "Closed"]}, "name")
             if conv:
+                ensure_can_read_conversation(conv)
                 return {"success": True, "result": {"conversation": conv}}
 
     return {"success": True, "result": {"conversation": None}}
@@ -969,5 +1009,6 @@ def _parse_reference_names(reference_names) -> list[str]:
 
 
 def _ensure_conversation_write(name):
+    ensure_can_read_conversation(name)
     if not frappe.has_permission("Chat Conversation", "write", name):
         frappe.throw(_("Not permitted to update conversation {0}").format(name), frappe.PermissionError)

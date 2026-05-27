@@ -1,6 +1,8 @@
 import frappe
 from frappe.utils import add_to_date, cint, now_datetime
 
+from wa_chat_hub.permissions import conversation_access_sql_condition
+
 
 def _doctype_ready(doctype, fields):
     try:
@@ -59,27 +61,27 @@ def _unread_count_for_category(category=None):
     if not _doctype_ready("Chat Conversation", ["status", "unread_count"]):
         return 0
 
-    conditions = ["status != 'Closed'"]
+    conditions = ["c.status != 'Closed'", conversation_access_sql_condition("c")]
     values = []
     category = (category or "all").strip().lower()
 
     if category == "crm_leads":
         lead_conditions = []
         if _has_column("Chat Conversation", "linked_crm_lead"):
-            lead_conditions.append("IFNULL(linked_crm_lead, '') != ''")
+            lead_conditions.append("IFNULL(c.linked_crm_lead, '') != ''")
         if _has_column("Chat Conversation", "linked_reference_doctype"):
-            lead_conditions.append("linked_reference_doctype in ('CRM Lead', 'Lead')")
+            lead_conditions.append("c.linked_reference_doctype in ('CRM Lead', 'Lead')")
         conditions.append("(" + " or ".join(lead_conditions or ["1 = 0"]) + ")")
     elif category == "patients":
         if _has_column("Chat Conversation", "linked_reference_doctype"):
-            conditions.append("linked_reference_doctype in ('Patient', 'Patient Encounter')")
+            conditions.append("c.linked_reference_doctype in ('Patient', 'Patient Encounter')")
         else:
             conditions.append("1 = 0")
 
     count = frappe.db.sql(
         f"""
-        select coalesce(sum(unread_count), 0)
-        from `tabChat Conversation`
+        select coalesce(sum(c.unread_count), 0)
+        from `tabChat Conversation` c
         where {" and ".join(conditions)}
         """,
         values,
@@ -93,12 +95,14 @@ def _recent_ai_reply_count():
 
     since = add_to_date(now_datetime(), hours=-24)
     count = frappe.db.sql(
-        """
+        f"""
         select count(*)
-        from `tabChat Message`
-        where direction = 'Outbound'
-          and sender_type = 'AI'
-          and creation >= %s
+        from `tabChat Message` m
+        join `tabChat Conversation` c on m.conversation = c.name
+        where m.direction = 'Outbound'
+          and m.sender_type = 'AI'
+          and m.creation >= %s
+          and {conversation_access_sql_condition("c")}
         """,
         [since],
     )[0][0]
@@ -135,7 +139,7 @@ def get_recent_messages():
             return []
 
         # Fetch 10 most recent inbound messages with their contact names
-        res = frappe.db.sql("""
+        res = frappe.db.sql(f"""
             select 
                 m.name, m.body, m.creation,
                 IFNULL(cnt.display_name, cnt.phone_number) as sender_name
@@ -143,6 +147,7 @@ def get_recent_messages():
             join `tabChat Conversation` c on m.conversation = c.name
             join `tabChat Contact` cnt on c.contact = cnt.name
             where m.direction = 'Inbound'
+              and {conversation_access_sql_condition("c")}
             order by m.creation desc
             limit 10
         """, as_dict=True)
@@ -186,6 +191,7 @@ def get_recent_notifications(category="all", limit=10):
             join `tabChat Conversation` c on m.conversation = c.name
             join `tabChat Contact` cnt on c.contact = cnt.name
             where {condition}
+              and {conversation_access_sql_condition("c")}
             order by m.creation desc
             limit %s
             """,

@@ -9,6 +9,7 @@ from wa_chat_hub.interakt.templates_api import (
     resolve_channel_account_from_conversation,
 )
 from wa_chat_hub.outbound import send_interakt_template_message, send_outbound_message
+from wa_chat_hub.permissions import ensure_can_read_conversation
 from wa_chat_hub.services import append_message
 
 
@@ -46,6 +47,7 @@ def _upload_media_for_send(allowed_mimetypes, missing_file_message, invalid_file
     conversation = frappe.form_dict.get("conversation")
     if not conversation:
         frappe.throw(_("conversation is required"))
+    ensure_can_read_conversation(conversation)
 
     file_storage = frappe.request.files.get("file") if frappe.request and frappe.request.files else None
     if not file_storage:
@@ -122,6 +124,7 @@ def send_reply():
     display_media_url = payload.get("display_media_url") or media_url
     if not conversation:
         frappe.throw(_("conversation is required"))
+    ensure_can_read_conversation(conversation)
 
     content_type = str(payload.get("content_type") or "Text").title()
     is_media_message = content_type in {"Image", "Document", "Audio", "Video", "Sticker"}
@@ -166,6 +169,7 @@ def send_reply():
 def get_interakt_templates(conversation=None, channel_account=None, force_refresh=0):
     """Return approved Interakt templates for the conversation's channel account."""
     if conversation and not channel_account:
+        ensure_can_read_conversation(conversation)
         channel_account = resolve_channel_account_from_conversation(conversation)
     if not channel_account:
         frappe.throw(_("conversation or channel_account is required"))
@@ -196,6 +200,7 @@ def send_template_message():
         frappe.throw(_("conversation is required"))
     if not template_name:
         frappe.throw(_("template_name is required"))
+    ensure_can_read_conversation(conversation)
 
     template = {
         "template_name": template_name,
