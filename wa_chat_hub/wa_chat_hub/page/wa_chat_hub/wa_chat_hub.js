@@ -215,13 +215,13 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     const api = {
         channelAccounts: () => frappe.call('wa_chat_hub.api.chat.get_channel_accounts'),
         conversations: () => frappe.call('wa_chat_hub.api.chat.get_conversations', {
-            limit: 100,
+            limit: 50,
             channel_account: selectedChannelAccount || null,
             reference_doctype: selectedReferenceDoctype || null,
         }),
         searchConversations: (query) => frappe.call('wa_chat_hub.api.chat.search_conversations', {
             query,
-            limit: 100,
+            limit: 50,
             channel_account: selectedChannelAccount || null,
             reference_doctype: selectedReferenceDoctype || null,
         }),

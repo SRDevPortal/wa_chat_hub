@@ -10,6 +10,7 @@ from frappe.utils import cint, now_datetime
 from wa_chat_hub.messaging.attribution import get_conversation_attribution
 from wa_chat_hub.messaging.windows import get_messaging_window_state
 from wa_chat_hub.permissions import can_read_crm_lead
+from wa_chat_hub.permissions import conversation_access_sql_condition
 from wa_chat_hub.permissions import ensure_can_read_conversation
 from wa_chat_hub.permissions import filter_accessible_conversation_rows
 from wa_chat_hub.permissions import filter_accessible_reference_names
@@ -191,6 +192,37 @@ def _conversation_fetch_limit(limit) -> int:
     return min(max(limit * 5, limit), 1000)
 
 
+def _conversation_sql_rows(filters: dict, limit) -> list:
+    conditions = [conversation_access_sql_condition("c")]
+    values = {"limit": _conversation_fetch_limit(limit)}
+
+    for index, (fieldname, value) in enumerate((filters or {}).items()):
+        param = f"filter_{index}"
+        if isinstance(value, (list, tuple)) and len(value) == 2 and str(value[0]).lower() == "in":
+            options = tuple(value[1] or [])
+            if not options:
+                conditions.append("1 = 0")
+                continue
+            conditions.append(f"c.`{fieldname}` in %({param})s")
+            values[param] = options
+        else:
+            conditions.append(f"c.`{fieldname}` = %({param})s")
+            values[param] = value
+
+    fields = ", ".join(f"c.`{fieldname}`" for fieldname in CONVERSATION_LIST_FIELDS)
+    return frappe.db.sql(
+        f"""
+        select {fields}
+        from `tabChat Conversation` c
+        where {" and ".join(f"({condition})" for condition in conditions)}
+        order by c.modified desc
+        limit %(limit)s
+        """,
+        values,
+        as_dict=True,
+    )
+
+
 def _limit_visible_rows(rows: list, limit) -> list:
     return filter_accessible_conversation_rows(rows)[: _as_int(limit)]
 
@@ -355,15 +387,9 @@ def get_conversations(
         reference_doctype=reference_doctype,
     )
 
-    rows = frappe.get_all(
-        "Chat Conversation",
-        filters=filters,
-        fields=CONVERSATION_LIST_FIELDS,
-        order_by="modified desc",
-        limit_page_length=_conversation_fetch_limit(limit),
-    )
+    rows = _conversation_sql_rows(filters, limit)
 
-    result = _enrich_conversation_rows(_limit_visible_rows(rows, limit))
+    result = _enrich_conversation_rows(rows[: _as_int(limit)])
     _short_cache_set(cache_key, result, CONVERSATION_CACHE_TTL)
     return {"success": True, "result": result}
 
