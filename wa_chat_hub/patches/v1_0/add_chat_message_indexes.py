@@ -43,6 +43,11 @@ def ensure_chat_message_indexes() -> None:
                 ["direction", "sender_type", "creation"],
                 index_name="idx_chat_message_direction_sender_creation",
             )
+        frappe.db.add_index(
+            "Chat Message",
+            ["modified"],
+            index_name="idx_chat_message_modified",
+        )
     finally:
         frappe.flags.in_migrate = previous
 
@@ -63,6 +68,11 @@ def ensure_chat_conversation_indexes() -> None:
             "Chat Conversation",
             ["contact", "status"],
             index_name="idx_chat_conversation_contact_status",
+        )
+        frappe.db.add_index(
+            "Chat Conversation",
+            ["modified"],
+            index_name="idx_chat_conversation_modified",
         )
         if frappe.db.has_column("Chat Conversation", "linked_crm_lead"):
             frappe.db.add_index(
