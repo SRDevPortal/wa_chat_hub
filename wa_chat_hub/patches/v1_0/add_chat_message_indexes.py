@@ -6,6 +6,7 @@ import frappe
 def execute() -> None:
     ensure_chat_message_indexes()
     ensure_chat_conversation_indexes()
+    ensure_chat_contact_indexes()
     ensure_crm_lead_indexes()
 
 
@@ -97,6 +98,27 @@ def ensure_chat_conversation_indexes() -> None:
                 ["contact", "linked_reference_doctype", "linked_reference_name"],
                 index_name="idx_chat_conversation_contact_reference",
             )
+    finally:
+        frappe.flags.in_migrate = previous
+
+
+def ensure_chat_contact_indexes() -> None:
+    if not frappe.db.exists("DocType", "Chat Contact"):
+        return
+
+    previous = getattr(frappe.flags, "in_migrate", False)
+    frappe.flags.in_migrate = True
+    try:
+        frappe.db.add_index(
+            "Chat Contact",
+            ["modified"],
+            index_name="idx_chat_contact_modified",
+        )
+        frappe.db.add_index(
+            "Chat Contact",
+            ["source_doctype", "source_name"],
+            index_name="idx_chat_contact_source",
+        )
     finally:
         frappe.flags.in_migrate = previous
 

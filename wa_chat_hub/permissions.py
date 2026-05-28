@@ -65,7 +65,12 @@ def crm_lead_permission_condition(user: str | None = None, alias: str = "wa_lead
 
 def has_unrestricted_chat_access(user: str | None = None) -> bool:
     user = _user(user)
-    return _role_bypass(user) or crm_lead_permission_condition(user) == ""
+    cache = getattr(frappe.local, "wa_chat_hub_unrestricted_chat_access", None)
+    if cache is None:
+        cache = frappe.local.wa_chat_hub_unrestricted_chat_access = {}
+    if user not in cache:
+        cache[user] = _role_bypass(user) or crm_lead_permission_condition(user) == ""
+    return cache[user]
 
 
 def get_conversation_crm_lead(conversation_or_row) -> str | None:
