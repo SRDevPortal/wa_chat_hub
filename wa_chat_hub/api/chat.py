@@ -125,6 +125,7 @@ CONVERSATION_LIST_FIELDS = [
 MAX_REFERENCE_STATUS_NAMES = 500
 CONVERSATION_CACHE_TTL = 5
 REFERENCE_STATUS_CACHE_TTL = 5
+REFERENCE_CHAT_STATUS_ENABLED = False
 
 
 def _short_cache_get(key: str):
@@ -899,6 +900,9 @@ def get_existing_conversation_for_patient(patient):
 
 @frappe.whitelist()
 def get_reference_chat_statuses(reference_doctype, reference_names=None):
+    if not REFERENCE_CHAT_STATUS_ENABLED:
+        return {"success": True, "result": {}}
+
     if not reference_doctype:
         frappe.throw(_("reference_doctype is required"))
 

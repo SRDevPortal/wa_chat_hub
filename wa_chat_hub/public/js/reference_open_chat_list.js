@@ -1,6 +1,7 @@
 (function () {
 	const doctypes = ["CRM Lead", "Patient", "Patient Encounter"];
-	const statusDoctypes = ["CRM Lead"];
+	const referenceChatStatusEnabled = false;
+	const statusDoctypes = referenceChatStatusEnabled ? ["CRM Lead"] : [];
 
 	doctypes.forEach((doctype) => setup_reference_chat_button(doctype));
 
