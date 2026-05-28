@@ -5,6 +5,17 @@ frappe.pages['wa-chat-hub'].on_page_show = function(wrapper) {
     }
 };
 
+frappe.pages['wa-chat-hub'].on_page_hide = function(wrapper) {
+    wrapper.wa_chat_hub_active = false;
+    if (wrapper.wa_chat_hub_refresh_state && wrapper.wa_chat_hub_refresh_state.timer) {
+        clearTimeout(wrapper.wa_chat_hub_refresh_state.timer);
+        wrapper.wa_chat_hub_refresh_state.timer = null;
+    }
+    if (wrapper.wa_chat_hub_refresh_state) {
+        wrapper.wa_chat_hub_refresh_state.pending = false;
+    }
+};
+
 frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     if (wrapper.wa_chat_hub_initialized) {
         return;
@@ -524,10 +535,21 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         conversationRefreshState.pending = false;
         conversationRefreshState.lastAt = now;
 
+        if (!isWaChatHubRouteActive()) {
+            conversationRefreshState.inFlight = false;
+            return Promise.resolve();
+        }
+
         return Promise.resolve(api.conversations()).then((r) => {
+            if (!isWaChatHubCurrentRoute()) {
+                return Promise.resolve();
+            }
             conversationRowsCache = (r.message || {}).result || [];
             return applyConversationListView();
         }).then(() => {
+            if (!isWaChatHubCurrentRoute()) {
+                return;
+            }
             if (preselectedConversation) {
                 const target = conversationRowsCache.find((row) => row.name === preselectedConversation);
                 if (target) {
@@ -537,7 +559,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
             }
         }).finally(() => {
             conversationRefreshState.inFlight = false;
-            if (conversationRefreshState.pending) {
+            if (conversationRefreshState.pending && isWaChatHubCurrentRoute()) {
                 conversationRefreshState.pending = false;
                 scheduleConversationRefresh(CONVERSATION_REFRESH_DEBOUNCE_MS);
             }

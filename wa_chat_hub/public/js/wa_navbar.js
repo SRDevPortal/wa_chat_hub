@@ -1,7 +1,12 @@
 frappe.provide("wa_chat_hub.notifications");
 frappe.provide("wa_chat_hub.realtime");
 
+wa_chat_hub.notifications_disabled = true;
+
 $(document).ready(function() {
+    if (wa_chat_hub.notifications_disabled) {
+        return;
+    }
     wa_chat_hub.realtime.patch_unsaved_doc_subscriptions_soon();
     wa_chat_hub.notifications.setup();
     frappe.router.on('change', function() {
@@ -51,10 +56,13 @@ wa_chat_hub.realtime = {
     }
 };
 
-wa_chat_hub.realtime.patch_unsaved_doc_subscriptions_soon();
+if (!wa_chat_hub.notifications_disabled) {
+    wa_chat_hub.realtime.patch_unsaved_doc_subscriptions_soon();
+}
 
 wa_chat_hub.notifications = {
     active_category: "all",
+    count_refresh_interval_ms: 60000,
     categories: [
         { key: "all", label: "All" },
         { key: "crm_leads", label: "CRM Leads" },
@@ -63,6 +71,9 @@ wa_chat_hub.notifications = {
     ],
 
     setup: function() {
+        if (wa_chat_hub.notifications_disabled) {
+            return;
+        }
         if (!frappe.ui.toolbar) {
             setTimeout(wa_chat_hub.notifications.setup, 500);
             return;
@@ -74,6 +85,10 @@ wa_chat_hub.notifications = {
     },
 
     insert_icon: function() {
+        if (wa_chat_hub.notifications_disabled) {
+            $('.custom-wa-dropdown').remove();
+            return;
+        }
         if ($('.custom-wa-dropdown').length > 0) {
             wa_chat_hub.notifications.refresh_count();
             return;
@@ -149,6 +164,9 @@ wa_chat_hub.notifications = {
     },
 
     load_recent: function() {
+        if (wa_chat_hub.notifications_disabled) {
+            return;
+        }
         let list_container = $('.wa-notifications-list');
         list_container.html('<div class="p-4 text-center text-muted"><i class="fa fa-spinner fa-spin fa-2x"></i></div>');
         
@@ -186,14 +204,18 @@ wa_chat_hub.notifications = {
     },
     
     refresh_count: function() {
+        if (wa_chat_hub.notifications_disabled) {
+            $('.custom-wa-dropdown').remove();
+            return;
+        }
         const now = Date.now();
         if (this.count_in_flight) {
             this.count_refresh_pending = true;
             return;
         }
-        if (this.last_count_refresh_at && now - this.last_count_refresh_at < 3000) {
+        if (this.last_count_refresh_at && now - this.last_count_refresh_at < this.count_refresh_interval_ms) {
             clearTimeout(this.count_refresh_timer);
-            this.count_refresh_timer = setTimeout(() => this.refresh_count(), 3000);
+            this.count_refresh_timer = setTimeout(() => this.refresh_count(), this.count_refresh_interval_ms);
             return;
         }
         this.count_in_flight = true;

@@ -36,6 +36,12 @@ def ensure_chat_message_indexes() -> None:
             ["direction", "creation"],
             index_name="idx_chat_message_direction_creation",
         )
+        if frappe.db.has_column("Chat Message", "sender_type"):
+            frappe.db.add_index(
+                "Chat Message",
+                ["direction", "sender_type", "creation"],
+                index_name="idx_chat_message_direction_sender_creation",
+            )
     finally:
         frappe.flags.in_migrate = previous
 
@@ -65,6 +71,11 @@ def ensure_chat_conversation_indexes() -> None:
             )
             frappe.db.add_index(
                 "Chat Conversation",
+                ["status", "linked_crm_lead", "unread_count"],
+                index_name="idx_chat_conversation_status_crm_unread",
+            )
+            frappe.db.add_index(
+                "Chat Conversation",
                 ["contact", "linked_crm_lead"],
                 index_name="idx_chat_conversation_contact_crm_lead",
             )
@@ -78,6 +89,11 @@ def ensure_chat_conversation_indexes() -> None:
             )
             frappe.db.add_index(
                 "Chat Conversation",
+                ["status", "linked_reference_doctype", "linked_reference_name", "unread_count"],
+                index_name="idx_chat_conversation_status_ref_unread",
+            )
+            frappe.db.add_index(
+                "Chat Conversation",
                 ["contact", "linked_reference_doctype", "linked_reference_name"],
                 index_name="idx_chat_conversation_contact_reference",
             )
@@ -88,16 +104,23 @@ def ensure_chat_conversation_indexes() -> None:
 def ensure_crm_lead_indexes() -> None:
     if not frappe.db.exists("DocType", "CRM Lead"):
         return
-    if not frappe.db.has_column("CRM Lead", "sr_duplicate_of_name"):
-        return
 
     previous = getattr(frappe.flags, "in_migrate", False)
     frappe.flags.in_migrate = True
     try:
-        frappe.db.add_index(
-            "CRM Lead",
-            ["sr_duplicate_of_name"],
-            index_name="idx_crmlead_duplicate_of_name",
-        )
+        if frappe.db.has_column("CRM Lead", "sr_duplicate_of_name"):
+            frappe.db.add_index(
+                "CRM Lead",
+                ["sr_duplicate_of_name"],
+                index_name="idx_crmlead_duplicate_of_name",
+            )
+        if frappe.db.has_column("CRM Lead", "lead_owner") and frappe.db.has_column(
+            "CRM Lead", "sr_lead_pipeline"
+        ):
+            frappe.db.add_index(
+                "CRM Lead",
+                ["lead_owner", "sr_lead_pipeline"],
+                index_name="idx_crmlead_owner_pipeline",
+            )
     finally:
         frappe.flags.in_migrate = previous

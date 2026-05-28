@@ -6,7 +6,7 @@ app_email = "admin@example.com"
 app_license = "MIT"
 
 app_include_css = ["/assets/wa_chat_hub/css/wa_chat_hub.css"]
-app_include_js = ["/assets/wa_chat_hub/js/wa_navbar.js"]
+app_include_js = []
 
 after_install = "wa_chat_hub.setup_workspace.run"
 after_migrate = "wa_chat_hub.migrate.after_migrate"

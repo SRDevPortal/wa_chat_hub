@@ -3,7 +3,12 @@ from frappe.utils import add_to_date, cint, now_datetime
 
 from wa_chat_hub.permissions import conversation_access_sql_condition
 
-NOTIFICATION_CACHE_TTL = 3
+NOTIFICATION_CACHE_TTL = 30
+NOTIFICATION_SERVICE_ENABLED = False
+
+
+def _disabled_counts():
+    return {"all": 0, "crm_leads": 0, "patients": 0, "ai_replies": 0}
 
 
 def _cache_key(prefix, **kwargs):
@@ -111,6 +116,45 @@ def _unread_count_for_category(category=None):
     return int(count or 0)
 
 
+def _unread_counts_by_category():
+    if not _doctype_ready("Chat Conversation", ["status", "unread_count"]):
+        return {"all": 0, "crm_leads": 0, "patients": 0}
+
+    conditions = ["c.status != 'Closed'", conversation_access_sql_condition("c")]
+    crm_condition = "1 = 0"
+    patient_condition = "1 = 0"
+
+    if _has_column("Chat Conversation", "linked_crm_lead") or _has_column(
+        "Chat Conversation", "linked_reference_doctype"
+    ):
+        lead_conditions = []
+        if _has_column("Chat Conversation", "linked_crm_lead"):
+            lead_conditions.append("IFNULL(c.linked_crm_lead, '') != ''")
+        if _has_column("Chat Conversation", "linked_reference_doctype"):
+            lead_conditions.append("c.linked_reference_doctype in ('CRM Lead', 'Lead')")
+        crm_condition = "(" + " or ".join(lead_conditions or ["1 = 0"]) + ")"
+
+    if _has_column("Chat Conversation", "linked_reference_doctype"):
+        patient_condition = "c.linked_reference_doctype in ('Patient', 'Patient Encounter')"
+
+    row = frappe.db.sql(
+        f"""
+        select
+            coalesce(sum(c.unread_count), 0) as all_count,
+            coalesce(sum(case when {crm_condition} then c.unread_count else 0 end), 0) as crm_leads_count,
+            coalesce(sum(case when {patient_condition} then c.unread_count else 0 end), 0) as patients_count
+        from `tabChat Conversation` c
+        where {" and ".join(conditions)}
+        """,
+        as_dict=True,
+    )[0]
+    return {
+        "all": int(row.all_count or 0),
+        "crm_leads": int(row.crm_leads_count or 0),
+        "patients": int(row.patients_count or 0),
+    }
+
+
 def _recent_ai_reply_count():
     if not _doctype_ready("Chat Message", ["direction", "sender_type", "creation"]):
         return 0
@@ -133,12 +177,15 @@ def _recent_ai_reply_count():
 
 @frappe.whitelist()
 def get_unread_count():
+    if not NOTIFICATION_SERVICE_ENABLED:
+        return 0
+
     try:
         key = _cache_key("unread_count")
         cached = _cache_get(key)
         if cached is not None:
             return cached
-        value = _unread_count_for_category() + _recent_ai_reply_count()
+        value = _unread_counts_by_category()["all"] + _recent_ai_reply_count()
         _cache_set(key, value)
         return value
     except Exception as e:
@@ -148,16 +195,21 @@ def get_unread_count():
 
 @frappe.whitelist()
 def get_notification_counts():
+    if not NOTIFICATION_SERVICE_ENABLED:
+        return _disabled_counts()
+
     try:
         key = _cache_key("counts")
         cached = _cache_get(key)
         if cached is not None:
             return cached
+        unread_counts = _unread_counts_by_category()
+        ai_replies = _recent_ai_reply_count()
         value = {
-            "all": _unread_count_for_category() + _recent_ai_reply_count(),
-            "crm_leads": _unread_count_for_category("crm_leads"),
-            "patients": _unread_count_for_category("patients"),
-            "ai_replies": _recent_ai_reply_count(),
+            "all": unread_counts["all"] + ai_replies,
+            "crm_leads": unread_counts["crm_leads"],
+            "patients": unread_counts["patients"],
+            "ai_replies": ai_replies,
         }
         _cache_set(key, value)
         return value
@@ -168,6 +220,9 @@ def get_notification_counts():
 
 @frappe.whitelist()
 def get_recent_messages():
+    if not NOTIFICATION_SERVICE_ENABLED:
+        return []
+
     try:
         if not _notifications_ready():
             return []
@@ -193,6 +248,9 @@ def get_recent_messages():
 
 @frappe.whitelist()
 def get_recent_notifications(category="all", limit=10):
+    if not NOTIFICATION_SERVICE_ENABLED:
+        return []
+
     try:
         if not _notifications_ready():
             return []
