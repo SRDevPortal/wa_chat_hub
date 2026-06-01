@@ -5,9 +5,7 @@ from contextlib import contextmanager
 from typing import Any, Dict, Optional
 
 import frappe
-import requests
 from frappe import _
-from frappe.utils.file_manager import save_file
 
 from wa_chat_hub.ai.ocr_summary import build_attachment_filename, process_attachment_for_lead_summary
 from wa_chat_hub.prompts import (
@@ -943,7 +941,7 @@ def _sync_inbound_attachment_to_linked_record(
     message_name: str,
     payload: Dict[str, Any],
 ) -> None:
-    """Mirror inbound chat media on linked CRM Lead (form-attachments sidebar)."""
+    """Mirror inbound chat media URL on linked CRM Lead without local/S3 copy."""
     convo = frappe.get_doc("Chat Conversation", conversation)
     crm_lead = get_conversation_crm_lead(convo)
     if not crm_lead:
@@ -976,26 +974,14 @@ def _sync_inbound_attachment_to_linked_record(
         },
     ):
         return
-    content = _fetch_media_bytes(media_url)
-    if content:
-        save_file(lead_filename, content, ref_doctype, ref_name, is_private=0)
-        return
-
-    chat_file.create_attachment_copy(ref_doctype, ref_name, ignore_permissions=True)
-
-
-def _fetch_media_bytes(media_url: str) -> Optional[bytes]:
-    try:
-        response = requests.get(
-            media_url,
-            headers={
-                "Accept": "*/*",
-                "User-Agent": "wa-chat-hub/1.0",
-            },
-            timeout=30,
-        )
-        if response.ok and response.content:
-            return response.content
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "WA Attachment Media Download Failed")
-    return None
+    lead_file = frappe.get_doc(
+        {
+            "doctype": "File",
+            "file_name": lead_filename,
+            "file_url": chat_file.file_url or media_url,
+            "is_private": 0,
+            "attached_to_doctype": ref_doctype,
+            "attached_to_name": ref_name,
+        }
+    )
+    lead_file.insert(ignore_permissions=True)
