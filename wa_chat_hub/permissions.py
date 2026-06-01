@@ -5,6 +5,8 @@ import re
 import frappe
 from frappe import _
 
+from wa_chat_hub.clinic_compat import get_crm_lead_pqc
+
 
 CRM_LEAD_DOCTYPES = {"CRM Lead", "Lead"}
 
@@ -51,12 +53,9 @@ def crm_lead_permission_condition(user: str | None = None, alias: str = "wa_lead
     if not _has_crm_lead_doctype():
         return "1=0"
 
-    try:
-        from sriaas_clinic.api.crm_lead.access import crm_lead_pqc
-
+    crm_lead_pqc = get_crm_lead_pqc()
+    if crm_lead_pqc:
         return _qualify_crm_lead_condition(crm_lead_pqc(user) or "", alias)
-    except Exception:
-        pass
 
     if frappe.db.has_column("CRM Lead", "lead_owner"):
         return f"`{alias}`.`lead_owner` = {frappe.db.escape(user)}"
