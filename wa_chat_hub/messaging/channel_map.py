@@ -12,6 +12,7 @@ PIPELINE_MAP_FIELDS = [
     "name",
     "chat_channel_account",
     "sr_lead_pipeline",
+    "sr_lead_source",
     "sr_medical_department",
     "is_active",
 ]
@@ -38,7 +39,7 @@ def get_pipeline_map(
     rows = frappe.get_all(
         "WA Channel Pipeline Map",
         filters=filters,
-        fields=PIPELINE_MAP_FIELDS,
+        fields=_pipeline_map_fields(),
         limit_page_length=2,
     )
     if not rows:
@@ -73,7 +74,7 @@ def get_pipeline_map_row_for_channel_account(channel_account: Optional[str]) -> 
     rows = frappe.get_all(
         "WA Channel Pipeline Map",
         filters={"chat_channel_account": channel_account, "is_active": 1},
-        fields=PIPELINE_MAP_FIELDS,
+        fields=_pipeline_map_fields(),
         limit_page_length=1,
     )
     return rows[0] if rows else None
@@ -88,6 +89,12 @@ def get_pipeline_for_channel_account(channel_account: Optional[str]) -> Optional
     return row.get("sr_lead_pipeline") if row else None
 
 
+def get_source_for_channel_account(channel_account: Optional[str]) -> Optional[str]:
+    """Optional SR Lead Source for CRM Leads created from this Interakt account."""
+    row = get_pipeline_map_row_for_channel_account(channel_account)
+    return row.get("sr_lead_source") if row else None
+
+
 def get_channel_account_defaults(channel_account: Optional[str]) -> Dict[str, Any]:
     """
     Defaults from WA Channel Pipeline Map for one Interakt Chat Channel Account:
@@ -98,6 +105,7 @@ def get_channel_account_defaults(channel_account: Optional[str]) -> Dict[str, An
         return {}
     return {
         "sr_lead_pipeline": row.get("sr_lead_pipeline"),
+        "sr_lead_source": row.get("sr_lead_source"),
         "sr_medical_department": row.get("sr_medical_department"),
         "pipeline_map": row.get("name"),
     }
@@ -122,6 +130,15 @@ def _validate_channel_account(channel_account: str) -> None:
         frappe.throw(_("Mapped WhatsApp channel {0} is not active.").format(channel_account))
     if account.channel_type != "Interakt":
         frappe.throw(_("Mapped WhatsApp channel {0} must be an Interakt account.").format(channel_account))
+
+
+def _pipeline_map_fields() -> list[str]:
+    fields = list(PIPELINE_MAP_FIELDS)
+    try:
+        meta = frappe.get_meta("WA Channel Pipeline Map")
+    except Exception:
+        return [field for field in fields if field != "sr_lead_source"]
+    return [field for field in fields if field != "sr_lead_source" or meta.has_field(field)]
 
 
 def _missing_map_hint(*, pipeline: Optional[str], medical_department: Optional[str]) -> str:

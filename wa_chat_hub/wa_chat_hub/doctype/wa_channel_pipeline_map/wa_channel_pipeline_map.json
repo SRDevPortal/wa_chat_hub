@@ -7,6 +7,7 @@
  "field_order": [
   "chat_channel_account",
   "sr_lead_pipeline",
+  "sr_lead_source",
   "sr_medical_department",
   "is_active"
  ],
@@ -28,6 +29,14 @@
    "label": "Default SR Lead Pipeline",
    "options": "SR Lead Pipeline",
    "reqd": 1
+  },
+  {
+   "description": "Optional source for CRM Leads created from this WhatsApp channel.",
+   "fieldname": "sr_lead_source",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "SR Lead Source",
+   "options": "SR Lead Source"
   },
   {
    "description": "Must match Patient sr_medical_department for Open Chat from Patient list.",

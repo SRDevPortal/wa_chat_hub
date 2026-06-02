@@ -601,6 +601,36 @@ def _default_sr_lead_pipeline_for_channel(channel_account: Optional[str]) -> Opt
     return get_pipeline_for_channel_account(channel_account)
 
 
+def _default_sr_lead_source_for_channel(channel_account: Optional[str], meta) -> Optional[str]:
+    """Optional SR Lead Source per Interakt account; never block lead creation."""
+    if not channel_account:
+        return None
+
+    source_df = meta.get_field("source")
+    if not source_df:
+        return None
+
+    try:
+        from wa_chat_hub.messaging.channel_map import get_source_for_channel_account
+
+        mapped_source = get_source_for_channel_account(channel_account)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "WA Channel Source Mapping Failed")
+        return None
+
+    if not mapped_source:
+        return None
+
+    if source_df.fieldtype == "Link" and source_df.options:
+        return _resolve_or_create_link_value(source_df.options, mapped_source)
+
+    if source_df.fieldtype == "Select":
+        options = [opt.strip() for opt in str(source_df.options or "").split("\n") if opt.strip()]
+        return mapped_source if mapped_source in options else None
+
+    return mapped_source
+
+
 def _default_crm_lead_status() -> Optional[str]:
     if not frappe.db.exists("DocType", "CRM Lead Status"):
         return None
@@ -646,7 +676,7 @@ def _create_lead_for_inbound(
         elif meta.has_field("phone"):
             payload["phone"] = phone_number
         if meta.has_field("source"):
-            source_value = _resolve_whatsapp_source_value(meta)
+            source_value = _default_sr_lead_source_for_channel(channel_account, meta) or _resolve_whatsapp_source_value(meta)
             if source_value:
                 payload["source"] = source_value
         if meta.has_field("sr_lead_platform"):
