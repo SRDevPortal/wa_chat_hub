@@ -865,9 +865,7 @@ def _resolve_whatsapp_platform_value(meta) -> Optional[str]:
         return None
 
     if platform_df.fieldtype == "Link" and platform_df.options:
-        if frappe.db.exists(platform_df.options, "WhatsApp"):
-            return "WhatsApp"
-        return _create_simple_link_value(platform_df.options, "WhatsApp")
+        return _resolve_or_create_link_value(platform_df.options, "WhatsApp")
 
     if platform_df.fieldtype == "Select":
         options = [opt.strip() for opt in str(platform_df.options or "").split("\n") if opt.strip()]
@@ -876,17 +874,31 @@ def _resolve_whatsapp_platform_value(meta) -> Optional[str]:
     return "WhatsApp"
 
 
-def _create_simple_link_value(doctype: str, value: str) -> Optional[str]:
-    """Create simple single-name masters such as SR Lead Platform = WhatsApp."""
+def _resolve_or_create_link_value(doctype: str, value: str) -> Optional[str]:
+    """Resolve/create a Link option by docname or title field, returning the real docname."""
     try:
         meta = frappe.get_meta(doctype)
+        if frappe.db.exists(doctype, value):
+            return value
+
+        title_field = _link_title_field(meta)
+        if title_field:
+            existing = frappe.db.get_value(doctype, {title_field: value}, "name")
+            if existing:
+                return existing
+
         payload: Dict[str, Any] = {"doctype": doctype}
         autoname = str(getattr(meta, "autoname", "") or "")
         if autoname.startswith("field:"):
             fieldname = autoname.split(":", 1)[1]
             payload[fieldname] = value
+        elif title_field:
+            payload[title_field] = value
         else:
             payload["name"] = value
+
+        if meta.has_field("is_active"):
+            payload["is_active"] = 1
 
         doc = frappe.get_doc(payload)
         doc.insert(ignore_permissions=True)
@@ -894,6 +906,21 @@ def _create_simple_link_value(doctype: str, value: str) -> Optional[str]:
     except Exception:
         frappe.log_error(frappe.get_traceback(), f"WA Chat Hub Create {doctype} Failed")
         return None
+
+
+def _link_title_field(meta) -> Optional[str]:
+    """Best field to store a human label for simple linked masters."""
+    candidates = [
+        str(getattr(meta, "title_field", "") or "").strip(),
+        "sr_platform_name",
+        "platform_name",
+        "title",
+        "name1",
+    ]
+    for fieldname in candidates:
+        if fieldname and meta.has_field(fieldname):
+            return fieldname
+    return None
 
 
 def _persist_inbound_attachment(message_doc, payload: Dict[str, Any]) -> Optional[str]:
