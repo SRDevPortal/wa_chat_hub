@@ -9,6 +9,7 @@ authors = [
 ]
 dependencies = [
     "requests",
+    "imageio-ffmpeg",
 ]
 
 [build-system]

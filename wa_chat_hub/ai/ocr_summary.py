@@ -28,6 +28,16 @@ GENERIC_MEDIA_BODIES = {
     "document message received",
     "[image message received]",
     "[document message received]",
+    "audio",
+    "video",
+    "voice",
+    "voice note",
+    "audio message received",
+    "video message received",
+    "voice message received",
+    "[audio message received]",
+    "[video message received]",
+    "[voice message received]",
 }
 
 
@@ -54,11 +64,6 @@ def build_media_context_for_chat(
                 "No readable text could be extracted. Acknowledge receipt and ask for a clearer "
                 "photo or typed details if clinically relevant."
             )
-    elif content_type in ("Video", "Audio"):
-        lines.append(
-            "Respond naturally to the media message. Ask for a photo or typed report details "
-            "if they are sharing clinical information."
-        )
     else:
         lines.append(f"Attachment URL: {media_url[:200]}")
 
@@ -89,6 +94,9 @@ def process_attachment_for_lead_summary(
         return
 
     content_type = str(payload.get("content_type") or "Document").title()
+    if content_type not in ("Image", "Document"):
+        return
+
     body_hint = str(payload.get("body") or "").strip()
     extracted = _extract_text_from_media(media_url, content_type)
     summary = _summarize_report_text(extracted, body_hint, content_type)

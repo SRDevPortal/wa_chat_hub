@@ -8,6 +8,10 @@ from frappe.utils import cint
 from frappe.utils.background_jobs import enqueue
 
 from wa_chat_hub.ai.ocr_summary import GENERIC_MEDIA_BODIES, build_media_context_for_chat
+from wa_chat_hub.ai.media_transcription import (
+    TRANSCRIPT_CONTENT_TYPES,
+    build_transcript_context_for_chat,
+)
 from wa_chat_hub.ai.service import create_ai_suggestion
 from wa_chat_hub.api.vector_search import search_knowledge_base
 from wa_chat_hub.outbound import send_outbound_message
@@ -120,6 +124,8 @@ def process_message(message_id):
                 media_context = "Customer sent an image on WhatsApp."
                 if caption:
                     media_context += f" Caption: {caption}"
+            elif content_type in TRANSCRIPT_CONTENT_TYPES:
+                media_context = build_transcript_context_for_chat(media_url, content_type, body_text)
             else:
                 media_context = build_media_context_for_chat(media_url, content_type, body_text)
         except Exception:

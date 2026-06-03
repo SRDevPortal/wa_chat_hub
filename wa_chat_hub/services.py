@@ -8,6 +8,10 @@ import frappe
 from frappe import _
 
 from wa_chat_hub.ai.ocr_summary import build_attachment_filename, process_attachment_for_lead_summary
+from wa_chat_hub.ai.media_transcription import (
+    TRANSCRIPT_CONTENT_TYPES,
+    process_transcript_for_lead_summary,
+)
 from wa_chat_hub.prompts import (
     get_conversation_crm_lead,
     get_conversation_linked_reference,
@@ -297,10 +301,17 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
             )
         except Exception:
             frappe.log_error(frappe.get_traceback(), "CRM Lead Attachment Sync Failed")
-        try:
-            process_attachment_for_lead_summary(conversation, message.name, payload)
-        except Exception:
-            frappe.log_error(frappe.get_traceback(), "OCR Lead Summary Failed")
+        content_type = str(payload.get("content_type") or "").title()
+        if content_type in TRANSCRIPT_CONTENT_TYPES:
+            try:
+                process_transcript_for_lead_summary(conversation, message.name, payload)
+            except Exception:
+                frappe.log_error(frappe.get_traceback(), "Media Transcript Lead Summary Failed")
+        else:
+            try:
+                process_attachment_for_lead_summary(conversation, message.name, payload)
+            except Exception:
+                frappe.log_error(frappe.get_traceback(), "OCR Lead Summary Failed")
     if direction == "Inbound" and not (
         getattr(frappe.flags, "wa_ai_outbound_reply", False)
         or getattr(frappe.local, "wa_ai_outbound_reply", False)
