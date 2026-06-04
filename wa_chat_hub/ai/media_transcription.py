@@ -33,26 +33,32 @@ def build_transcript_context_for_chat(
     if caption:
         lines.append(f"Caption: {caption}")
 
+    visual_summary = describe_video_media(media_url) if content_type == "Video" else ""
+    if visual_summary:
+        lines.append(f"Visible video content:\n{visual_summary[:3500]}")
+
     transcript = transcribe_media(media_url, content_type)
     if transcript:
-        lines.append(f"{content_type} transcript:\n{transcript[:3500]}")
-        lines.append(
-            "Use the transcript as the customer's latest message. Reply to what they asked, "
-            "and mention only if any part was unclear."
-        )
-    elif content_type == "Video":
-        visual_summary = describe_video_media(media_url)
-        if visual_summary:
-            lines.append(f"Visible video content:\n{visual_summary[:3500]}")
+        label = "Spoken transcript" if content_type == "Video" else f"{content_type} transcript"
+        lines.append(f"{label}:\n{transcript[:3500]}")
+
+    if content_type == "Video":
+        if visual_summary or transcript:
             lines.append(
-                "Use the visible video content as context. If the customer's concern is still "
-                "unclear, ask a focused follow-up question instead of saying you received audio."
+                "Use the visible video content first. Use the spoken transcript only if it is "
+                "clearly relevant. Ask a focused follow-up question about the visible concern; "
+                "do not say the message was unclear when visible content is available."
             )
         else:
             lines.append(
                 f"{content_type} could not be transcribed or visually summarized. Acknowledge "
                 "receipt and ask the customer to resend it or type the details."
             )
+    elif transcript:
+        lines.append(
+            "Use the transcript as the customer's latest message. Reply to what they asked, "
+            "and mention only if any part was unclear."
+        )
     else:
         lines.append(
             f"{content_type} could not be transcribed. Acknowledge receipt and ask the customer "
@@ -417,11 +423,27 @@ def _is_useful_transcript(transcript: str, content_type: str) -> bool:
         return False
     if content_type != "Video":
         return True
+    if _looks_like_unrelated_video_transcript(text):
+        return False
     words = [word for word in text.replace("\n", " ").split(" ") if word.strip()]
     generic = {"you", "yeah", "yes", "no", "ok", "okay", "hmm", "um", "uh"}
     if len(words) <= 2 and text.lower().strip(" .,!?:;") in generic:
         return False
     return len(words) >= 3 or len(text) >= 18
+
+
+def _looks_like_unrelated_video_transcript(text: str) -> bool:
+    letters = [ch for ch in text if ch.isalpha()]
+    if not letters:
+        return False
+    hangul_or_cjk = [
+        ch
+        for ch in letters
+        if ("\uac00" <= ch <= "\ud7af")
+        or ("\u3040" <= ch <= "\u30ff")
+        or ("\u4e00" <= ch <= "\u9fff")
+    ]
+    return len(hangul_or_cjk) / max(len(letters), 1) > 0.35
 
 
 def summarize_transcript(transcript: str, body_hint: str, content_type: str) -> str:
