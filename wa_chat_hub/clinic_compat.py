@@ -11,7 +11,13 @@ CRM_LEAD_PQC_PATHS = (
 
 def get_crm_lead_pqc():
     """Return the installed clinic app's CRM Lead permission query hook."""
+    installed_apps = set(frappe.get_installed_apps())
+
     for path in CRM_LEAD_PQC_PATHS:
+        app_name = path.split(".", 1)[0]
+        if app_name not in installed_apps:
+            continue
+
         try:
             return frappe.get_attr(path)
         except Exception:
