@@ -2,6 +2,7 @@ import frappe
 import hashlib
 import hmac
 import json
+import time
 from typing import Optional
 
 from frappe import _
@@ -10,6 +11,7 @@ from wa_chat_hub.connector.interakt.adapter import extract_interakt_customer_pho
 from wa_chat_hub.connector.registry import get_adapter
 from wa_chat_hub.interakt.account_config import account_routing_context, get_interakt_account, should_verify_webhook_signature
 from wa_chat_hub.services import append_message, normalize_phone
+from wa_chat_hub.task_logger import elapsed, task_log
 
 
 INTERAKT_STATUS_TYPES = {
@@ -34,6 +36,8 @@ def receive():
     Webhook endpoint to receive incoming WhatsApp messages from the external provider.
     Expected Route: /api/method/wa_chat_hub.api.webhook.receive
     """
+    started = time.monotonic()
+    task_log("webhook", "receive_start", provider="generic")
     try:
         if frappe.request.method != "POST":
             return {"success": False, "message": "Only POST requests accepted"}
@@ -87,9 +91,25 @@ def receive():
             }
         )
         frappe.db.commit()
+        task_log(
+            "webhook",
+            "receive_done",
+            provider="generic",
+            channel_account=channel_account,
+            conversation=result.get("conversation"),
+            message=result.get("message"),
+            duration_sec=elapsed(started),
+        )
         return {"success": True, "result": result}
         
     except Exception as e:
+        task_log(
+            "webhook",
+            "receive_failed",
+            provider="generic",
+            duration_sec=elapsed(started),
+            error=str(e)[:140],
+        )
         frappe.log_error(f"Webhook Receive Error: {str(e)}", "WA Webhook")
         return {"success": False, "message": str(e)}
 
@@ -117,6 +137,8 @@ def receive_interakt():
     Configure this URL in Interakt Developer Settings:
     /api/method/wa_chat_hub.api.webhook.receive_interakt
     """
+    started = time.monotonic()
+    task_log("webhook", "receive_start", provider="Interakt")
     try:
         if frappe.request.method == "GET":
             channel_account = frappe.form_dict.get("channel_account") or frappe.form_dict.get("account")
@@ -171,14 +193,14 @@ def receive_interakt():
             event_dict["channel_department"] = routing.get("channel_department")
             result = append_message(event_dict)
             frappe.db.commit()
-            frappe.logger("wa_chat_hub").info(
-                {
-                    "event": "interakt_message_received",
-                    "phone": normalized_phone,
-                    "channel_account": channel_account,
-                    "conversation": result.get("conversation"),
-                    "message": result.get("message"),
-                }
+            task_log(
+                "webhook",
+                "inbound_done",
+                provider="Interakt",
+                channel_account=channel_account,
+                conversation=result.get("conversation"),
+                message=result.get("message"),
+                duration_sec=elapsed(started),
             )
             return {"success": True, "result": result}
 
@@ -188,11 +210,28 @@ def receive_interakt():
             if not result.get("updated"):
                 result = _create_interakt_outbound_from_webhook(payload, event.delivery_status)
             frappe.db.commit()
+            task_log(
+                "webhook",
+                "status_done",
+                provider="Interakt",
+                channel_account=channel_account,
+                delivery_status=event.delivery_status,
+                updated=result.get("updated"),
+                duration_sec=elapsed(started),
+            )
             return {"success": True, "result": result}
 
         result = _sync_unknown_interakt_message_webhook(payload, webhook_type)
         if result:
             frappe.db.commit()
+            task_log(
+                "webhook",
+                "sync_done",
+                provider="Interakt",
+                channel_account=channel_account,
+                webhook_type=webhook_type,
+                duration_sec=elapsed(started),
+            )
             return {"success": True, "result": result}
 
         frappe.log_error(
@@ -201,10 +240,24 @@ def receive_interakt():
         )
         return {"success": True, "message": f"Ignored Interakt webhook type: {webhook_type}"}
     except frappe.ValidationError as exc:
+        task_log(
+            "webhook",
+            "receive_failed",
+            provider="Interakt",
+            duration_sec=elapsed(started),
+            error=str(exc)[:140],
+        )
         frappe.log_error(frappe.get_traceback(), "Interakt Webhook Validation")
         frappe.local.response["http_status_code"] = 400
         return {"success": False, "message": str(exc)}
     except Exception as exc:
+        task_log(
+            "webhook",
+            "receive_failed",
+            provider="Interakt",
+            duration_sec=elapsed(started),
+            error=str(exc)[:140],
+        )
         frappe.log_error(frappe.get_traceback(), "Interakt Webhook Error")
         frappe.local.response["http_status_code"] = 400
         return {"success": False, "message": str(exc) or "Interakt webhook failed"}

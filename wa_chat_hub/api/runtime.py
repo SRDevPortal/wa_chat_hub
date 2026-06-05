@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import frappe
 import requests
 from frappe import _
@@ -11,6 +13,7 @@ from wa_chat_hub.interakt.templates_api import (
 from wa_chat_hub.outbound import send_interakt_template_message, send_outbound_message
 from wa_chat_hub.permissions import ensure_can_read_conversation
 from wa_chat_hub.services import append_message
+from wa_chat_hub.task_logger import elapsed, task_log
 
 
 @frappe.whitelist()
@@ -112,6 +115,7 @@ def _upload_media_for_send(allowed_mimetypes, missing_file_message, invalid_file
 
 @frappe.whitelist(methods=["POST"])
 def send_reply():
+    started = time.monotonic()
     payload = frappe.local.form_dict or {}
     if frappe.request and frappe.request.get_json(silent=True):
         payload = frappe.request.get_json()
@@ -133,6 +137,13 @@ def send_reply():
     if not is_media_message and not body:
         frappe.throw(_("body is required"))
 
+    task_log(
+        "runtime",
+        "send_reply_start",
+        conversation=conversation,
+        content_type=content_type,
+        has_media=1 if media_url else 0,
+    )
     try:
         outbound = send_outbound_message(conversation, body, content_type, media_url, file_name=file_name)
         delivery_status = outbound.get("delivery_status") or "Sent"
@@ -162,6 +173,15 @@ def send_reply():
         "channel_message_id": outbound.get("provider_message_id"),
         "raw_transport_payload": {**outbound, "file_name": file_name, "file_size": file_size},
     })
+    task_log(
+        "runtime",
+        "send_reply_done",
+        conversation=conversation,
+        content_type=content_type,
+        delivery_status=delivery_status,
+        message=result.get("message"),
+        duration_sec=elapsed(started),
+    )
     return {"success": True, "result": {**outbound, **result}}
 
 

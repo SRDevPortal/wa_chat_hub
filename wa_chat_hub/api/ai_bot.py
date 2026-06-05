@@ -1,5 +1,6 @@
 import json
 import re
+import time
 from types import SimpleNamespace
 
 import frappe
@@ -21,9 +22,14 @@ from wa_chat_hub.prompts import (
     get_multilingual_policy,
 )
 from wa_chat_hub.services import append_message
+from wa_chat_hub.task_logger import elapsed, queue_wait_seconds, task_log
 
 CONVERSATION_HISTORY_LIMIT = 40
 MEDIA_CONTENT_TYPES = frozenset({"Image", "Video", "Audio", "Document", "Sticker"})
+
+
+def _log_ai_timing(event: str, **fields) -> None:
+    task_log("ai", event, **fields)
 
 
 def _inside_append_message() -> bool:
@@ -71,32 +77,69 @@ def schedule_autopilot_for_message(message_name: str) -> None:
             job_id=f"wa_ai_autopilot_{message_name}",
             deduplicate=True,
         )
+        _log_ai_timing(
+            "enqueue",
+            message=message_name,
+            conversation=getattr(doc, "conversation", None),
+            content_type=getattr(doc, "content_type", None) or "Text",
+            queue="short",
+        )
     except Exception:
         frappe.log_error(frappe.get_traceback(), "WA AI Autopilot Enqueue Failed")
 
 
 def process_message(message_id):
+    total_started = time.monotonic()
     frappe.set_user("Administrator")
 
     msg_doc = frappe.get_doc("Chat Message", message_id)
     conversation = msg_doc.conversation
+    _log_ai_timing(
+        "start",
+        message=message_id,
+        conversation=conversation,
+        queue_wait_sec=queue_wait_seconds(msg_doc.creation),
+        content_type=msg_doc.content_type or "Text",
+    )
 
     if not _conversation_allows_autopilot(conversation):
+        _log_ai_timing(
+            "skip",
+            message=message_id,
+            conversation=conversation,
+            reason="conversation_not_open",
+            total_sec=elapsed(total_started),
+        )
         return
 
     if _already_replied_to_inbound(conversation, message_id):
+        _log_ai_timing(
+            "skip",
+            message=message_id,
+            conversation=conversation,
+            reason="already_replied",
+            total_sec=elapsed(total_started),
+        )
         return
 
     from wa_chat_hub.messaging.windows import evaluate_send_permission
 
     window_decision = evaluate_send_permission(conversation, "Text")
     if not window_decision.can_send_free_form:
+        _log_ai_timing(
+            "skip",
+            message=message_id,
+            conversation=conversation,
+            reason="messaging_window_closed",
+            total_sec=elapsed(total_started),
+        )
         frappe.log_error(
             f"Conversation {conversation}: {window_decision.reason}",
             "WA AI Autopilot Skipped (Messaging Window Closed)",
         )
         return
 
+    context_started = time.monotonic()
     history = _load_recent_conversation_history(conversation)
     history_before_current = [row for row in history if str(row.name) != str(message_id)]
 
@@ -146,6 +189,7 @@ def process_message(message_id):
     if media_context:
         system_prompt = f"{system_prompt}\n\n{media_context}"
 
+    kb_result_count = 0
     if last_user_query:
         try:
             kb_results = search_knowledge_base(
@@ -157,6 +201,7 @@ def process_message(message_id):
         except Exception:
             frappe.log_error(frappe.get_traceback(), "WA AI Knowledge Search Failed")
             kb_results = []
+        kb_result_count = len(kb_results)
         if kb_results:
             kb_blocks = [
                 f"--- {kb['title']} ---\n{kb['content']}"
@@ -179,14 +224,41 @@ def process_message(message_id):
             "prompt": latest_user_text or media_context or "",
         }
 
+    _log_ai_timing(
+        "context_ready",
+        message=message_id,
+        conversation=conversation,
+        duration_sec=elapsed(context_started),
+        history_count=len(history_before_current),
+        kb_results=kb_result_count,
+        has_media=1 if media_context else 0,
+        vision=1 if use_vision_for_image else 0,
+    )
+
     providers = _load_providers()
     if not providers:
+        _log_ai_timing(
+            "skip",
+            message=message_id,
+            conversation=conversation,
+            reason="no_active_provider",
+            total_sec=elapsed(total_started),
+        )
         frappe.log_error("No active WA LLM Providers found.", "WA AI Bot Error")
         return
 
     auto_send = _should_auto_send(settings)
 
     for provider in providers:
+        provider_started = time.monotonic()
+        _log_ai_timing(
+            "provider_start",
+            message=message_id,
+            conversation=conversation,
+            provider=provider.name,
+            provider_type=provider.provider_type,
+            model=provider.model_name,
+        )
         try:
             response_text = call_provider(
                 provider,
@@ -196,8 +268,24 @@ def process_message(message_id):
                 current_inbound=current_inbound,
             )
             if not response_text or not str(response_text).strip():
+                _log_ai_timing(
+                    "provider_empty",
+                    message=message_id,
+                    conversation=conversation,
+                    provider=provider.name,
+                    model=provider.model_name,
+                    duration_sec=elapsed(provider_started),
+                )
                 continue
 
+            _log_ai_timing(
+                "provider_done",
+                message=message_id,
+                conversation=conversation,
+                provider=provider.name,
+                model=provider.model_name,
+                duration_sec=elapsed(provider_started),
+            )
             response_text = _polish_autopilot_reply(str(response_text).strip())
 
             if auto_send:
@@ -206,8 +294,24 @@ def process_message(message_id):
                 create_ai_suggestion(conversation, "Reply Draft", str(response_text).strip())
                 frappe.db.commit()
 
+            _log_ai_timing(
+                "total_done",
+                message=message_id,
+                conversation=conversation,
+                mode="auto_send" if auto_send else "draft",
+                total_sec=elapsed(total_started),
+            )
             return
         except Exception as e:
+            _log_ai_timing(
+                "provider_failed",
+                message=message_id,
+                conversation=conversation,
+                provider=provider.name,
+                model=provider.model_name,
+                duration_sec=elapsed(provider_started),
+                error=str(e)[:140],
+            )
             frappe.log_error(
                 f"LLM Provider {provider.name} failed: {str(e)}",
                 "WA AI Fallback Warning",
@@ -217,6 +321,12 @@ def process_message(message_id):
     frappe.log_error(
         f"All LLM Providers failed for conversation {conversation}.",
         "WA AI Fatal Error",
+    )
+    _log_ai_timing(
+        "total_failed",
+        message=message_id,
+        conversation=conversation,
+        total_sec=elapsed(total_started),
     )
 
 
@@ -359,6 +469,7 @@ def _load_providers():
 
 
 def _deliver_ai_reply(conversation: str, response_text: str) -> None:
+    send_started = time.monotonic()
     convo = frappe.get_doc("Chat Conversation", conversation)
     phone_number = frappe.db.get_value("Chat Contact", convo.contact, "phone_number")
 
@@ -367,6 +478,7 @@ def _deliver_ai_reply(conversation: str, response_text: str) -> None:
     outbound = {}
 
     try:
+        _log_ai_timing("send_start", conversation=conversation, channel_account=convo.channel_account)
         outbound = send_outbound_message(conversation, response_text, "Text")
         delivery_status = outbound.get("delivery_status") or "Sent"
         channel_message_id = outbound.get("provider_message_id")
@@ -395,6 +507,12 @@ def _deliver_ai_reply(conversation: str, response_text: str) -> None:
         frappe.flags.wa_ai_outbound_reply = False
         frappe.local.wa_ai_outbound_reply = False
     frappe.db.commit()
+    _log_ai_timing(
+        "send_done",
+        conversation=conversation,
+        delivery_status=delivery_status,
+        duration_sec=elapsed(send_started),
+    )
 
 
 def call_provider(provider, system_prompt, history, latest_user_text=None, current_inbound=None):
@@ -494,6 +612,7 @@ def execute_mcp_tool(tool_name, arguments_dict):
 
 
 def call_openai_format(provider, messages, timeout=20):
+    request_started = time.monotonic()
     url = provider.base_url or "https://api.openai.com/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {provider.api_key}",
@@ -517,7 +636,23 @@ def call_openai_format(provider, messages, timeout=20):
     if api_tools:
         payload["tools"] = api_tools
 
+    _log_ai_timing(
+        "api_request_start",
+        provider=provider.name,
+        provider_type=provider.provider_type,
+        model=provider.model_name,
+        message_count=len(messages),
+        tools=1 if api_tools else 0,
+        timeout_sec=timeout,
+    )
     resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
+    _log_ai_timing(
+        "api_request_done",
+        provider=provider.name,
+        model=provider.model_name,
+        status_code=resp.status_code,
+        duration_sec=elapsed(request_started),
+    )
 
     if resp.status_code != 200:
         frappe.log_error(
@@ -541,11 +676,19 @@ def call_openai_format(provider, messages, timeout=20):
         messages.append(message)
 
         for tc in message["tool_calls"]:
+            tool_started = time.monotonic()
             try:
                 args = json.loads(tc["function"]["arguments"])
             except Exception:
                 args = {}
             tool_res = execute_mcp_tool(tc["function"]["name"], args)
+            _log_ai_timing(
+                "tool_done",
+                provider=provider.name,
+                model=provider.model_name,
+                tool=tc["function"]["name"],
+                duration_sec=elapsed(tool_started),
+            )
             messages.append(
                 {
                     "role": "tool",
@@ -556,7 +699,21 @@ def call_openai_format(provider, messages, timeout=20):
             )
 
         payload["messages"] = messages
+        followup_started = time.monotonic()
+        _log_ai_timing(
+            "api_followup_start",
+            provider=provider.name,
+            model=provider.model_name,
+            message_count=len(messages),
+        )
         resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        _log_ai_timing(
+            "api_followup_done",
+            provider=provider.name,
+            model=provider.model_name,
+            status_code=resp.status_code,
+            duration_sec=elapsed(followup_started),
+        )
         resp.raise_for_status()
         data = resp.json()
         follow_choices = data.get("choices") or []

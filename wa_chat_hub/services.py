@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from contextlib import contextmanager
 from typing import Any, Dict, Optional
 from urllib.parse import urlsplit
@@ -18,6 +19,7 @@ from wa_chat_hub.prompts import (
     get_conversation_linked_reference,
     set_conversation_crm_lead,
 )
+from wa_chat_hub.task_logger import elapsed, task_log
 
 
 DEFAULT_CONVERSATION_STATUS = "Open"
@@ -177,10 +179,37 @@ def get_or_create_conversation(
 
 
 def append_message(payload: Dict[str, Any]) -> Dict[str, str]:
+    started = time.monotonic()
+    task_log(
+        "message",
+        "append_start",
+        direction=payload.get("direction", "Inbound"),
+        sender_type=payload.get("sender_type", "Customer"),
+        content_type=payload.get("content_type", "Text"),
+        channel_account=payload.get("channel_account"),
+    )
     frappe.flags.wa_chat_in_append_message = True
     frappe.local.wa_chat_in_append_message = True
     try:
-        return _append_message_impl(payload)
+        result = _append_message_impl(payload)
+        task_log(
+            "message",
+            "append_done",
+            direction=payload.get("direction", "Inbound"),
+            conversation=result.get("conversation"),
+            message=result.get("message"),
+            duration_sec=elapsed(started),
+        )
+        return result
+    except Exception as exc:
+        task_log(
+            "message",
+            "append_failed",
+            direction=payload.get("direction", "Inbound"),
+            duration_sec=elapsed(started),
+            error=str(exc)[:140],
+        )
+        raise
     finally:
         frappe.flags.wa_chat_in_append_message = False
         frappe.local.wa_chat_in_append_message = False
@@ -350,6 +379,7 @@ def _enqueue_lead_scoring(conversation: str) -> None:
         job_id=f"wa_lead_score_{conversation}",
         deduplicate=True,
     )
+    task_log("lead_score", "enqueue", conversation=conversation, queue="short")
 
 
 def cint_safe(value: Any) -> int:

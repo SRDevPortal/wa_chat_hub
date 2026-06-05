@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Dict
 
 import frappe
@@ -9,6 +10,7 @@ from frappe import _
 
 from wa_chat_hub.connector.registry import get_adapter
 from wa_chat_hub.messaging.windows import evaluate_send_permission
+from wa_chat_hub.task_logger import elapsed, task_log
 
 
 def build_outbound_message_payload(
@@ -55,15 +57,44 @@ def send_outbound_message(
     file_name: str | None = None,
 ) -> Dict[str, Any]:
     """Build and send an outbound WhatsApp message through the configured provider."""
+    started = time.monotonic()
+    task_log(
+        "outbound",
+        "send_start",
+        conversation=conversation,
+        content_type=content_type,
+        has_media=1 if media_url else 0,
+    )
     evaluate_send_permission(conversation, content_type).ensure_allowed(content_type)
     outbound = build_outbound_message_payload(conversation, body, content_type, media_url, file_name=file_name)
     convo = frappe.get_doc("Chat Conversation", conversation)
     account = frappe.get_doc("Chat Channel Account", convo.channel_account)
 
-    if account.channel_type == "Interakt":
-        return send_interakt_message(account, outbound)
+    try:
+        if account.channel_type == "Interakt":
+            result = send_interakt_message(account, outbound)
+        else:
+            result = send_provider_message(account, outbound)
 
-    return send_provider_message(account, outbound)
+        task_log(
+            "outbound",
+            "send_done",
+            conversation=conversation,
+            channel_type=account.channel_type,
+            delivery_status=result.get("delivery_status"),
+            duration_sec=elapsed(started),
+        )
+        return result
+    except Exception as exc:
+        task_log(
+            "outbound",
+            "send_failed",
+            conversation=conversation,
+            channel_type=account.channel_type,
+            duration_sec=elapsed(started),
+            error=str(exc)[:140],
+        )
+        raise
 
 
 def send_provider_message(account, outbound: Dict[str, Any]) -> Dict[str, Any]:
@@ -88,12 +119,21 @@ def send_provider_message(account, outbound: Dict[str, Any]) -> Dict[str, Any]:
         "x_tenant_id": account.x_tenant_id or "",
     }
 
+    started = time.monotonic()
+    task_log("provider", "request_start", channel_type=getattr(account, "channel_type", None))
     response = requests.post(
         url,
         params=params,
         headers=headers,
         json=outbound["payload"],
         timeout=10,
+    )
+    task_log(
+        "provider",
+        "request_done",
+        channel_type=getattr(account, "channel_type", None),
+        status_code=response.status_code,
+        duration_sec=elapsed(started),
     )
     if not response.ok:
         frappe.log_error(
@@ -167,7 +207,16 @@ def send_interakt_message(account, outbound: Dict[str, Any]) -> Dict[str, Any]:
         "Authorization": f"Basic {api_key}",
         "Content-Type": "application/json",
     }
+    started = time.monotonic()
+    task_log("interakt", "request_start", channel_account=account.name)
     response = requests.post(url, headers=headers, json=outbound["payload"], timeout=20)
+    task_log(
+        "interakt",
+        "request_done",
+        channel_account=account.name,
+        status_code=response.status_code,
+        duration_sec=elapsed(started),
+    )
     if not response.ok:
         detail = (response.text or "")[:800]
         frappe.log_error(
