@@ -611,6 +611,13 @@ def execute_mcp_tool(tool_name, arguments_dict):
         return f"Error executing {tool_name}: {str(e)}"
 
 
+def _max_tokens_payload_key(model_name: str | None) -> str:
+    model = str(model_name or "").strip().lower()
+    if model.startswith(("gpt-5", "o1", "o3", "o4")):
+        return "max_completion_tokens"
+    return "max_tokens"
+
+
 def call_openai_format(provider, messages, timeout=20):
     request_started = time.monotonic()
     url = provider.base_url or "https://api.openai.com/v1/chat/completions"
@@ -624,6 +631,7 @@ def call_openai_format(provider, messages, timeout=20):
 
     tools = fetch_mcp_tools()
     api_tools = [{"type": t["type"], "function": t["function"]} for t in tools] if tools else None
+    token_limit_key = _max_tokens_payload_key(provider.model_name)
 
     payload = {
         "model": provider.model_name,
@@ -631,7 +639,7 @@ def call_openai_format(provider, messages, timeout=20):
         "temperature": 0.75,
         "presence_penalty": 0.4,
         "frequency_penalty": 0.3,
-        "max_tokens": 500,
+        token_limit_key: 500,
     }
     if api_tools:
         payload["tools"] = api_tools
@@ -643,6 +651,7 @@ def call_openai_format(provider, messages, timeout=20):
         model=provider.model_name,
         message_count=len(messages),
         tools=1 if api_tools else 0,
+        token_limit_key=token_limit_key,
         timeout_sec=timeout,
     )
     resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
