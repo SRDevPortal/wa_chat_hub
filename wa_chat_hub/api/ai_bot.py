@@ -13,6 +13,7 @@ from wa_chat_hub.ai.media_transcription import (
     TRANSCRIPT_CONTENT_TYPES,
     build_transcript_context_for_chat,
 )
+from wa_chat_hub.ai.delivery_status import build_delivery_status_reply, is_delivery_status_query
 from wa_chat_hub.ai.service import create_ai_suggestion
 from wa_chat_hub.api.vector_search import search_knowledge_base
 from wa_chat_hub.outbound import send_outbound_message
@@ -139,11 +140,43 @@ def process_message(message_id):
         )
         return
 
+    settings = frappe.get_single("WA Chat Hub Settings")
+    body_text = str(msg_doc.body or "").strip()
+    if is_delivery_status_query(body_text):
+        result = build_delivery_status_reply(conversation, body_text)
+        response_text = result.reply
+        if _should_auto_send(settings):
+            _deliver_ai_reply(conversation, response_text)
+            mode = "auto_send"
+        else:
+            create_ai_suggestion(conversation, "Reply Draft", response_text)
+            frappe.db.commit()
+            mode = "draft"
+        task_log(
+            "delivery_status",
+            "reply_done",
+            conversation=conversation,
+            message=message_id,
+            mode=mode,
+            patient=result.patient,
+            encounter=result.encounter,
+            shipment=result.shipment,
+            awb=result.awb,
+            parsed=1 if result.parsed else 0,
+        )
+        _log_ai_timing(
+            "total_done",
+            message=message_id,
+            conversation=conversation,
+            mode=f"delivery_status_{mode}",
+            total_sec=elapsed(total_started),
+        )
+        return
+
     context_started = time.monotonic()
     history = _load_recent_conversation_history(conversation)
     history_before_current = [row for row in history if str(row.name) != str(message_id)]
 
-    settings = frappe.get_single("WA Chat Hub Settings")
     conversation_context = frappe.db.get_value(
         "Chat Conversation",
         conversation,
@@ -156,7 +189,6 @@ def process_message(message_id):
 
     content_type = str(msg_doc.content_type or "Text").title()
     media_url = str(msg_doc.media_url or "").strip()
-    body_text = str(msg_doc.body or "").strip()
 
     media_context = ""
     use_vision_for_image = media_url and content_type == "Image"
