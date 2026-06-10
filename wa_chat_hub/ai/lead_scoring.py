@@ -8,6 +8,7 @@ import frappe
 import requests
 
 from wa_chat_hub.ai.language import resolve_language_from_history
+from wa_chat_hub.db_retry import with_db_lock_retry
 from wa_chat_hub.prompts import get_conversation_crm_lead
 
 
@@ -41,15 +42,18 @@ def recompute_conversation_metrics(conversation: str) -> ScoreResult:
     )
     score_result = _ai_score(convo, history)
 
-    frappe.db.set_value(
-        "Chat Conversation",
-        conversation,
-        {
-            "lead_score": score_result.lead_score,
-            "lead_temperature": score_result.lead_temperature,
-            "lead_lan": score_result.lead_lan,
-        },
-        update_modified=False,
+    with_db_lock_retry(
+        "conversation_lead_score_update",
+        lambda: frappe.db.set_value(
+            "Chat Conversation",
+            conversation,
+            {
+                "lead_score": score_result.lead_score,
+                "lead_temperature": score_result.lead_temperature,
+                "lead_lan": score_result.lead_lan,
+            },
+            update_modified=False,
+        ),
     )
     return score_result
 

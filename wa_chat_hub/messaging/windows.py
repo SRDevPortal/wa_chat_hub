@@ -11,6 +11,7 @@ from frappe import _
 from frappe.utils import add_to_date, get_datetime, now_datetime
 from pymysql.err import InterfaceError, OperationalError
 
+from wa_chat_hub.db_retry import with_db_lock_retry
 from wa_chat_hub.messaging.attribution import extract_attribution, json_loads_payload
 
 CUSTOMER_SERVICE_HOURS = 24
@@ -498,7 +499,15 @@ def _sync_persisted_window_fields(
         or stored_mode != mode
     )
     if needs_save:
-        frappe.db.set_value("Chat Conversation", conversation, updates, update_modified=False)
+        with_db_lock_retry(
+            "conversation_window_sync",
+            lambda: frappe.db.set_value(
+                "Chat Conversation",
+                conversation,
+                updates,
+                update_modified=False,
+            ),
+        )
         for key, value in updates.items():
             _set_convo_field(convo, key, value)
 

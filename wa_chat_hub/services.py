@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 from contextlib import contextmanager
-from typing import Any, Callable, Dict, Optional, TypeVar
+from typing import Any, Dict, Optional
 from urllib.parse import urlsplit
 
 import frappe
@@ -14,6 +14,7 @@ from wa_chat_hub.ai.media_transcription import (
     TRANSCRIPT_CONTENT_TYPES,
     process_transcript_for_lead_summary,
 )
+from wa_chat_hub.db_retry import is_db_lock_conflict, with_db_lock_retry
 from wa_chat_hub.prompts import (
     get_conversation_crm_lead,
     get_conversation_linked_reference,
@@ -25,41 +26,6 @@ from wa_chat_hub.task_logger import elapsed, task_log
 DEFAULT_CONVERSATION_STATUS = "Open"
 WA_LEAD_CONTEXT_MARKER = "WA_CHAT_HUB_CONTEXT_JSON"
 WA_LEAD_PAYLOAD_MARKER = "WA_CHAT_HUB_PAYLOAD_JSON"
-_LOCK_RETRY_ATTEMPTS = 3
-_LOCK_RETRY_DELAY_SECONDS = 0.35
-_T = TypeVar("_T")
-
-
-def _is_db_lock_conflict(exc: Exception) -> bool:
-    if isinstance(exc, (frappe.QueryTimeoutError, frappe.QueryDeadlockError)):
-        return True
-    cause = getattr(exc, "__cause__", None)
-    code = getattr(cause, "args", [None])[0] if cause else None
-    return code in {1205, 1213}
-
-
-def _with_db_lock_retry(
-    label: str,
-    action: Callable[[], _T],
-    *,
-    attempts: int = _LOCK_RETRY_ATTEMPTS,
-) -> _T:
-    for attempt in range(1, attempts + 1):
-        try:
-            return action()
-        except Exception as exc:
-            if not _is_db_lock_conflict(exc) or attempt >= attempts:
-                raise
-            task_log(
-                "db",
-                "lock_retry",
-                label=label,
-                attempt=attempt,
-                error=str(exc)[:140],
-            )
-            time.sleep(_LOCK_RETRY_DELAY_SECONDS * attempt)
-
-    raise RuntimeError(f"DB lock retry exhausted for {label}")
 
 
 @contextmanager
@@ -188,7 +154,7 @@ def get_or_create_conversation(
 ) -> str:
     filters = {"channel_account": channel_account, "contact": contact, "status": ["!=", "Closed"]}
 
-    existing = _with_db_lock_retry(
+    existing = with_db_lock_retry(
         "conversation_lookup",
         lambda: frappe.db.get_value("Chat Conversation", filters, "name"),
     )
@@ -199,7 +165,7 @@ def get_or_create_conversation(
         if assigned_to:
             updates["assigned_to"] = assigned_to
         if updates:
-            _with_db_lock_retry(
+            with_db_lock_retry(
                 "conversation_routing_update",
                 lambda: frappe.db.set_value("Chat Conversation", existing, updates),
             )
@@ -218,14 +184,14 @@ def get_or_create_conversation(
             doc.insert(ignore_permissions=True)
             return doc.name
         except Exception as exc:
-            if not _is_db_lock_conflict(exc):
+            if not is_db_lock_conflict(exc):
                 raise
             concurrent = frappe.db.get_value("Chat Conversation", filters, "name")
             if concurrent:
                 return concurrent
             raise
 
-    return _with_db_lock_retry("conversation_insert", _insert_conversation)
+    return with_db_lock_retry("conversation_insert", _insert_conversation)
 
 
 def append_message(payload: Dict[str, Any]) -> Dict[str, str]:
@@ -450,7 +416,7 @@ def update_conversation_after_message(conversation_name: str, payload: Dict[str,
         preview = body or content_type or ""
 
     if payload.get("direction", "Inbound") == "Inbound":
-        _with_db_lock_retry(
+        with_db_lock_retry(
             "conversation_unread_increment",
             lambda: frappe.db.sql(
                 """
@@ -466,7 +432,7 @@ def update_conversation_after_message(conversation_name: str, payload: Dict[str,
         )
         return
 
-    _with_db_lock_retry(
+    with_db_lock_retry(
         "conversation_preview_update",
         lambda: frappe.db.set_value(
             "Chat Conversation",
@@ -500,7 +466,7 @@ def _clean_media_body(content_type: str, body: Optional[str]) -> str:
 
 
 def mark_conversation_read(conversation_name: str) -> None:
-    _with_db_lock_retry(
+    with_db_lock_retry(
         "conversation_mark_read",
         lambda: frappe.db.sql(
             """
