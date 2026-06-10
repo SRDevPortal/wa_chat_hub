@@ -155,90 +155,46 @@ def receive_interakt():
         raw_body = frappe.request.get_data(cache=True) or b"{}"
         payload = json.loads(raw_body)
         channel_account = _resolve_interakt_channel_account(payload, raw_body)
-        account_doc = get_interakt_account(channel_account)
-        routing = account_routing_context(account_doc)
-
         payload["channel_account"] = channel_account
-        adapter = get_adapter("Interakt")
         webhook_type = payload.get("type")
+        message_id = _interakt_payload_message_id(payload)
+        if (
+            webhook_type == "message_received"
+            and message_id
+            and frappe.db.exists("Chat Message", {"channel_message_id": message_id})
+        ):
+            return {"success": True, "message": "Duplicate message ignored"}
 
-        if webhook_type == "message_received":
-            event = adapter.normalize_inbound(payload)
-            normalized_phone = normalize_phone(event.phone_number)
-            if not normalized_phone:
-                customer = (payload.get("data") or {}).get("customer") or {}
-                frappe.log_error(
-                    frappe.as_json(
-                        {
-                            "reason": "missing_customer_phone",
-                            "channel_account": channel_account,
-                            "webhook_type": webhook_type,
-                            "customer_keys": list(customer.keys()) if isinstance(customer, dict) else [],
-                            "extracted_phone": event.phone_number,
-                            "payload_sample": payload,
-                        }
-                    ),
-                    "Interakt Inbound Missing Phone",
-                )
-                return {
-                    "success": False,
-                    "message": "Could not resolve customer phone from Interakt payload",
-                }
-
-            if event.channel_message_id and frappe.db.exists("Chat Message", {"channel_message_id": event.channel_message_id}):
-                return {"success": True, "message": "Duplicate message ignored"}
-
-            event_dict = event.__dict__
-            event_dict["phone_number"] = normalized_phone
-            event_dict["channel_department"] = routing.get("channel_department")
-            result = append_message(event_dict)
-            frappe.db.commit()
-            task_log(
-                "webhook",
-                "inbound_done",
-                provider="Interakt",
-                channel_account=channel_account,
-                conversation=result.get("conversation"),
-                message=result.get("message"),
-                duration_sec=elapsed(started),
-            )
-            return {"success": True, "result": result}
-
-        if webhook_type in INTERAKT_STATUS_TYPES:
-            event = adapter.normalize_status(payload)
-            result = _update_message_status(event.channel_message_id, event.delivery_status, payload)
-            if not result.get("updated"):
-                result = _create_interakt_outbound_from_webhook(payload, event.delivery_status)
-            frappe.db.commit()
-            task_log(
-                "webhook",
-                "status_done",
-                provider="Interakt",
-                channel_account=channel_account,
-                delivery_status=event.delivery_status,
-                updated=result.get("updated"),
-                duration_sec=elapsed(started),
-            )
-            return {"success": True, "result": result}
-
-        result = _sync_unknown_interakt_message_webhook(payload, webhook_type)
-        if result:
-            frappe.db.commit()
-            task_log(
-                "webhook",
-                "sync_done",
-                provider="Interakt",
-                channel_account=channel_account,
-                webhook_type=webhook_type,
-                duration_sec=elapsed(started),
-            )
-            return {"success": True, "result": result}
-
-        frappe.log_error(
-            f"Type: {webhook_type}\nPayload: {frappe.as_json(payload)}",
-            "Ignored Interakt Webhook Type",
+        job_id = _interakt_webhook_job_id(channel_account, payload, raw_body)
+        queue = _interakt_webhook_queue(payload)
+        frappe.enqueue(
+            "wa_chat_hub.api.webhook.process_interakt_webhook",
+            queue=queue,
+            payload=payload,
+            raw_body=raw_body.decode("utf-8", errors="replace"),
+            channel_account=channel_account,
+            timeout=600 if queue == "long" else 180,
+            enqueue_after_commit=False,
+            now=False,
+            job_id=job_id,
+            deduplicate=True,
         )
-        return {"success": True, "message": f"Ignored Interakt webhook type: {webhook_type}"}
+        task_log(
+            "webhook",
+            "enqueue_done",
+            provider="Interakt",
+            channel_account=channel_account,
+            webhook_type=webhook_type,
+            job_id=job_id,
+            duration_sec=elapsed(started),
+        )
+        return {
+            "success": True,
+            "queued": True,
+            "channel_account": channel_account,
+            "webhook_type": webhook_type,
+            "job_id": job_id,
+        }
     except frappe.ValidationError as exc:
         task_log(
             "webhook",
@@ -261,6 +217,153 @@ def receive_interakt():
         frappe.log_error(frappe.get_traceback(), "Interakt Webhook Error")
         frappe.local.response["http_status_code"] = 400
         return {"success": False, "message": str(exc) or "Interakt webhook failed"}
+
+
+def process_interakt_webhook(payload: dict, raw_body: str | bytes | None = None, channel_account: str | None = None):
+    """Background worker for Interakt webhooks after the HTTP endpoint has acknowledged."""
+    started = time.monotonic()
+    frappe.set_user("Administrator")
+    if not isinstance(payload, dict):
+        payload = json.loads(payload or "{}")
+    if channel_account:
+        payload["channel_account"] = channel_account
+    raw_body_bytes = raw_body.encode("utf-8") if isinstance(raw_body, str) else (raw_body or b"{}")
+    try:
+        result = _process_interakt_payload(payload, raw_body_bytes)
+        frappe.db.commit()
+        return result
+    except Exception:
+        frappe.db.rollback()
+        task_log(
+            "webhook",
+            "worker_failed",
+            provider="Interakt",
+            channel_account=payload.get("channel_account"),
+            webhook_type=payload.get("type"),
+            duration_sec=elapsed(started),
+            error=frappe.get_traceback()[-140:],
+        )
+        frappe.log_error(frappe.get_traceback(), "Interakt Webhook Worker Error")
+        raise
+
+
+def _process_interakt_payload(payload: dict, raw_body: bytes | None = None):
+    channel_account = payload.get("channel_account") or _resolve_interakt_channel_account(payload, raw_body or b"{}")
+    account_doc = get_interakt_account(channel_account)
+    routing = account_routing_context(account_doc)
+
+    payload["channel_account"] = channel_account
+    adapter = get_adapter("Interakt")
+    webhook_type = payload.get("type")
+    started = time.monotonic()
+
+    if webhook_type == "message_received":
+        event = adapter.normalize_inbound(payload)
+        normalized_phone = normalize_phone(event.phone_number)
+        if not normalized_phone:
+            customer = (payload.get("data") or {}).get("customer") or {}
+            frappe.log_error(
+                frappe.as_json(
+                    {
+                        "reason": "missing_customer_phone",
+                        "channel_account": channel_account,
+                        "webhook_type": webhook_type,
+                        "customer_keys": list(customer.keys()) if isinstance(customer, dict) else [],
+                        "extracted_phone": event.phone_number,
+                        "payload_sample": payload,
+                    }
+                ),
+                "Interakt Inbound Missing Phone",
+            )
+            return {
+                "success": False,
+                "message": "Could not resolve customer phone from Interakt payload",
+            }
+
+        if event.channel_message_id and frappe.db.exists("Chat Message", {"channel_message_id": event.channel_message_id}):
+            return {"success": True, "message": "Duplicate message ignored"}
+
+        event_dict = event.__dict__
+        event_dict["phone_number"] = normalized_phone
+        event_dict["channel_department"] = routing.get("channel_department")
+        result = append_message(event_dict)
+        task_log(
+            "webhook",
+            "inbound_done",
+            provider="Interakt",
+            channel_account=channel_account,
+            conversation=result.get("conversation"),
+            message=result.get("message"),
+            duration_sec=elapsed(started),
+        )
+        return {"success": True, "result": result}
+
+    if webhook_type in INTERAKT_STATUS_TYPES:
+        event = adapter.normalize_status(payload)
+        result = _update_message_status(event.channel_message_id, event.delivery_status, payload)
+        if not result.get("updated"):
+            result = _create_interakt_outbound_from_webhook(payload, event.delivery_status)
+        task_log(
+            "webhook",
+            "status_done",
+            provider="Interakt",
+            channel_account=channel_account,
+            delivery_status=event.delivery_status,
+            updated=result.get("updated"),
+            duration_sec=elapsed(started),
+        )
+        return {"success": True, "result": result}
+
+    result = _sync_unknown_interakt_message_webhook(payload, webhook_type)
+    if result:
+        task_log(
+            "webhook",
+            "sync_done",
+            provider="Interakt",
+            channel_account=channel_account,
+            webhook_type=webhook_type,
+            duration_sec=elapsed(started),
+        )
+        return {"success": True, "result": result}
+
+    frappe.log_error(
+        f"Type: {webhook_type}\nPayload: {frappe.as_json(payload)}",
+        "Ignored Interakt Webhook Type",
+    )
+    return {"success": True, "message": f"Ignored Interakt webhook type: {webhook_type}"}
+
+
+def _interakt_webhook_queue(payload: dict) -> str:
+    webhook_type = payload.get("type")
+    message = ((payload.get("data") or {}).get("message") or {}) if isinstance(payload, dict) else {}
+    if not isinstance(message, dict):
+        message = {}
+    content_type = str(
+        message.get("message_content_type")
+        or message.get("content_type")
+        or message.get("type")
+        or ""
+    ).lower()
+    if webhook_type == "message_received" and content_type in {"image", "video", "audio", "document", "sticker"}:
+        return "long"
+    return "short"
+
+
+def _interakt_webhook_job_id(channel_account: str, payload: dict, raw_body: bytes) -> str:
+    webhook_type = str(payload.get("type") or "unknown")
+    message_id = _interakt_payload_message_id(payload)
+    if message_id:
+        token = f"{channel_account}:{webhook_type}:{message_id}"
+    else:
+        token = f"{channel_account}:{webhook_type}:{hashlib.sha256(raw_body or b'').hexdigest()}"
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:24]
+    return f"wa_interakt_webhook_{digest}"
+
+
+def _interakt_payload_message_id(payload: dict) -> str:
+    data = payload.get("data") or {}
+    message = data.get("message") if isinstance(data.get("message"), dict) else {}
+    return str(message.get("id") or payload.get("channel_message_id") or "").strip()
 
 
 def _resolve_interakt_channel_account(payload, raw_body: bytes):
