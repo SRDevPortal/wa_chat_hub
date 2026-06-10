@@ -3,10 +3,57 @@ from __future__ import annotations
 from pathlib import Path
 
 import frappe
+from pymysql.err import InterfaceError, OperationalError
+from redis.exceptions import ConnectionError as RedisConnectionError
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
 
 MODULE = "wa_chat_hub"
+DB_CONNECTION_ERROR_CODES = {2006, 2013}
+MESSAGING_WINDOW_BACKFILL_JOB_ID = "wa_chat_hub_messaging_window_backfill"
+
+
+def _is_db_connection_error(exc: Exception) -> bool:
+    if isinstance(exc, InterfaceError):
+        return True
+    if isinstance(exc, OperationalError):
+        return bool(exc.args and exc.args[0] in DB_CONNECTION_ERROR_CODES)
+    return False
+
+
+def _recover_db_connection() -> None:
+    try:
+        frappe.db.close()
+    except Exception:
+        pass
+    frappe.db.connect()
+
+
+def _safe_log_error(title: str) -> None:
+    traceback = frappe.get_traceback()
+    try:
+        frappe.log_error(traceback, title)
+    except Exception:
+        frappe.logger("wa_chat_hub").error("%s\n%s", title, traceback, exc_info=True)
+        if frappe.db:
+            _recover_db_connection()
+
+
+def _background_queue_available(queue: str) -> bool:
+    try:
+        from frappe.utils.background_jobs import get_queue
+
+        get_queue(queue).connection.ping()
+        return True
+    except RedisConnectionError:
+        frappe.logger("wa_chat_hub").warning(
+            "Skipping WA Chat Hub messaging window backfill enqueue because Redis is unavailable.",
+            exc_info=True,
+        )
+        return False
+    except Exception:
+        _safe_log_error("WA Chat Hub Background Queue Check Failed")
+        return False
 
 
 def after_migrate() -> None:
@@ -18,7 +65,7 @@ def after_migrate() -> None:
 
         setup_workspace()
     except Exception:
-        frappe.log_error(frappe.get_traceback(), "WA Chat Hub Workspace Sync Failed")
+        _safe_log_error("WA Chat Hub Workspace Sync Failed")
     ensure_lead_scoring_fields()
     ensure_chat_message_indexes()
     migrate_conversation_crm_lead_links()
@@ -31,20 +78,33 @@ def _sync_chat_conversation_schema() -> None:
         frappe.reload_doc("wa_chat_hub", "doctype", "Chat Conversation", force=True)
         frappe.clear_cache(doctype="Chat Conversation")
     except Exception:
-        frappe.log_error(frappe.get_traceback(), "Chat Conversation Schema Sync Failed")
+        _safe_log_error("Chat Conversation Schema Sync Failed")
 
 
 def backfill_messaging_windows() -> None:
     try:
         from wa_chat_hub.messaging.windows import (
             backfill_messaging_windows_from_history,
-            repair_ctwa_false_positives,
+            messaging_windows_backfill_completed,
         )
 
-        repair_ctwa_false_positives()
-        backfill_messaging_windows_from_history()
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "Messaging Window Backfill Failed")
+        if messaging_windows_backfill_completed():
+            return
+        if not _background_queue_available("long"):
+            return
+
+        frappe.enqueue(
+            backfill_messaging_windows_from_history,
+            queue="long",
+            timeout=7200,
+            enqueue_after_commit=True,
+            job_id=MESSAGING_WINDOW_BACKFILL_JOB_ID,
+            deduplicate=True,
+        )
+    except Exception as exc:
+        _safe_log_error("Messaging Window Backfill Enqueue Failed")
+        if _is_db_connection_error(exc) and frappe.db:
+            _recover_db_connection()
 
 
 def sync_standard_doctypes() -> None:
@@ -57,10 +117,7 @@ def sync_standard_doctypes() -> None:
         try:
             frappe.reload_doc(MODULE, "doctype", doctype_name, force=True)
         except Exception:
-            frappe.log_error(
-                frappe.get_traceback(),
-                f"WA Chat Hub DocType Sync Failed: {doctype_name}",
-            )
+            _safe_log_error(f"WA Chat Hub DocType Sync Failed: {doctype_name}")
 
 
 def ensure_lead_scoring_fields() -> None:
@@ -120,7 +177,7 @@ def ensure_chat_message_indexes() -> None:
         ensure_chat_contact_indexes()
         ensure_crm_lead_indexes()
     except Exception:
-        frappe.log_error(frappe.get_traceback(), "Chat Message Index Sync Failed")
+        _safe_log_error("Chat Message Index Sync Failed")
 
 
 def migrate_conversation_crm_lead_links() -> None:

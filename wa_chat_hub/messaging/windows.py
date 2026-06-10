@@ -9,11 +9,13 @@ from typing import Any, Dict, Optional
 import frappe
 from frappe import _
 from frappe.utils import add_to_date, get_datetime, now_datetime
+from pymysql.err import InterfaceError, OperationalError
 
 from wa_chat_hub.messaging.attribution import extract_attribution, json_loads_payload
 
 CUSTOMER_SERVICE_HOURS = 24
 CTWA_ENTRY_HOURS = 72
+BACKFILL_COMPLETED_DEFAULT = "wa_chat_hub_messaging_windows_backfilled"
 TEMPLATE_CONTENT_TYPES = frozenset({"template"})
 _WINDOW_FIELD_NAMES = (
     "messaging_window_mode",
@@ -28,6 +30,95 @@ _WINDOW_FIELD_NAMES = (
     "source",
     "ctwa_clid",
 )
+DB_CONNECTION_ERROR_CODES = {2006, 2013}
+
+
+def _is_db_connection_error(exc: Exception) -> bool:
+    if isinstance(exc, InterfaceError):
+        return True
+    if isinstance(exc, OperationalError):
+        return bool(exc.args and exc.args[0] in DB_CONNECTION_ERROR_CODES)
+    return False
+
+
+def _recover_db_connection() -> None:
+    try:
+        frappe.db.close()
+    except Exception:
+        pass
+    frappe.db.connect()
+
+
+def _safe_log_error(title: str) -> None:
+    traceback = frappe.get_traceback()
+    try:
+        frappe.log_error(traceback, title)
+    except Exception:
+        frappe.logger("wa_chat_hub").error("%s\n%s", title, traceback, exc_info=True)
+        if frappe.db:
+            _recover_db_connection()
+
+
+def messaging_windows_backfill_completed() -> bool:
+    """Return true when historical conversations do not need the backfill anymore."""
+    if frappe.db.get_global(BACKFILL_COMPLETED_DEFAULT) == "1":
+        return True
+    if not frappe.db.exists("DocType", "Chat Conversation"):
+        return True
+    if not frappe.db.exists("DocType", "Chat Message"):
+        return True
+
+    meta = frappe.get_meta("Chat Conversation")
+    if not meta.has_field("last_customer_message_at") or not meta.has_field("messaging_window_mode"):
+        return False
+
+    pending_conditions = [
+        "IFNULL(c.messaging_window_mode, '') = ''",
+        """
+        (
+            c.last_customer_message_at IS NULL
+            AND EXISTS (
+                SELECT 1
+                FROM `tabChat Message` m
+                WHERE m.conversation = c.name
+                  AND m.direction = 'Inbound'
+                  AND COALESCE(NULLIF(m.sender_type, ''), 'Customer') NOT IN ('Agent', 'AI', 'System')
+                LIMIT 1
+            )
+        )
+        """,
+    ]
+    if (
+        meta.has_field("ctwa_clid")
+        and meta.has_field("ctwa_entry_at")
+        and meta.has_field("ctwa_window_expires_at")
+    ):
+        pending_conditions.append(
+            """
+            (
+                IFNULL(c.ctwa_clid, '') = ''
+                AND (c.ctwa_entry_at IS NOT NULL OR c.ctwa_window_expires_at IS NOT NULL)
+            )
+            """
+        )
+
+    rows = frappe.db.sql(
+        f"""
+        SELECT c.name
+        FROM `tabChat Conversation` c
+        WHERE {" OR ".join(pending_conditions)}
+        LIMIT 1
+        """,
+        as_dict=True,
+    )
+    completed = not rows
+    if completed:
+        mark_messaging_windows_backfill_completed()
+    return completed
+
+
+def mark_messaging_windows_backfill_completed() -> None:
+    frappe.db.set_global(BACKFILL_COMPLETED_DEFAULT, "1")
 
 
 def _messaging_window_fields_ready() -> bool:
@@ -376,7 +467,7 @@ def repair_ctwa_false_positives() -> None:
 def repair_messaging_windows():
     """Recompute window fields for all conversations (admin maintenance)."""
     repair_ctwa_false_positives()
-    backfill_messaging_windows_from_history()
+    backfill_messaging_windows_from_history(force=True)
     return {"success": True, "message": "Messaging windows repaired"}
 
 
@@ -412,8 +503,10 @@ def _sync_persisted_window_fields(
             _set_convo_field(convo, key, value)
 
 
-def backfill_messaging_windows_from_history() -> None:
-    """Set window fields from existing Chat Message rows (run on migrate)."""
+def backfill_messaging_windows_from_history(force: bool = False) -> None:
+    """Set window fields from existing Chat Message rows."""
+    if not force and messaging_windows_backfill_completed():
+        return
     if not frappe.db.exists("DocType", "Chat Conversation"):
         return
     meta = frappe.get_meta("Chat Conversation")
@@ -426,11 +519,12 @@ def backfill_messaging_windows_from_history() -> None:
     for conversation in conversations:
         try:
             _backfill_single_conversation(conversation)
-        except Exception:
-            frappe.log_error(
-                frappe.get_traceback(),
-                f"Messaging Window Backfill Failed: {conversation}",
-            )
+        except Exception as exc:
+            _safe_log_error(f"Messaging Window Backfill Failed: {conversation}")
+            if _is_db_connection_error(exc):
+                raise
+
+    mark_messaging_windows_backfill_completed()
 
 
 def _backfill_single_conversation(conversation: str) -> None:
