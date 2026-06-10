@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 from contextlib import contextmanager
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional, TypeVar
 from urllib.parse import urlsplit
 
 import frappe
@@ -25,6 +25,41 @@ from wa_chat_hub.task_logger import elapsed, task_log
 DEFAULT_CONVERSATION_STATUS = "Open"
 WA_LEAD_CONTEXT_MARKER = "WA_CHAT_HUB_CONTEXT_JSON"
 WA_LEAD_PAYLOAD_MARKER = "WA_CHAT_HUB_PAYLOAD_JSON"
+_LOCK_RETRY_ATTEMPTS = 3
+_LOCK_RETRY_DELAY_SECONDS = 0.35
+_T = TypeVar("_T")
+
+
+def _is_db_lock_conflict(exc: Exception) -> bool:
+    if isinstance(exc, (frappe.QueryTimeoutError, frappe.QueryDeadlockError)):
+        return True
+    cause = getattr(exc, "__cause__", None)
+    code = getattr(cause, "args", [None])[0] if cause else None
+    return code in {1205, 1213}
+
+
+def _with_db_lock_retry(
+    label: str,
+    action: Callable[[], _T],
+    *,
+    attempts: int = _LOCK_RETRY_ATTEMPTS,
+) -> _T:
+    for attempt in range(1, attempts + 1):
+        try:
+            return action()
+        except Exception as exc:
+            if not _is_db_lock_conflict(exc) or attempt >= attempts:
+                raise
+            task_log(
+                "db",
+                "lock_retry",
+                label=label,
+                attempt=attempt,
+                error=str(exc)[:140],
+            )
+            time.sleep(_LOCK_RETRY_DELAY_SECONDS * attempt)
+
+    raise RuntimeError(f"DB lock retry exhausted for {label}")
 
 
 @contextmanager
@@ -151,10 +186,11 @@ def get_or_create_conversation(
     assigned_to: Optional[str] = None,
     status: str = DEFAULT_CONVERSATION_STATUS,
 ) -> str:
-    existing = frappe.db.get_value(
-        "Chat Conversation",
-        {"channel_account": channel_account, "contact": contact, "status": ["!=", "Closed"]},
-        "name",
+    filters = {"channel_account": channel_account, "contact": contact, "status": ["!=", "Closed"]}
+
+    existing = _with_db_lock_retry(
+        "conversation_lookup",
+        lambda: frappe.db.get_value("Chat Conversation", filters, "name"),
     )
     if existing:
         updates = {}
@@ -163,19 +199,33 @@ def get_or_create_conversation(
         if assigned_to:
             updates["assigned_to"] = assigned_to
         if updates:
-            frappe.db.set_value("Chat Conversation", existing, updates)
+            _with_db_lock_retry(
+                "conversation_routing_update",
+                lambda: frappe.db.set_value("Chat Conversation", existing, updates),
+            )
         return existing
 
-    doc = frappe.get_doc({
-        "doctype": "Chat Conversation",
-        "channel_account": channel_account,
-        "contact": contact,
-        "department": department,
-        "assigned_to": assigned_to,
-        "status": status,
-    })
-    doc.insert(ignore_permissions=True)
-    return doc.name
+    def _insert_conversation() -> str:
+        doc = frappe.get_doc({
+            "doctype": "Chat Conversation",
+            "channel_account": channel_account,
+            "contact": contact,
+            "department": department,
+            "assigned_to": assigned_to,
+            "status": status,
+        })
+        try:
+            doc.insert(ignore_permissions=True)
+            return doc.name
+        except Exception as exc:
+            if not _is_db_lock_conflict(exc):
+                raise
+            concurrent = frappe.db.get_value("Chat Conversation", filters, "name")
+            if concurrent:
+                return concurrent
+            raise
+
+    return _with_db_lock_retry("conversation_insert", _insert_conversation)
 
 
 def append_message(payload: Dict[str, Any]) -> Dict[str, str]:
@@ -399,12 +449,32 @@ def update_conversation_after_message(conversation_name: str, payload: Dict[str,
     else:
         preview = body or content_type or ""
 
-    values: Dict[str, Any] = {"last_message_preview": (preview or "")[:500]}
     if payload.get("direction", "Inbound") == "Inbound":
-        unread = cint_safe(frappe.db.get_value("Chat Conversation", conversation_name, "unread_count"))
-        values["unread_count"] = unread + 1
+        _with_db_lock_retry(
+            "conversation_unread_increment",
+            lambda: frappe.db.sql(
+                """
+                UPDATE `tabChat Conversation`
+                SET last_message_preview = %s,
+                    unread_count = COALESCE(unread_count, 0) + 1,
+                    modified = NOW(6),
+                    modified_by = %s
+                WHERE name = %s
+                """,
+                ((preview or "")[:500], frappe.session.user, conversation_name),
+            ),
+        )
+        return
 
-    frappe.db.set_value("Chat Conversation", conversation_name, values, update_modified=True)
+    _with_db_lock_retry(
+        "conversation_preview_update",
+        lambda: frappe.db.set_value(
+            "Chat Conversation",
+            conversation_name,
+            {"last_message_preview": (preview or "")[:500]},
+            update_modified=True,
+        ),
+    )
 
 
 def build_media_preview(content_type: str, body: Optional[str] = None) -> str:
@@ -430,7 +500,20 @@ def _clean_media_body(content_type: str, body: Optional[str]) -> str:
 
 
 def mark_conversation_read(conversation_name: str) -> None:
-    frappe.db.set_value("Chat Conversation", conversation_name, "unread_count", 0)
+    _with_db_lock_retry(
+        "conversation_mark_read",
+        lambda: frappe.db.sql(
+            """
+            UPDATE `tabChat Conversation`
+            SET unread_count = 0,
+                modified = NOW(6),
+                modified_by = %s
+            WHERE name = %s
+              AND COALESCE(unread_count, 0) != 0
+            """,
+            (frappe.session.user, conversation_name),
+        ),
+    )
     frappe.publish_realtime(
         "wa_chat_conversation_updated",
         {"conversation": conversation_name, "unread_count": 0},
