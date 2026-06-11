@@ -86,6 +86,46 @@ def get_latest_crm_lead_media_files(limit: int = 10):
     return {"success": True, "result": rows}
 
 
+@frappe.whitelist()
+def get_crm_lead_files(lead: str):
+    """Return File and attachment-comment URL state for one CRM Lead."""
+    _ensure_diagnostic_access()
+    if not lead or not frappe.db.exists("CRM Lead", lead):
+        frappe.throw(_("CRM Lead not found: {0}").format(lead))
+
+    rows = frappe.get_all(
+        "File",
+        filters={
+            "attached_to_doctype": "CRM Lead",
+            "attached_to_name": lead,
+        },
+        fields=["name", "creation", "file_name", "file_url", "is_private"],
+        order_by="creation desc",
+        limit_page_length=0,
+    )
+    for row in rows:
+        file_url = str(row.get("file_url") or "")
+        row["url_kind"] = _classify_file_url(file_url)
+        row["has_double_encoded_signature"] = "%25" in file_url
+        row["comment_href"] = _latest_attachment_comment_href("CRM Lead", lead, row.get("file_name"))
+        row["comment_href_matches_file_url"] = bool(file_url) and row.get("comment_href") == file_url
+        row["comment_href_has_double_encoded_signature"] = "%25" in str(row.get("comment_href") or "")
+    return {"success": True, "lead": lead, "count": len(rows), "result": rows}
+
+
+def _classify_file_url(file_url: str) -> str:
+    if not file_url:
+        return "missing"
+    lowered = file_url.lower()
+    if lowered.startswith("s3://"):
+        return "s3"
+    if lowered.startswith(("http://", "https://")):
+        return "remote"
+    if lowered.startswith(("/files/", "/private/files/")):
+        return "local"
+    return "unknown"
+
+
 def _latest_attachment_comment_href(doctype: str, name: str, file_name: str) -> str:
     if not doctype or not name:
         return ""

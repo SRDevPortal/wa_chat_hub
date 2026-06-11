@@ -4,7 +4,7 @@ import json
 import time
 from contextlib import contextmanager
 from typing import Any, Dict, Optional
-from urllib.parse import urlsplit
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 import frappe
 from frappe import _
@@ -1178,10 +1178,32 @@ def _repair_remote_attachment_comment_url(
             continue
         if "href=" not in content:
             continue
-        repaired = _replace_first_href(content, file_url)
+        repaired = _replace_first_href(content, _safe_remote_href(file_url))
         if repaired != content:
             frappe.db.set_value("Comment", comment.name, "content", repaired, update_modified=False)
             return
+
+
+def _safe_remote_href(url: str) -> str:
+    if not _is_remote_url(url):
+        return url
+    try:
+        parts = urlsplit(url)
+        query = "&".join(_safe_query_part(part) for part in parts.query.split("&") if part)
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment.replace("#", "%23")))
+    except Exception:
+        return str(url or "").replace("+", "%2B").replace("=", "%3D")
+
+
+def _safe_query_part(part: str) -> str:
+    key, separator, value = part.partition("=")
+    if not separator:
+        return _safe_query_value(key)
+    return f"{_safe_query_value(key)}={_safe_query_value(value)}"
+
+
+def _safe_query_value(value: str) -> str:
+    return quote(unquote(str(value or "").replace("+", "%2B")), safe="")
 
 
 def _replace_first_href(html: str, url: str) -> str:

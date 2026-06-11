@@ -17,7 +17,41 @@
 				break;
 			}
 		}
-		return url;
+		return encodeRemoteQuery(url);
+	}
+
+	function encodeQueryPart(part) {
+		try {
+			return encodeURIComponent(decodeURIComponent(part.replace(/\+/g, "%2B")));
+		} catch (error) {
+			return part.replace(/\+/g, "%2B").replace(/=/g, "%3D");
+		}
+	}
+
+	function encodeRemoteQuery(value) {
+		const hashIndex = value.indexOf("#");
+		const baseAndQuery = hashIndex >= 0 ? value.slice(0, hashIndex) : value;
+		const hash = hashIndex >= 0 ? value.slice(hashIndex) : "";
+		const queryIndex = baseAndQuery.indexOf("?");
+		if (queryIndex < 0) {
+			return value;
+		}
+
+		const base = baseAndQuery.slice(0, queryIndex);
+		const query = baseAndQuery.slice(queryIndex + 1);
+		const encodedQuery = query
+			.split("&")
+			.map((part) => {
+				const equalsIndex = part.indexOf("=");
+				if (equalsIndex < 0) {
+					return encodeQueryPart(part);
+				}
+				const key = part.slice(0, equalsIndex);
+				const paramValue = part.slice(equalsIndex + 1);
+				return `${encodeQueryPart(key)}=${encodeQueryPart(paramValue)}`;
+			})
+			.join("&");
+		return `${base}?${encodedQuery}${hash}`;
 	}
 
 	function patchRenderedLinks(root) {
