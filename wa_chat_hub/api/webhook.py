@@ -157,44 +157,18 @@ def receive_interakt():
         channel_account = _resolve_interakt_channel_account(payload, raw_body)
         payload["channel_account"] = channel_account
         webhook_type = payload.get("type")
-        message_id = _interakt_payload_message_id(payload)
-        if (
-            webhook_type == "message_received"
-            and message_id
-            and frappe.db.exists("Chat Message", {"channel_message_id": message_id})
-        ):
-            return {"success": True, "message": "Duplicate message ignored"}
 
-        job_id = _interakt_webhook_job_id(channel_account, payload, raw_body)
-        queue = _interakt_webhook_queue(payload)
-        frappe.enqueue(
-            "wa_chat_hub.api.webhook.process_interakt_webhook",
-            queue=queue,
-            payload=payload,
-            raw_body=raw_body.decode("utf-8", errors="replace"),
-            channel_account=channel_account,
-            timeout=600 if queue == "long" else 180,
-            enqueue_after_commit=False,
-            now=False,
-            job_id=job_id,
-            deduplicate=True,
-        )
+        result = _process_interakt_payload(payload, raw_body)
+        frappe.db.commit()
         task_log(
             "webhook",
-            "enqueue_done",
+            "receive_done",
             provider="Interakt",
             channel_account=channel_account,
             webhook_type=webhook_type,
-            job_id=job_id,
             duration_sec=elapsed(started),
         )
-        return {
-            "success": True,
-            "queued": True,
-            "channel_account": channel_account,
-            "webhook_type": webhook_type,
-            "job_id": job_id,
-        }
+        return result
     except frappe.ValidationError as exc:
         task_log(
             "webhook",

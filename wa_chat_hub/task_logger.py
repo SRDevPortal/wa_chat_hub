@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from typing import Any
+import os
 
 import frappe
 from frappe.utils import get_datetime, now_datetime
@@ -26,7 +27,16 @@ def task_log(task: str, event: str, **fields) -> None:
             f"{key}={value}" for key, value in fields.items() if value is not None
         )
         message = f"{task} {event} {details}".strip()
-        print(f"[wa_chat_hub] {message}", flush=True)
+        if _console_logging_enabled():
+            print(f"[wa_chat_hub] {message}", flush=True)
         frappe.logger("wa_chat_hub", allow_site=True).info(message)
     except Exception:
         pass
+
+
+def _console_logging_enabled() -> bool:
+    value = (
+        getattr(getattr(frappe, "conf", None), "wa_chat_hub_console_log", None)
+        or os.environ.get("WA_CHAT_HUB_CONSOLE_LOG")
+    )
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
