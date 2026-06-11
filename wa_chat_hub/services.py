@@ -4,6 +4,7 @@ import json
 import time
 from contextlib import contextmanager
 from typing import Any, Dict, Optional
+from urllib.parse import urlsplit
 
 import frappe
 from frappe import _
@@ -1077,6 +1078,7 @@ def _persist_inbound_attachment(message_doc, payload: Dict[str, Any]) -> Optiona
         }
     )
     file_doc.insert(ignore_permissions=True)
+    _repair_remote_attachment_comment_url(message_doc.doctype, message_doc.name, file_doc.file_name, file_doc.file_url)
     if frappe.get_meta("Chat Message").has_field("attachment_file"):
         frappe.db.set_value("Chat Message", message_doc.name, "attachment_file", file_doc.name, update_modified=False)
     return file_doc.name
@@ -1113,6 +1115,8 @@ def _sync_inbound_attachment_to_linked_record(
         "name",
     )
     if existing_lead_file:
+        lead_file_doc = frappe.get_doc("File", existing_lead_file)
+        _repair_remote_attachment_comment_url(ref_doctype, ref_name, lead_file_doc.file_name, lead_file_doc.file_url)
         return
     existing_lead_file = frappe.db.get_value(
         "File",
@@ -1124,6 +1128,8 @@ def _sync_inbound_attachment_to_linked_record(
         "name",
     )
     if existing_lead_file:
+        lead_file_doc = frappe.get_doc("File", existing_lead_file)
+        _repair_remote_attachment_comment_url(ref_doctype, ref_name, lead_file_doc.file_name, lead_file_doc.file_url)
         return
     lead_file = frappe.get_doc(
         {
@@ -1136,3 +1142,58 @@ def _sync_inbound_attachment_to_linked_record(
         }
     )
     lead_file.insert(ignore_permissions=True)
+    _repair_remote_attachment_comment_url(ref_doctype, ref_name, lead_file.file_name, lead_file.file_url)
+
+
+def _is_remote_url(value: str) -> bool:
+    try:
+        return urlsplit(str(value or "")).scheme in {"http", "https"}
+    except Exception:
+        return False
+
+
+def _repair_remote_attachment_comment_url(
+    attached_to_doctype: str,
+    attached_to_name: str,
+    file_name: str,
+    file_url: str,
+) -> None:
+    if not _is_remote_url(file_url):
+        return
+
+    comments = frappe.get_all(
+        "Comment",
+        filters={
+            "reference_doctype": attached_to_doctype,
+            "reference_name": attached_to_name,
+            "comment_type": "Attachment",
+        },
+        fields=["name", "content"],
+        order_by="creation desc",
+        limit_page_length=5,
+    )
+    for comment in comments:
+        content = str(comment.content or "")
+        if file_name and file_name not in content:
+            continue
+        if "href=" not in content:
+            continue
+        repaired = _replace_first_href(content, file_url)
+        if repaired != content:
+            frappe.db.set_value("Comment", comment.name, "content", repaired, update_modified=False)
+            return
+
+
+def _replace_first_href(html: str, url: str) -> str:
+    quote_char = "'" if "href='" in html else '"' if 'href="' in html else ""
+    if not quote_char:
+        return html
+    marker = f"href={quote_char}"
+    start = html.find(marker)
+    if start < 0:
+        return html
+    value_start = start + len(marker)
+    value_end = html.find(quote_char, value_start)
+    if value_end < 0:
+        return html
+    return f"{html[:value_start]}{url}{html[value_end:]}"

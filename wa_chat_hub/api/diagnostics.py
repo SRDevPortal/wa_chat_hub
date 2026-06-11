@@ -61,3 +61,57 @@ def get_latest_inbound_media(limit: int = 10):
         row["file_url_matches_media_url"] = bool(row.get("media_url")) and row.get("media_url") == file_url
 
     return {"success": True, "result": messages}
+
+
+@frappe.whitelist()
+def get_latest_crm_lead_media_files(limit: int = 10):
+    """Return recent WA media File rows attached to CRM Lead records."""
+    _ensure_diagnostic_access()
+    limit = max(1, min(int(limit or 10), 50))
+
+    rows = frappe.get_all(
+        "File",
+        filters={
+            "attached_to_doctype": "CRM Lead",
+            "file_name": ["like", "WA-%"],
+        },
+        fields=["name", "creation", "file_name", "file_url", "attached_to_name"],
+        order_by="creation desc",
+        limit_page_length=limit,
+    )
+    for row in rows:
+        row["is_remote_url"] = str(row.get("file_url") or "").startswith(("http://", "https://"))
+        row["comment_href"] = _latest_attachment_comment_href("CRM Lead", row.get("attached_to_name"), row.get("file_name"))
+        row["comment_href_matches_file_url"] = bool(row.get("file_url")) and row.get("comment_href") == row.get("file_url")
+    return {"success": True, "result": rows}
+
+
+def _latest_attachment_comment_href(doctype: str, name: str, file_name: str) -> str:
+    if not doctype or not name:
+        return ""
+    comments = frappe.get_all(
+        "Comment",
+        filters={
+            "reference_doctype": doctype,
+            "reference_name": name,
+            "comment_type": "Attachment",
+        },
+        fields=["content"],
+        order_by="creation desc",
+        limit_page_length=10,
+    )
+    marker = str(file_name or "")
+    for comment in comments:
+        content = str(comment.content or "")
+        if marker and marker not in content:
+            continue
+        for quote in ("'", '"'):
+            prefix = f"href={quote}"
+            start = content.find(prefix)
+            if start < 0:
+                continue
+            value_start = start + len(prefix)
+            value_end = content.find(quote, value_start)
+            if value_end > value_start:
+                return content[value_start:value_end]
+    return ""
