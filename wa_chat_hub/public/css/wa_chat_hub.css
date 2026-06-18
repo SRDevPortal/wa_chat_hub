@@ -499,7 +499,7 @@
   gap: 8px;
   margin-bottom: 8px;
   padding: 0 20px 4px;
-  overflow-x: auto;
+  overflow: visible;
   scrollbar-width: none;
 }
 
@@ -529,6 +529,47 @@
   width: 34px;
   padding: 0;
   font-size: 14px;
+}
+
+.wa-filter-more-wrap {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.wa-filter-menu {
+  position: absolute;
+  top: 38px;
+  right: 0;
+  z-index: 30;
+  display: none;
+  width: 126px;
+  padding: 6px 0;
+  border: 1px solid #d6dee8;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.16);
+}
+
+.wa-filter-menu.show {
+  display: block;
+}
+
+.wa-filter-menu-item {
+  width: 100%;
+  min-height: 34px;
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  color: #253044;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.wa-filter-menu-item:hover,
+.wa-filter-menu-item.active {
+  background: #ecfdf3;
+  color: #15803d;
 }
 
 .wa-conversation-list {

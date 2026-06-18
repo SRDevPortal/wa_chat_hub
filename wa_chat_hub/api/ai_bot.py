@@ -14,6 +14,11 @@ from wa_chat_hub.ai.media_transcription import (
     build_transcript_context_for_chat,
 )
 from wa_chat_hub.ai.delivery_status import build_delivery_status_reply, is_delivery_status_query
+from wa_chat_hub.ai.clinical_history import (
+    build_clinical_history_context,
+    build_clinical_history_reply,
+    is_clinical_history_query,
+)
 from wa_chat_hub.ai.service import create_ai_suggestion
 from wa_chat_hub.api.vector_search import search_knowledge_base
 from wa_chat_hub.outbound import send_outbound_message
@@ -173,6 +178,35 @@ def process_message(message_id):
         )
         return
 
+    if is_clinical_history_query(body_text):
+        result = build_clinical_history_reply(conversation, body_text)
+        response_text = result.reply
+        if _should_auto_send(settings):
+            _deliver_ai_reply(conversation, response_text)
+            mode = "auto_send"
+        else:
+            create_ai_suggestion(conversation, "Reply Draft", response_text)
+            frappe.db.commit()
+            mode = "draft"
+        task_log(
+            "clinical_history",
+            "reply_delivered",
+            conversation=conversation,
+            message=message_id,
+            mode=mode,
+            patient=result.patient,
+            encounters=",".join(result.encounters or []),
+            medication_focused=1 if result.medication_focused else 0,
+        )
+        _log_ai_timing(
+            "total_done",
+            message=message_id,
+            conversation=conversation,
+            mode=f"clinical_history_{mode}",
+            total_sec=elapsed(total_started),
+        )
+        return
+
     context_started = time.monotonic()
     history = _load_recent_conversation_history(conversation)
     history_before_current = [row for row in history if str(row.name) != str(message_id)]
@@ -221,6 +255,16 @@ def process_message(message_id):
     if media_context:
         system_prompt = f"{system_prompt}\n\n{media_context}"
 
+    clinical_history_context = ""
+    if last_user_query:
+        try:
+            clinical_history_context = build_clinical_history_context(conversation, last_user_query)
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "WA AI Clinical History Context Failed")
+            clinical_history_context = ""
+    if clinical_history_context:
+        system_prompt = f"{system_prompt}\n\n{clinical_history_context}"
+
     kb_result_count = 0
     if last_user_query:
         try:
@@ -264,6 +308,7 @@ def process_message(message_id):
         history_count=len(history_before_current),
         kb_results=kb_result_count,
         has_media=1 if media_context else 0,
+        has_clinical_history=1 if clinical_history_context else 0,
         vision=1 if use_vision_for_image else 0,
     )
 

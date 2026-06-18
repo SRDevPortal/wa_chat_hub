@@ -22,7 +22,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     }
     wrapper.wa_chat_hub_initialized = true;
 
-    const cssVersion = '20260526-patient-filter-v1';
+    const cssVersion = '20260618-lead-temperature-filter-v1';
     const existingCss = document.querySelector('link[data-wa-chat-hub-css="1"]');
     if (existingCss && existingCss.getAttribute('data-wa-chat-hub-version') !== cssVersion) {
         existingCss.remove();
@@ -107,11 +107,17 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
                     <button type="button" id="wa-reference-filter-clear" title="Clear filter"><i class="fa fa-times"></i></button>
                 </div>
                 <div class="wa-filter-row">
-                    <button class="wa-chip active">All</button>
-                    <button class="wa-chip">Unread</button>
-                    <button class="wa-chip">Unassigned</button>
-                    <button class="wa-chip">Mine</button>
-                    <button class="wa-chip wa-chip-icon" title="More filters" type="button"><i class="fa fa-plus"></i></button>
+                    <button class="wa-chip active" data-filter="all">All</button>
+                    <button class="wa-chip" data-filter="unread">Unread</button>
+                    <button class="wa-chip" data-filter="unassigned">Unassigned</button>
+                    <div class="wa-filter-more-wrap">
+                        <button class="wa-chip wa-chip-icon" id="wa-filter-more-btn" title="Lead temperature filters" type="button"><i class="fa fa-plus"></i></button>
+                        <div class="wa-filter-menu" id="wa-filter-menu">
+                            <button type="button" class="wa-filter-menu-item" data-filter="temperature_hot">Hot</button>
+                            <button type="button" class="wa-filter-menu-item" data-filter="temperature_warm">Warm</button>
+                            <button type="button" class="wa-filter-menu-item" data-filter="temperature_cold">Cold</button>
+                        </div>
+                    </div>
                 </div>
                 <div class="wa-conversation-list" id="wa-conversation-list"><div class="wa-empty">Loading...</div></div>
             </aside>
@@ -218,12 +224,14 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
             limit: 50,
             channel_account: selectedChannelAccount || null,
             reference_doctype: selectedReferenceDoctype || null,
+            lead_temperature: getActiveLeadTemperatureFilter() || null,
         }),
         searchConversations: (query) => frappe.call('wa_chat_hub.api.chat.search_conversations', {
             query,
             limit: 50,
             channel_account: selectedChannelAccount || null,
             reference_doctype: selectedReferenceDoctype || null,
+            lead_temperature: getActiveLeadTemperatureFilter() || null,
         }),
         messages: (conversation) => frappe.call('wa_chat_hub.api.chat.get_messages', { conversation, limit: 200 }),
         context: (conversation) => frappe.call('wa_chat_hub.api.chat.get_sidebar_context', { conversation }),
@@ -490,10 +498,17 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
             filtered = filtered.filter((row) => cint(row.unread_count) > 0);
         } else if (activeConversationFilter === 'unassigned') {
             filtered = filtered.filter((row) => !row.assigned_to);
-        } else if (activeConversationFilter === 'mine') {
-            filtered = filtered.filter((row) => row.assigned_to === frappe.session.user);
+        } else if (getActiveLeadTemperatureFilter()) {
+            const selectedTemperature = getActiveLeadTemperatureFilter().toLowerCase();
+            filtered = filtered.filter((row) => String(row.lead_temperature || '').trim().toLowerCase() === selectedTemperature);
         }
         return filtered;
+    }
+
+    function getActiveLeadTemperatureFilter() {
+        const match = String(activeConversationFilter || '').match(/^temperature_(hot|warm|cold)$/);
+        if (!match) return '';
+        return match[1].charAt(0).toUpperCase() + match[1].slice(1);
     }
 
     function applyConversationListView() {
@@ -508,7 +523,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         return Promise.resolve();
     }
 
-    function refreshConversations() {
+    function refreshConversations(force = false) {
         if (!isWaChatHubRouteActive()) {
             if (isWaChatHubCurrentRoute() && document.hidden) {
                 conversationRefreshState.pending = true;
@@ -525,7 +540,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         }
 
         const now = Date.now();
-        if (conversationRefreshState.lastAt && now - conversationRefreshState.lastAt < CONVERSATION_REFRESH_DEBOUNCE_MS) {
+        if (!force && conversationRefreshState.lastAt && now - conversationRefreshState.lastAt < CONVERSATION_REFRESH_DEBOUNCE_MS) {
             conversationRefreshState.pending = true;
             scheduleConversationRefresh(CONVERSATION_REFRESH_DEBOUNCE_MS - (now - conversationRefreshState.lastAt));
             return Promise.resolve();
@@ -676,20 +691,47 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         }
     });
 
-    $('.wa-filter-row').on('click', '.wa-chip:not(.wa-chip-icon)', function () {
+    function setConversationFilter(filter) {
+        const previousTemperature = getActiveLeadTemperatureFilter();
+        activeConversationFilter = filter || 'all';
         $('.wa-filter-row .wa-chip').removeClass('active');
-        $(this).addClass('active');
-        const label = $(this).text().trim().toLowerCase();
-        if (label.includes('unread')) {
-            activeConversationFilter = 'unread';
-        } else if (label.includes('unassigned')) {
-            activeConversationFilter = 'unassigned';
-        } else if (label.includes('mine')) {
-            activeConversationFilter = 'mine';
+        $('#wa-filter-menu .wa-filter-menu-item').removeClass('active');
+        const temperature = getActiveLeadTemperatureFilter();
+        if (temperature) {
+            $('#wa-filter-more-btn')
+                .addClass('active')
+                .attr('title', __('Lead temperature: {0}', [temperature]));
+            $(`#wa-filter-menu .wa-filter-menu-item[data-filter="${activeConversationFilter}"]`).addClass('active');
         } else {
-            activeConversationFilter = 'all';
+            $(`.wa-filter-row .wa-chip[data-filter="${activeConversationFilter}"]`).addClass('active');
+            $('#wa-filter-more-btn').attr('title', __('Lead temperature filters'));
+        }
+        $('#wa-filter-menu').removeClass('show');
+        if (previousTemperature !== temperature) {
+            refreshConversations(true);
+            return;
         }
         applyConversationListView();
+    }
+
+    $('.wa-filter-row').on('click', '.wa-chip:not(.wa-chip-icon)', function () {
+        setConversationFilter($(this).data('filter') || 'all');
+    });
+
+    $('#wa-filter-more-btn').on('click', function(e) {
+        e.stopPropagation();
+        $('#wa-filter-menu').toggleClass('show');
+    });
+
+    $('#wa-filter-menu').on('click', '.wa-filter-menu-item', function(e) {
+        e.stopPropagation();
+        setConversationFilter($(this).data('filter') || 'all');
+    });
+
+    $(document).on('click.waFilterMenu', function(e) {
+        if (!$(e.target).closest('.wa-filter-more-wrap').length) {
+            $('#wa-filter-menu').removeClass('show');
+        }
     });
 
     function escapeHtml(value) {

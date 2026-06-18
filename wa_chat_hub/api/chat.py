@@ -158,6 +158,7 @@ def _conversation_list_filters(
     department=None,
     channel_account=None,
     reference_doctype=None,
+    lead_temperature=None,
 ) -> dict:
     filters: dict = {}
     if status:
@@ -176,6 +177,10 @@ def _conversation_list_filters(
             filters["linked_reference_doctype"] = ["in", ["CRM Lead", "Lead"]]
         else:
             filters["linked_reference_doctype"] = reference_doctype
+    if lead_temperature and frappe.get_meta("Chat Conversation").has_field("lead_temperature"):
+        temperature = str(lead_temperature).strip().title()
+        if temperature in {"Hot", "Warm", "Cold"}:
+            filters["lead_temperature"] = temperature
     return filters
 
 
@@ -362,6 +367,7 @@ def get_conversations(
     department=None,
     channel_account=None,
     reference_doctype=None,
+    lead_temperature=None,
 ):
     reference_doctype = _force_scoped_reference_doctype(reference_doctype)
     cache_key = _api_cache_key(
@@ -373,6 +379,7 @@ def get_conversations(
             "department": department,
             "channel_account": channel_account,
             "reference_doctype": reference_doctype,
+            "lead_temperature": lead_temperature,
         },
     )
     cached = _short_cache_get(cache_key)
@@ -385,6 +392,7 @@ def get_conversations(
         department=department,
         channel_account=channel_account,
         reference_doctype=reference_doctype,
+        lead_temperature=lead_temperature,
     )
 
     rows = _conversation_sql_rows(filters, limit)
@@ -403,6 +411,7 @@ def search_conversations(
     department=None,
     channel_account=None,
     reference_doctype=None,
+    lead_temperature=None,
 ):
     reference_doctype = _force_scoped_reference_doctype(reference_doctype)
     """Search conversations by phone, name, lead, patient, or message preview."""
@@ -415,6 +424,7 @@ def search_conversations(
             department=department,
             channel_account=channel_account,
             reference_doctype=reference_doctype,
+            lead_temperature=lead_temperature,
         )
 
     base_filters = _conversation_list_filters(
@@ -423,6 +433,7 @@ def search_conversations(
         department=department,
         channel_account=channel_account,
         reference_doctype=reference_doctype,
+        lead_temperature=lead_temperature,
     )
     q_like = f"%{q}%"
     matching: set[str] = set()
