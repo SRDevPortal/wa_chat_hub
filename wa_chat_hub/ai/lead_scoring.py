@@ -7,6 +7,7 @@ from typing import Dict, List
 import frappe
 import requests
 
+from wa_chat_hub.ai.conversation_stop import is_conversation_stopped
 from wa_chat_hub.ai.language import resolve_language_from_history
 from wa_chat_hub.db_retry import with_db_lock_retry
 from wa_chat_hub.prompts import get_conversation_crm_lead
@@ -33,6 +34,29 @@ def score_and_sync_conversation(conversation: str) -> Dict[str, str]:
 
 def recompute_conversation_metrics(conversation: str) -> ScoreResult:
     convo = frappe.get_doc("Chat Conversation", conversation)
+    if is_conversation_stopped(conversation):
+        score_result = ScoreResult(
+            lead_score=0,
+            lead_temperature="Cold",
+            lead_lan=convo.lead_lan or "English",
+            source="conversation_stopped",
+        )
+        with_db_lock_retry(
+            "conversation_stopped_score_update",
+            lambda: frappe.db.set_value(
+                "Chat Conversation",
+                conversation,
+                {
+                    "lead_score": score_result.lead_score,
+                    "lead_temperature": score_result.lead_temperature,
+                    "lead_lan": score_result.lead_lan,
+                },
+                update_modified=False,
+            ),
+        )
+        sync_to_linked_lead(conversation, score_result)
+        return score_result
+
     history = frappe.get_all(
         "Chat Message",
         filters={"conversation": conversation},
