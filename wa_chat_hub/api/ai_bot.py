@@ -9,6 +9,7 @@ from frappe.utils import cint
 from frappe.utils.background_jobs import enqueue
 
 from wa_chat_hub.ai.ocr_summary import GENERIC_MEDIA_BODIES, build_media_context_for_chat
+from wa_chat_hub.ai.providers import CHAT_CAPABILITY, get_active_llm_provider_rows
 from wa_chat_hub.ai.media_transcription import (
     TRANSCRIPT_CONTENT_TYPES,
     build_transcript_context_for_chat,
@@ -560,12 +561,7 @@ def _already_replied_to_inbound(conversation: str, inbound_message_id: str) -> b
 
 
 def _load_providers():
-    rows = frappe.get_all(
-        "WA LLM Provider",
-        filters={"is_active": 1},
-        fields=["name", "provider_type", "model_name", "base_url"],
-        order_by="priority asc",
-    )
+    rows = get_active_llm_provider_rows(CHAT_CAPABILITY)
     providers = []
     for row in rows:
         doc = frappe.get_doc("WA LLM Provider", row.name)

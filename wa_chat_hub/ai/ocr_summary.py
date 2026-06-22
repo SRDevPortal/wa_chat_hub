@@ -9,6 +9,13 @@ from typing import Dict, Optional
 import frappe
 import requests
 
+from wa_chat_hub.ai.providers import (
+    CHAT_CAPABILITY,
+    VISION_CAPABILITY,
+    get_active_llm_provider_rows,
+    get_provider_secret,
+    looks_like_vision_model,
+)
 from wa_chat_hub.prompts import get_conversation_crm_lead
 
 # Max length for sr_lead_notes (Small Text); keep headroom for separators.
@@ -293,46 +300,53 @@ def _extract_with_openai_vision(
     media_bytes: bytes | None = None,
     mime_type: str | None = None,
 ) -> str:
-    provider = _get_openai_compatible_provider(require_vision=True)
-    if not provider:
+    providers = _get_openai_compatible_providers(require_vision=True)
+    if not providers:
         return ""
 
     image_url = _build_vision_image_url(media_url, media_bytes, mime_type)
     if not image_url:
         return ""
 
-    base_url = provider["base_url"] or "https://api.openai.com/v1/chat/completions"
-    if base_url.endswith("/") and "chat/completions" not in base_url:
-        base_url = f"{base_url}chat/completions"
+    for provider in providers:
+        base_url = provider["base_url"] or "https://api.openai.com/v1/chat/completions"
+        if base_url.endswith("/") and "chat/completions" not in base_url:
+            base_url = f"{base_url}chat/completions"
 
-    payload = {
-        "model": provider["model_name"],
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Extract all readable medical/report text from this image."},
-                    {"type": "image_url", "image_url": {"url": image_url}},
-                ],
-            }
-        ],
-        "temperature": 0,
-    }
-    try:
-        resp = requests.post(
-            base_url,
-            headers={
-                "Authorization": f"Bearer {provider['api_key']}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=30,
-        )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"].get("content", "")[:12000]
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "OCR Vision Extraction Failed")
-        return ""
+        payload = {
+            "model": provider["model_name"],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Extract all readable medical/report text from this image."},
+                        {"type": "image_url", "image_url": {"url": image_url}},
+                    ],
+                }
+            ],
+            "temperature": 0,
+            "max_tokens": 1200,
+        }
+        try:
+            resp = requests.post(
+                base_url,
+                headers={
+                    "Authorization": f"Bearer {provider['api_key']}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=30,
+            )
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"].get("content", "")
+            if content:
+                return content[:12000]
+        except Exception:
+            frappe.log_error(
+                frappe.get_traceback(),
+                f"OCR Vision Extraction Failed ({provider.get('name') or provider.get('model_name')})",
+            )
+    return ""
 
 
 def _build_vision_image_url(media_url: str, media_bytes: bytes | None, mime_type: str | None) -> str:
@@ -353,8 +367,7 @@ def _looks_like_image_url(media_url: str) -> bool:
 def _summarize_report_text(extracted: str, body_hint: str, content_type: str) -> str:
     extracted = (extracted or "").strip()
     if extracted:
-        provider = _get_openai_compatible_provider()
-        if provider:
+        for provider in _get_openai_compatible_providers():
             summary = _summarize_with_model(provider, extracted)
             if summary:
                 return summary
@@ -406,65 +419,31 @@ def _summarize_with_model(provider: Dict, extracted_text: str) -> str:
         return ""
 
 
-def _get_openai_compatible_provider(require_vision: bool = False) -> Optional[Dict]:
-    rows = frappe.get_all(
-        "WA LLM Provider",
-        filters={"is_active": 1},
-        fields=["name", "provider_type", "model_name", "base_url"],
-        order_by="priority asc",
-        limit=5,
-    )
-    candidates = []
-    for row in rows:
-        if row.provider_type not in {"OpenAI", "Gemini", "Custom"}:
-            continue
-        if require_vision and not _looks_like_vision_model(row.provider_type, row.model_name):
-            continue
-        candidates.append(row)
+def _get_openai_compatible_providers(require_vision: bool = False) -> list[Dict]:
+    candidates = get_active_llm_provider_rows(VISION_CAPABILITY if require_vision else CHAT_CAPABILITY, limit=5)
 
     if require_vision and not candidates:
         frappe.log_error(
-            "No active vision-capable WA LLM Provider found for OCR. Configure a vision model such as gpt-4o-mini, gpt-4.1-mini, or Gemini 1.5/2.x.",
+            "No active vision-capable WA LLM Provider found for OCR. Configure a provider with Use for Vision / OCR enabled and an image-capable model.",
             "WA OCR Vision Provider Missing",
         )
-        return None
+        return []
 
+    providers = []
     for row in candidates:
-        doc = frappe.get_doc("WA LLM Provider", row.name)
-        api_key = doc.get_password("api_key")
-        if not api_key:
-            continue
-        return {
-            "name": row.name,
-            "provider_type": row.provider_type,
-            "model_name": row.model_name,
-            "base_url": row.base_url,
-            "api_key": api_key,
-        }
-    return None
+        provider = get_provider_secret(row)
+        if provider:
+            providers.append(provider)
+    return providers
+
+
+def _get_openai_compatible_provider(require_vision: bool = False) -> Optional[Dict]:
+    providers = _get_openai_compatible_providers(require_vision=require_vision)
+    return providers[0] if providers else None
 
 
 def _looks_like_vision_model(provider_type: str, model_name: str | None) -> bool:
-    provider_type = str(provider_type or "").lower()
-    model_name = str(model_name or "").lower()
-    if provider_type == "gemini":
-        return True
-    vision_tokens = (
-        "gpt-4o",
-        "gpt-4.1",
-        "gpt-4.5",
-        "o3",
-        "o4",
-        "vision",
-        "gemini",
-        "llava",
-        "pixtral",
-        "qwen-vl",
-    )
-    text_only_tokens = ("gpt-3.5", "text-", "embedding", "babbage", "davinci")
-    return any(token in model_name for token in vision_tokens) and not any(
-        token in model_name for token in text_only_tokens
-    )
+    return looks_like_vision_model(provider_type, model_name)
 
 
 def build_attachment_filename(payload: Dict, media_url: str, fallback_prefix: str = "wa-attachment") -> str:

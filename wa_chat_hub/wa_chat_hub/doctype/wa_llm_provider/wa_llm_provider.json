@@ -15,6 +15,9 @@
   "model_name",
   "api_key",
   "base_url",
+  "use_for_chat",
+  "use_for_vision",
+  "use_for_transcription",
   "is_embedding_provider"
  ],
  "fields": [
@@ -71,6 +74,27 @@
    "fieldname": "base_url",
    "fieldtype": "Data",
    "label": "Custom Base URL"
+  },
+  {
+   "default": "1",
+   "description": "Use this provider for WhatsApp AI reply generation.",
+   "fieldname": "use_for_chat",
+   "fieldtype": "Check",
+   "label": "Use for Chat Replies"
+  },
+  {
+   "default": "0",
+   "description": "Use this provider for report/image OCR and video frame summaries. The model must accept image input.",
+   "fieldname": "use_for_vision",
+   "fieldtype": "Check",
+   "label": "Use for Vision / OCR"
+  },
+  {
+   "default": "0",
+   "description": "Use this provider for audio/video speech transcription. The API must support /audio/transcriptions.",
+   "fieldname": "use_for_transcription",
+   "fieldtype": "Check",
+   "label": "Use for Audio / Video Transcription"
   },
   {
    "default": "0",

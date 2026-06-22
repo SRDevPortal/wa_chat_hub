@@ -12,6 +12,14 @@ from typing import Dict, Optional
 import frappe
 import requests
 
+from wa_chat_hub.ai.providers import (
+    CHAT_CAPABILITY,
+    TRANSCRIPTION_CAPABILITY,
+    VISION_CAPABILITY,
+    get_active_llm_provider_rows,
+    get_provider_secret,
+    looks_like_vision_model,
+)
 from wa_chat_hub.prompts import get_conversation_crm_lead
 
 
@@ -178,13 +186,9 @@ def describe_video_media(media_url: str) -> str:
     if not frames:
         return ""
 
-    provider = _get_vision_provider()
-    if not provider:
+    providers = _get_vision_providers()
+    if not providers:
         return ""
-
-    base_url = provider["base_url"] or "https://api.openai.com/v1/chat/completions"
-    if base_url.endswith("/") and "chat/completions" not in base_url:
-        base_url = f"{base_url}chat/completions"
 
     content = [
         {
@@ -206,25 +210,36 @@ def describe_video_media(media_url: str) -> str:
             }
         )
 
-    try:
-        resp = requests.post(
-            base_url,
-            headers={
-                "Authorization": f"Bearer {provider['api_key']}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": provider["model_name"],
-                "messages": [{"role": "user", "content": content}],
-                "temperature": 0,
-            },
-            timeout=45,
-        )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"].get("content", "")[:4000]
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "WA Video Vision Summary Failed")
-        return ""
+    for provider in providers:
+        base_url = provider["base_url"] or "https://api.openai.com/v1/chat/completions"
+        if base_url.endswith("/") and "chat/completions" not in base_url:
+            base_url = f"{base_url}chat/completions"
+
+        try:
+            resp = requests.post(
+                base_url,
+                headers={
+                    "Authorization": f"Bearer {provider['api_key']}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": provider["model_name"],
+                    "messages": [{"role": "user", "content": content}],
+                    "temperature": 0,
+                    "max_tokens": 600,
+                },
+                timeout=45,
+            )
+            resp.raise_for_status()
+            summary = resp.json()["choices"][0]["message"].get("content", "")
+            if summary:
+                return summary[:4000]
+        except Exception:
+            frappe.log_error(
+                frappe.get_traceback(),
+                f"WA Video Vision Summary Failed ({provider.get('name') or provider.get('model_name')})",
+            )
+    return ""
 
 
 def _prepare_transcription_upload(media_url: str, media: Dict, content_type: str) -> Dict:
@@ -581,109 +596,50 @@ def _download_media(media_url: str, content_type: str) -> Optional[Dict]:
 
 
 def _get_audio_transcription_provider() -> Optional[Dict]:
-    rows = frappe.get_all(
-        "WA LLM Provider",
-        filters={"is_active": 1, "provider_type": ["in", ["OpenAI", "Custom"]]},
-        fields=["name", "provider_type", "model_name", "base_url"],
-        order_by="priority asc",
-        limit=5,
-    )
+    rows = get_active_llm_provider_rows(TRANSCRIPTION_CAPABILITY, limit=5)
     for row in rows:
-        doc = frappe.get_doc("WA LLM Provider", row.name)
-        api_key = doc.get_password("api_key")
-        if not api_key:
-            continue
-        return {
-            "name": row.name,
-            "provider_type": row.provider_type,
-            "model_name": row.model_name,
-            "base_url": row.base_url,
-            "api_key": api_key,
-        }
+        provider = get_provider_secret(row)
+        if provider:
+            return provider
     frappe.log_error(
-        "No active OpenAI-compatible WA LLM Provider with API key found for media transcription.",
+        "No active WA LLM Provider found for media transcription. Configure a provider with Use for Audio / Video Transcription enabled and /audio/transcriptions support.",
         "WA Media Transcription Provider Missing",
     )
     return None
 
 
 def _get_openai_compatible_provider() -> Optional[Dict]:
-    rows = frappe.get_all(
-        "WA LLM Provider",
-        filters={"is_active": 1},
-        fields=["name", "provider_type", "model_name", "base_url"],
-        order_by="priority asc",
-        limit=5,
-    )
+    rows = get_active_llm_provider_rows(CHAT_CAPABILITY, limit=5)
     for row in rows:
-        if row.provider_type not in {"OpenAI", "Gemini", "Custom"}:
-            continue
-        doc = frappe.get_doc("WA LLM Provider", row.name)
-        api_key = doc.get_password("api_key")
-        if not api_key:
-            continue
-        return {
-            "name": row.name,
-            "provider_type": row.provider_type,
-            "model_name": row.model_name,
-            "base_url": row.base_url,
-            "api_key": api_key,
-        }
+        provider = get_provider_secret(row)
+        if provider:
+            return provider
     return None
+
+
+def _get_vision_providers() -> list[Dict]:
+    rows = get_active_llm_provider_rows(VISION_CAPABILITY, limit=5)
+    providers = []
+    for row in rows:
+        provider = get_provider_secret(row)
+        if provider:
+            providers.append(provider)
+    if providers:
+        return providers
+    frappe.log_error(
+        "No active vision-capable WA LLM Provider found for video frame summaries. Configure a provider with Use for Vision / OCR enabled.",
+        "WA Video Vision Provider Missing",
+    )
+    return []
 
 
 def _get_vision_provider() -> Optional[Dict]:
-    rows = frappe.get_all(
-        "WA LLM Provider",
-        filters={"is_active": 1},
-        fields=["name", "provider_type", "model_name", "base_url"],
-        order_by="priority asc",
-        limit=5,
-    )
-    for row in rows:
-        if row.provider_type not in {"OpenAI", "Gemini", "Custom"}:
-            continue
-        if not _looks_like_vision_model(row.provider_type, row.model_name):
-            continue
-        doc = frappe.get_doc("WA LLM Provider", row.name)
-        api_key = doc.get_password("api_key")
-        if not api_key:
-            continue
-        return {
-            "name": row.name,
-            "provider_type": row.provider_type,
-            "model_name": row.model_name,
-            "base_url": row.base_url,
-            "api_key": api_key,
-        }
-    frappe.log_error(
-        "No active vision-capable WA LLM Provider found for video frame summaries.",
-        "WA Video Vision Provider Missing",
-    )
-    return None
+    providers = _get_vision_providers()
+    return providers[0] if providers else None
 
 
 def _looks_like_vision_model(provider_type: str, model_name: str | None) -> bool:
-    provider_type = str(provider_type or "").lower()
-    model_name = str(model_name or "").lower()
-    if provider_type == "gemini":
-        return True
-    vision_tokens = (
-        "gpt-4o",
-        "gpt-4.1",
-        "gpt-4.5",
-        "o3",
-        "o4",
-        "vision",
-        "gemini",
-        "llava",
-        "pixtral",
-        "qwen-vl",
-    )
-    text_only_tokens = ("gpt-3.5", "text-", "embedding", "babbage", "davinci")
-    return any(token in model_name for token in vision_tokens) and not any(
-        token in model_name for token in text_only_tokens
-    )
+    return looks_like_vision_model(provider_type, model_name)
 
 
 def _build_audio_transcription_url(base_url: str | None) -> str:
