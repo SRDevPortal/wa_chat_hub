@@ -180,6 +180,8 @@ def _load_active_providers() -> List[Dict]:
     )
     result = []
     for row in providers:
+        if _is_chat_reply_only_provider(row):
+            continue
         doc = frappe.get_doc("WA LLM Provider", row.name)
         api_key = doc.get_password("api_key")
         if not api_key:
@@ -194,6 +196,12 @@ def _load_active_providers() -> List[Dict]:
             }
         )
     return result
+
+
+def _is_chat_reply_only_provider(row) -> bool:
+    base_url = str(row.get("base_url") or "").strip().lower()
+    model = str(row.get("model_name") or "").strip().lower()
+    return "vllm.buopso.net" in base_url or model.startswith("qwen3:")
 
 
 def _call_score_provider(provider: Dict, prompt: str) -> float | None:
