@@ -8,7 +8,11 @@ import requests
 from frappe.utils import cint
 from frappe.utils.background_jobs import enqueue
 
-from wa_chat_hub.ai.ocr_summary import GENERIC_MEDIA_BODIES, build_media_context_for_chat
+from wa_chat_hub.ai.ocr_summary import (
+    GENERIC_MEDIA_BODIES,
+    build_media_context_for_chat,
+    _heuristic_report_summary,
+)
 from wa_chat_hub.ai.providers import CHAT_CAPABILITY, get_active_llm_provider_rows
 from wa_chat_hub.ai.media_transcription import (
     TRANSCRIPT_CONTENT_TYPES,
@@ -37,8 +41,10 @@ from wa_chat_hub.prompts import (
 from wa_chat_hub.services import append_message
 from wa_chat_hub.task_logger import elapsed, queue_wait_seconds, task_log
 
-CONVERSATION_HISTORY_LIMIT = 40
+CONVERSATION_HISTORY_LIMIT = 4
 MEDIA_CONTENT_TYPES = frozenset({"Image", "Video", "Audio", "Document", "Sticker"})
+LOW_CONTEXT_INPUT_CHAR_BUDGET = 6500
+LOW_CONTEXT_SYSTEM_CHAR_BUDGET = 4200
 
 
 def _log_ai_timing(event: str, **fields) -> None:
@@ -106,6 +112,8 @@ def process_message(message_id):
     frappe.set_user("Administrator")
 
     msg_doc = frappe.get_doc("Chat Message", message_id)
+    frappe.flags.wa_ai_reply_to_message = str(message_id)
+    frappe.local.wa_ai_reply_to_message = str(message_id)
     conversation = msg_doc.conversation
     _log_ai_timing(
         "start",
@@ -187,6 +195,27 @@ def process_message(message_id):
 
     settings = frappe.get_single("WA Chat Hub Settings")
     body_text = str(msg_doc.body or "").strip()
+    content_type = str(msg_doc.content_type or "Text").title()
+    media_url = str(msg_doc.media_url or "").strip()
+
+    quick_media_reply = _quick_media_only_reply(content_type, body_text, media_url)
+    if quick_media_reply:
+        if _should_auto_send(settings):
+            _deliver_ai_reply(conversation, quick_media_reply)
+            mode = "auto_send"
+        else:
+            create_ai_suggestion(conversation, "Reply Draft", quick_media_reply)
+            frappe.db.commit()
+            mode = "draft"
+        _log_ai_timing(
+            "total_done",
+            message=message_id,
+            conversation=conversation,
+            mode=f"quick_media_{mode}",
+            total_sec=elapsed(total_started),
+        )
+        return
+
     if is_delivery_status_query(body_text):
         result = build_delivery_status_reply(conversation, body_text)
         response_text = result.reply
@@ -261,25 +290,24 @@ def process_message(message_id):
     department = conversation_context.get("department")
     prompt_config = get_effective_prompt_config(channel_account)
 
-    content_type = str(msg_doc.content_type or "Text").title()
-    media_url = str(msg_doc.media_url or "").strip()
-
     media_context = ""
-    use_vision_for_image = media_url and content_type == "Image"
+    use_vision_for_image = False
+    media_fallback_reply = ""
     if media_url and content_type in MEDIA_CONTENT_TYPES:
         try:
-            if use_vision_for_image:
-                caption = _meaningful_body(body_text, content_type)
-                media_context = "Customer sent an image on WhatsApp."
-                if caption:
-                    media_context += f" Caption: {caption}"
-            elif content_type in TRANSCRIPT_CONTENT_TYPES:
+            if content_type in TRANSCRIPT_CONTENT_TYPES:
                 media_context = build_transcript_context_for_chat(media_url, content_type, body_text)
             else:
                 media_context = build_media_context_for_chat(media_url, content_type, body_text)
         except Exception:
             frappe.log_error(frappe.get_traceback(), "WA AI Media Context Failed")
             media_context = f"Customer sent a {content_type} attachment."
+    elif _looks_like_recent_attachment_followup(body_text):
+        try:
+            media_context = _build_recent_attachment_followup_context(conversation, msg_doc)
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "WA AI Recent Attachment Context Failed")
+            media_context = ""
 
     last_user_query = _meaningful_body(body_text, content_type) or media_context[:500]
 
@@ -330,6 +358,14 @@ def process_message(message_id):
     multilingual_policy = get_multilingual_policy(prompt_config, settings)
     if multilingual_policy:
         system_prompt = f"{system_prompt}\n\n{multilingual_policy}"
+
+    if media_url and content_type in MEDIA_CONTENT_TYPES:
+        media_fallback_reply = _media_fallback_reply(
+            content_type,
+            media_context,
+            prompt_config=prompt_config,
+            system_prompt=system_prompt,
+        )
 
     latest_user_text = _build_latest_user_turn(msg_doc, media_context, use_vision_for_image)
 
@@ -404,6 +440,21 @@ def process_message(message_id):
                 duration_sec=elapsed(provider_started),
             )
             response_text = _polish_autopilot_reply(str(response_text).strip())
+            if _looks_like_degenerate_reply(response_text):
+                _log_ai_timing(
+                    "provider_bad_output",
+                    message=message_id,
+                    conversation=conversation,
+                    provider=provider.name,
+                    model=provider.model_name,
+                    reason="degenerate_repetition",
+                    duration_sec=elapsed(provider_started),
+                )
+                _safe_log_error(
+                    "WA AI Provider Bad Output",
+                    f"Rejected repetitive provider reply for message {message_id}: {response_text[:500]}",
+                )
+                continue
 
             if auto_send:
                 _deliver_ai_reply(conversation, response_text)
@@ -429,15 +480,50 @@ def process_message(message_id):
                 duration_sec=elapsed(provider_started),
                 error=str(e)[:140],
             )
-            frappe.log_error(
-                f"LLM Provider {provider.name} failed: {str(e)}",
+            _safe_log_error(
                 "WA AI Fallback Warning",
+                f"LLM Provider {provider.name} failed: {str(e)}",
             )
             continue
 
-    frappe.log_error(
-        f"All LLM Providers failed for conversation {conversation}.",
+    if media_fallback_reply:
+        if auto_send:
+            _deliver_ai_reply(conversation, media_fallback_reply)
+            mode = "fallback_auto_send"
+        else:
+            create_ai_suggestion(conversation, "Reply Draft", media_fallback_reply)
+            frappe.db.commit()
+            mode = "fallback_draft"
+        _log_ai_timing(
+            "total_done",
+            message=message_id,
+            conversation=conversation,
+            mode=f"media_{mode}",
+            total_sec=elapsed(total_started),
+        )
+        return
+
+    text_fallback_reply = _text_provider_fallback_reply(body_text, content_type)
+    if text_fallback_reply:
+        if auto_send:
+            _deliver_ai_reply(conversation, text_fallback_reply)
+            mode = "fallback_auto_send"
+        else:
+            create_ai_suggestion(conversation, "Reply Draft", text_fallback_reply)
+            frappe.db.commit()
+            mode = "fallback_draft"
+        _log_ai_timing(
+            "total_done",
+            message=message_id,
+            conversation=conversation,
+            mode=f"text_{mode}",
+            total_sec=elapsed(total_started),
+        )
+        return
+
+    _safe_log_error(
         "WA AI Fatal Error",
+        f"All LLM Providers failed for conversation {conversation}.",
     )
     _log_ai_timing(
         "total_failed",
@@ -449,6 +535,511 @@ def process_message(message_id):
 
 def _should_auto_send(settings) -> bool:
     return (settings.autopilot_mode or "") == "Limited Auto Reply"
+
+
+def _quick_media_only_reply(content_type: str, body: str, media_url: str) -> str:
+    content_type = str(content_type or "Text").title()
+    if content_type not in ("Image", "Document") or not str(media_url or "").strip():
+        return ""
+    if _meaningful_body(body, content_type) and not _generic_report_caption(body):
+        return ""
+    if content_type == "Document":
+        return (
+            "Report mil gayi. Main ise review ke liye forward kar raha hoon. "
+            "Aap patient ka naam, age aur current symptoms bhi share kar dijiye."
+        )
+    return (
+        "Image/report mil gayi. Main ise review ke liye forward kar raha hoon. "
+        "Aap patient ka naam, age aur current symptoms bhi share kar dijiye."
+    )
+
+
+def _generic_report_caption(body: str) -> bool:
+    normalized = str(body or "").strip().lower()
+    return normalized in {
+        "report",
+        "reports",
+        "medical report",
+        "lab report",
+        "test report",
+        "attached report",
+        "report attached",
+        "ye report hai",
+        "ye meri report hai",
+    }
+
+
+def _text_provider_fallback_reply(body: str, content_type: str) -> str:
+    if str(content_type or "Text").title() != "Text":
+        return ""
+
+    text = str(body or "").strip().lower()
+    if not text:
+        return ""
+
+    greeting_only = {
+        "hi",
+        "hello",
+        "hey",
+        "hii",
+        "helo",
+        "namaste",
+        "namaskar",
+        "good morning",
+        "good afternoon",
+        "good evening",
+        "can we talk",
+    }
+    if text in greeting_only:
+        return (
+            "Ji namaste. Kripya apni medical problem ya appointment/callback requirement bata dijiye, "
+            "taaki main aapki help kar sakun."
+        )
+
+    skin_keywords = (
+        "skin",
+        "twacha",
+        "त्वचा",
+        "psoriasis",
+        "eczema",
+        "fungal",
+        "rash",
+        "rashes",
+        "itching",
+        "khujli",
+        "खुजली",
+        "daag",
+        "dane",
+        "patch",
+        "patches",
+    )
+    if any(keyword in text for keyword in skin_keywords):
+        return (
+            "Samajh gaya ji, skin concern hai. Kripya bataye problem kab se hai aur kis area mein hai? "
+            "Agar possible ho to affected area ki clear photo bhi share kar dijiye, taaki doctor team review karke guidance de sake."
+        )
+
+    return (
+        "Ji, aapka message mil gaya. Kripya apni medical concern, symptoms, report, "
+        "ya appointment/callback requirement thoda detail mein bata dijiye."
+    )
+
+
+def _media_fallback_reply(
+    content_type: str,
+    media_context: str,
+    prompt_config=None,
+    system_prompt: str = "",
+) -> str:
+    content_type = str(content_type or "").title()
+    context = str(media_context or "")
+    lower = context.lower()
+
+    if content_type in ("Image", "Document"):
+        extracted = _extract_context_block(context, "Extracted text from attachment:")
+        if extracted:
+            summary = _heuristic_report_summary(extracted)
+            return _format_report_summary_for_customer(summary)
+        return (
+            "Report/image mil gayi, lekin readable values clear extract nahi ho paayi. "
+            "Kripya clear photo ya PDF bhej dijiye, ya values type kar dijiye."
+        )
+
+    if content_type == "Video":
+        if "visible video content:" in lower and "skin" in lower:
+            return (
+                "Video me affected skin/body area dikh raha hai. Exact diagnosis video se confirm nahi hota, "
+                "lekin redness/roughness/rash type concern ho sakta hai. Patient ka naam, age, problem kab se hai, "
+                "itching/pain/burning/swelling/discharge/fever hai ya nahi, aur clear close-up photo share kar dijiye. "
+                "Main doctor/review team ko forward kar raha hoon."
+            )
+        if "no usable voice transcript" in lower or "could not be transcribed" in lower:
+            return (
+                "Video mil gaya hai. Isme voice/text clear nahi hai, isliye main ise doctor/review team ko forward kar raha hoon. "
+                "Patient ka naam, age aur current symptoms share kar dijiye. Agar possible ho to affected area ki clear photo bhi bhej dijiye."
+            )
+        return (
+            "Video mil gaya hai. Main ise doctor/review team ko forward kar raha hoon. "
+            "Patient ka naam, age aur symptoms bhi share kar dijiye."
+        )
+
+    if content_type == "Audio":
+        transcript = _extract_context_block(context, "Audio transcript:")
+        if transcript:
+            return _audio_transcript_fallback_reply(transcript)
+        return (
+            "Audio mil gaya, lekin voice clear transcript nahi ban paayi. "
+            "Kripya apna concern Hinglish/Roman Hindi mein clear voice note ya 1-2 line text mein bhej dijiye."
+        )
+
+    return ""
+
+
+def _prompt_backed_audio_fallback(transcript: str, prompt_config, system_prompt: str) -> str:
+    transcript = _normalize_audio_transcript_for_reply(str(transcript or "").strip())
+    if not transcript or _looks_like_foreign_audio_hallucination(transcript):
+        return ""
+
+    prompt = (system_prompt or "").strip()
+    if not prompt and prompt_config:
+        prompt = build_system_prompt_from_config(prompt_config)
+        multilingual_policy = (getattr(prompt_config, "multilingual_reply_policy", None) or "").strip()
+        if multilingual_policy:
+            prompt = f"{prompt}\n\n{multilingual_policy}"
+    if not prompt:
+        return ""
+
+    fallback_instruction = (
+        f"{prompt}\n\n"
+        "Fallback audio handling instruction:\n"
+        "- Use the account prompt rules above as the source of truth.\n"
+        "- Reply as a normal WhatsApp chat message, not as a transcript/debug message.\n"
+        "- Do not show a heading like 'Audio transcript'.\n"
+        "- If the transcript is a simple service question such as address/location or medicine delivery, answer it directly using only verified details in the prompt.\n"
+        "- Do not say you are forwarding to the team for ordinary audio questions. First answer the concern directly from the prompt.\n"
+        "- For normal medical concerns, give safe general guidance and ask only the minimum useful follow-up details; do not default to forwarding.\n"
+        "- Mention team/doctor handoff only when the prompt requires appointment, callback, urgent escalation, report review, or treatment evaluation.\n"
+        "- If the transcript asks for appointment/callback/treatment, follow the prompt's collection and safety rules.\n"
+        "- Keep reply in the prompt default style: Hinglish/Roman Hindi unless transcript clearly requires another supported language.\n"
+        "- If the transcript seems hallucinated/foreign/unusable, ask for a clear Hinglish/Roman Hindi voice note or text.\n"
+    )
+    user_text = f"Customer audio transcript:\n{transcript[:1000]}"
+
+    for provider in _load_providers():
+        try:
+            response = call_provider(
+                provider,
+                fallback_instruction,
+                [],
+                latest_user_text=user_text,
+                current_inbound=None,
+            )
+            response = _polish_autopilot_reply(str(response or "").strip())
+            if response:
+                return response
+        except Exception as exc:
+            _safe_log_error(
+                "WA AI Prompt-backed Audio Fallback Failed",
+                f"Provider {getattr(provider, 'name', '')} failed: {exc}",
+            )
+            continue
+    return ""
+
+
+def _audio_transcript_fallback_reply(transcript: str) -> str:
+    text = _normalize_audio_transcript_for_reply(str(transcript or "").strip())
+    lower = text.lower()
+    if _looks_like_foreign_audio_hallucination(text):
+        return (
+            "Audio mil gaya, lekin voice clear samajh nahi aa paayi. "
+            "Kripya apna concern Hinglish/Roman Hindi mein ek baar clear voice note ya text mein bhej dijiye."
+        )
+
+    appointment_keywords = (
+        "appointment",
+        "appoint",
+        "book",
+        "booking",
+        "consult",
+        "consultation",
+        "doctor appointment",
+        "appoin",
+        "appointm",
+        "apurudhavan",
+        "purudhavan",
+        "puru dh",
+        "goazook",
+        "अपॉइंट",
+        "अपॉइंटमेंट",
+        "बुक",
+        "डॉक्टर से मिल",
+        "दिखाना",
+    )
+    if any(keyword in lower for keyword in appointment_keywords):
+        doctor_name = _extract_doctor_name_from_audio_text(text)
+        doctor_part = f" {doctor_name} ke saath" if doctor_name else ""
+        return (
+            f"Ji, aap{doctor_part} appointment book karna chahte hain. "
+            "Appointment ke liye kripya patient ka naam, age, preferred date/time, "
+            "aur kis problem ke liye appointment chahiye bata dijiye."
+        )
+
+    infertility_keywords = (
+        "infertility",
+        "fertility",
+        "male infertility",
+        "sperm",
+        "semen",
+        "azoospermia",
+        "oligospermia",
+        "erectile",
+        "libido",
+        "बांझ",
+        "नपुंसक",
+        "शुक्राण",
+        "स्पर्म",
+        "सीमन",
+        "मेल इनफर्टिलिटी",
+        "मेल इन्फ",
+        "मेल इनफ",
+        "मेल एनफ",
+        "इन्फरील",
+        "इन्फर्ट",
+        "इनफर्ट",
+        "फर्टिल",
+        "फ्र्टिल",
+        "पार्टिलिड",
+        "एन्प्रोड्ल",
+        "male infartility",
+        "male infatility",
+    )
+    if any(keyword in lower for keyword in infertility_keywords):
+        return (
+            "Audio mil gaya. Aap male infertility/fertility concern ke baare mein puch rahe hain. "
+            "Iske liye semen analysis/report, age, shaadi ko kitna time hua, diabetes/thyroid history, "
+            "aur koi medicines chal rahi hain to details useful rahengi. Doctor guidance ke bina medicine start na karein."
+        )
+
+    address_keywords = (
+        "address",
+        "location",
+        "hospital address",
+        "clinic address",
+        "hospital ka address",
+        "address kya",
+        "adress",
+        "adrass",
+        "अड्रेस",
+        "एड्रेस",
+        "पता",
+        "लोकेशन",
+        "हॉस्पिटल",
+        "होस्पिटल",
+    )
+    if any(keyword in lower for keyword in address_keywords):
+        return (
+            "Ji, SRIAAS ka verified address hai:\n"
+            "B-92, near Millennium City Centre Metro Station, Sushant Lok Phase I, "
+            "Sector 43, Gurugram, Haryana 122009.\n\n"
+            "Aap visit karna chahte hain to main appointment/callback arrange kar sakta hoon."
+        )
+
+    delivery_keywords = (
+        "home delivery",
+        "deliver",
+        "delivery",
+        "medicine delivery",
+        "home deliver",
+        "courier",
+        "ship",
+        "दवा डिलीवरी",
+        "होम डिलीवरी",
+        "डिलीवरी",
+        "घर पर",
+    )
+    if any(keyword in lower for keyword in delivery_keywords):
+        return (
+            "Ji, medicines ki home delivery process yeh hai: pehle doctor team symptoms/reports evaluate karegi. "
+            "Agar medicines suitable hui to courier se dispatch process guide kar diya jayega.\n\n"
+            "Payment terms consultation ke baad team guide karegi; kuch advance aur baaki COD ho sakta hai. "
+            "Kripya patient name, city, concern aur prescription/report share kar dijiye."
+        )
+
+    if "psoriasis" in lower and any(keyword in lower for keyword in ("medicine", "medication", "treatment", "दवाई", "मेडिसिन")):
+        return (
+            "Audio mil gaya. Aap psoriasis ke liye medicine ke baare mein puch rahe hain. "
+            "Psoriasis mein medicine severity aur affected area dekhkar doctor decide karte hain, isliye bina review ke medicine start mat kijiye. "
+            "Kripya affected area ki clear photo, problem kab se hai, itching/pain hai ya nahi, "
+            "aur pehle ka treatment/medicine history share kar dijiye, phir suitable guidance di ja sakti hai."
+        )
+
+    skin_keywords = (
+        "skin",
+        "rash",
+        "itch",
+        "itching",
+        "khujli",
+        "daag",
+        "dane",
+        "redness",
+        "psoriasis",
+        "eczema",
+        "fungal",
+        "त्वचा",
+        "खुजली",
+        "दाद",
+    )
+    if any(keyword in lower for keyword in skin_keywords):
+        return (
+            "Audio mil gaya. Aap skin concern ke baare mein puch rahe hain. "
+            "Kripya problem kab se hai, itching/pain/burning hai ya nahi, aur affected area ki clear photo share kar dijiye. "
+            "Uske basis par next guidance di ja sakti hai."
+        )
+
+    return (
+        f"Ji, aap shayad yeh kehna chahte hain: \"{_clean_audio_text_for_chat(text)[:160]}\". "
+        "Kripya apna concern thoda aur clear bata dijiye, main uske hisaab se guidance de dunga."
+    )
+
+
+def _extract_doctor_name_from_audio_text(text: str) -> str:
+    normalized = str(text or "").strip()
+    lower = normalized.lower()
+    if "puru" in lower or "purudhavan" in lower or "purudh" in lower or "purud" in lower:
+        return "Dr. Puru Dhawan"
+    match = re.search(r"\bdr\.?\s+([a-zA-Z][a-zA-Z .'-]{2,40})", normalized, flags=re.IGNORECASE)
+    if not match:
+        return ""
+    name = match.group(1)
+    name = re.split(r"\b(appointment|appoint|book|booking|consult|will|is|to)\b", name, flags=re.IGNORECASE)[0]
+    name = " ".join(part.capitalize() for part in name.strip(" .'").split())
+    return f"Dr. {name}" if name else ""
+
+
+def _normalize_audio_transcript_for_reply(text: str) -> str:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return ""
+    if _contains_arabic_script(cleaned):
+        # Whisper sometimes emits Urdu script for Hinglish/Hindi audio. Do not show that to customers.
+        if any(term in cleaned for term in ("دیلیوری", "ڈلیوری", "لیدیسن", "میڈیسن", "دوا")):
+            return "medicine delivery ka process kya hai?"
+        if any(term in cleaned for term in ("ادرس", "ایڈریس", "پتہ")):
+            return "hospital address kya hai?"
+        return "audio clear nahi hai"
+    return cleaned
+
+
+def _contains_arabic_script(text: str) -> bool:
+    return any("\u0600" <= ch <= "\u06ff" for ch in str(text or ""))
+
+
+def _looks_like_foreign_audio_hallucination(text: str) -> bool:
+    lower = str(text or "").strip().lower()
+    if not lower:
+        return True
+    foreign_fragments = (
+        "o que",
+        "mão",
+        "coisa",
+        "não",
+        "né",
+        "mais que",
+        "hindi hinglish medical whatsapp voice note",
+        "possible topics",
+    )
+    return any(fragment in lower for fragment in foreign_fragments)
+
+
+def _clean_audio_text_for_chat(text: str) -> str:
+    cleaned = _normalize_audio_transcript_for_reply(str(text or "").strip())
+    replacements = {
+        "Dr.Purudhavan's appointment will goazooktala": "Dr. Puru Dhawan ka appointment book karna hai",
+        "Dr. Puru Dhadragon's appointment is to be booked, please explain to me in detail.": "Dr. Puru Dhawan ka appointment book karna hai",
+    }
+    for source, target in replacements.items():
+        if cleaned.lower() == source.lower():
+            return target
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned
+
+
+def _format_report_summary_for_customer(summary: str) -> str:
+    text = str(summary or "").strip()
+    if not text:
+        return (
+            "Report OCR ho gayi, lekin values automatically summarize nahi ho paayi. "
+            "Main ise doctor/review team ko forward kar raha hoon."
+        )
+
+    replacements = {
+        "Report summary:": "Report summary:",
+        "Key findings:": "Main findings:",
+        "Abnormal values:": "Abnormal values:",
+        "Suggested follow-up:": "Next step:",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    return (
+        "Ji, report ke readable values ke hisaab se:\n\n"
+        f"{text[:1800]}\n\n"
+        "Ye final diagnosis nahi hai. Doctor/nephrologist se review zaroor karwa lijiye."
+    )
+
+
+def _extract_context_block(context: str, marker: str) -> str:
+    if marker not in context:
+        return ""
+    tail = context.split(marker, 1)[1].strip()
+    if "\nUse " in tail:
+        tail = tail.split("\nUse ", 1)[0].strip()
+    return tail
+
+
+def _looks_like_recent_attachment_followup(body: str) -> bool:
+    text = str(body or "").strip().lower()
+    if not text:
+        return False
+    keywords = (
+        "report",
+        "image",
+        "photo",
+        "pic",
+        "test",
+        "kft",
+        "creatinine",
+        "value",
+        "values",
+        "result",
+        "problem kya",
+        "kya problem",
+        "kya h",
+        "kya hai",
+        "btaoge",
+        "bataoge",
+        "explain",
+        "read",
+        "padh",
+    )
+    return any(keyword in text for keyword in keywords)
+
+
+def _build_recent_attachment_followup_context(conversation: str, msg_doc) -> str:
+    current_creation = getattr(msg_doc, "creation", None)
+    filters = {
+        "conversation": conversation,
+        "direction": "Inbound",
+        "content_type": ["in", ["Image", "Document"]],
+        "media_url": ["is", "set"],
+    }
+    if current_creation:
+        filters["creation"] = ["<", current_creation]
+
+    recent = frappe.get_all(
+        "Chat Message",
+        filters=filters,
+        fields=["name", "creation", "content_type", "body", "media_url"],
+        order_by="creation desc, name desc",
+        limit=1,
+    )
+    if not recent:
+        return ""
+
+    row = recent[0]
+    context = build_media_context_for_chat(
+        row.media_url,
+        row.content_type,
+        str(row.body or ""),
+    )
+    if not context:
+        return ""
+    return (
+        "Customer is asking a follow-up question about the most recent image/report attachment. "
+        "Use the extracted report text below to answer the customer's question. If values look "
+        "abnormal, explain them simply and advise doctor/nephrologist review; do not diagnose or prescribe.\n\n"
+        f"Recent attachment: Chat Message {row.name} sent at {row.creation}\n"
+        f"{context}"
+    )
 
 
 def _inbound_triggers_autopilot(doc) -> bool:
@@ -491,6 +1082,13 @@ def _format_history_line(row) -> str:
     return ""
 
 
+def _safe_log_error(title: str, message: str) -> None:
+    try:
+        frappe.log_error(title=str(title or "")[:140], message=str(message or "")[:4000])
+    except Exception:
+        pass
+
+
 def _build_latest_user_turn(msg_doc, media_context: str, skip_text: bool) -> str:
     """Always pass the triggering inbound message as the final user turn."""
     if skip_text:
@@ -528,6 +1126,35 @@ def _polish_autopilot_reply(text: str) -> str:
     return cleaned
 
 
+def _looks_like_degenerate_reply(text: str) -> bool:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return True
+
+    words = re.findall(r"[\wऀ-ॿ]+", cleaned.lower())
+    if len(words) < 8:
+        return False
+
+    token_counts = {}
+    for word in words:
+        token_counts[word] = token_counts.get(word, 0) + 1
+    most_common_count = max(token_counts.values()) if token_counts else 0
+    if most_common_count >= 12 and most_common_count / max(len(words), 1) >= 0.35:
+        return True
+
+    for size in (2, 3):
+        if len(words) < size * 6:
+            continue
+        phrases = [" ".join(words[i : i + size]) for i in range(len(words) - size + 1)]
+        phrase_counts = {}
+        for phrase in phrases:
+            phrase_counts[phrase] = phrase_counts.get(phrase, 0) + 1
+        if max(phrase_counts.values(), default=0) >= 6:
+            return True
+
+    return False
+
+
 def _conversation_allows_autopilot(conversation: str) -> bool:
     status = frappe.db.get_value("Chat Conversation", conversation, "status")
     return status in (None, "", "Open")
@@ -541,23 +1168,29 @@ def _already_replied_to_inbound(conversation: str, inbound_message_id: str) -> b
 
     prior_ai = frappe.db.sql(
         """
-        SELECT delivery_status
+        SELECT delivery_status, raw_transport_payload
         FROM `tabChat Message`
         WHERE conversation = %s
           AND direction = 'Outbound'
           AND sender_type = 'AI'
           AND creation > %s
         ORDER BY creation ASC
-        LIMIT 1
+        LIMIT 10
         """,
         (conversation, inbound_creation),
         as_dict=True,
     )
-    if not prior_ai:
-        return False
-    if (prior_ai[0].delivery_status or "") in ("Failed", "Pending"):
-        return False
-    return True
+    for row in prior_ai:
+        try:
+            payload = frappe.parse_json(row.raw_transport_payload) if row.raw_transport_payload else {}
+        except Exception:
+            payload = {}
+        if str((payload or {}).get("reply_to_message") or "") != str(inbound_message_id):
+            continue
+        if (row.delivery_status or "") in ("Failed", "Pending"):
+            return False
+        return True
+    return False
 
 
 def _load_providers():
@@ -584,6 +1217,10 @@ def _deliver_ai_reply(conversation: str, response_text: str) -> None:
     send_started = time.monotonic()
     convo = frappe.get_doc("Chat Conversation", conversation)
     phone_number = frappe.db.get_value("Chat Contact", convo.contact, "phone_number")
+    reply_to_message = (
+        getattr(frappe.local, "wa_ai_reply_to_message", None)
+        or getattr(frappe.flags, "wa_ai_reply_to_message", None)
+    )
 
     delivery_status = "Sent"
     channel_message_id = None
@@ -612,7 +1249,11 @@ def _deliver_ai_reply(conversation: str, response_text: str) -> None:
                 "body": response_text,
                 "delivery_status": delivery_status,
                 "channel_message_id": channel_message_id,
-                "raw_transport_payload": {**outbound, "source": "ai_autopilot"},
+                "raw_transport_payload": {
+                    **outbound,
+                    "source": "ai_autopilot",
+                    "reply_to_message": reply_to_message,
+                },
             }
         )
     finally:
@@ -644,8 +1285,9 @@ def call_provider(provider, system_prompt, history, latest_user_text=None, curre
     elif latest_user_text:
         messages.append({"role": "user", "content": latest_user_text})
 
+    is_buopso_vllm = "vllm.buopso.net" in str(provider.base_url or "").lower()
     if provider.provider_type in ("OpenAI", "Custom"):
-        return call_openai_format(provider, messages, timeout=45)
+        return call_openai_format(provider, messages, timeout=15 if is_buopso_vllm else 45)
     if provider.provider_type == "Gemini":
         if not provider.base_url:
             provider.base_url = (
@@ -730,6 +1372,77 @@ def _max_tokens_payload_key(model_name: str | None) -> str:
     return "max_tokens"
 
 
+def _strip_model_reasoning(text: str) -> str:
+    text = str(text or "")
+    if not text:
+        return ""
+    text = re.sub(r"<think\b[^>]*>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
+    if "</think>" in text.lower():
+        text = re.split(r"</think>", text, flags=re.IGNORECASE)[-1]
+    return text.strip()
+
+
+def _is_low_context_provider(provider) -> bool:
+    base_url = str(getattr(provider, "base_url", "") or "").lower()
+    model = str(getattr(provider, "model_name", "") or "").lower()
+    return "openrouter.ai" in base_url or "vllm.buopso.net" in base_url or "glm" in model
+
+
+def _truncate_message_content(content, limit: int):
+    if isinstance(content, str):
+        return content[:limit]
+    if isinstance(content, list):
+        remaining = limit
+        trimmed = []
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            item = dict(part)
+            text = item.get("text")
+            if isinstance(text, str):
+                item["text"] = text[:remaining]
+                remaining -= len(item["text"])
+            trimmed.append(item)
+            if remaining <= 0:
+                break
+        return trimmed
+    return content
+
+
+def _fit_messages_for_provider(provider, messages: list[dict]) -> list[dict]:
+    if not _is_low_context_provider(provider):
+        return messages
+
+    if not messages:
+        return messages
+
+    system_message = dict(messages[0])
+    system_content = str(system_message.get("content") or "")
+    if len(system_content) > LOW_CONTEXT_SYSTEM_CHAR_BUDGET:
+        head_budget = int(LOW_CONTEXT_SYSTEM_CHAR_BUDGET * 0.65)
+        tail_budget = LOW_CONTEXT_SYSTEM_CHAR_BUDGET - head_budget
+        system_message["content"] = (
+            system_content[:head_budget]
+            + "\n\n[Prompt middle shortened for provider context limit. Continue following role, safety, healthcare-segment, stop-rule, and appointment/callback rules. Important recent context continues below.]\n\n"
+            + system_content[-tail_budget:]
+        )
+
+    kept = [system_message]
+    remaining_budget = LOW_CONTEXT_INPUT_CHAR_BUDGET - len(str(system_message.get("content") or ""))
+    for message in reversed(messages[1:]):
+        content = message.get("content")
+        content_len = len(str(content or ""))
+        if remaining_budget <= 0:
+            break
+        if content_len > min(1200, remaining_budget):
+            message = dict(message)
+            message["content"] = _truncate_message_content(content, min(1200, remaining_budget))
+            content_len = len(str(message.get("content") or ""))
+        kept.insert(1, message)
+        remaining_budget -= content_len
+    return kept
+
+
 def call_openai_format(provider, messages, timeout=20):
     request_started = time.monotonic()
     url = provider.base_url or "https://api.openai.com/v1/chat/completions"
@@ -740,19 +1453,30 @@ def call_openai_format(provider, messages, timeout=20):
 
     if url.endswith("/") and "chat/completions" not in url:
         url += "chat/completions"
+    messages = _fit_messages_for_provider(provider, messages)
 
     tools = fetch_mcp_tools()
     api_tools = [{"type": t["type"], "function": t["function"]} for t in tools] if tools else None
     token_limit_key = _max_tokens_payload_key(provider.model_name)
+    is_vllm_provider = "vllm.buopso.net" in str(url).lower()
+    request_timeout = timeout
 
+    output_token_limit = 900 if is_vllm_provider else 500
     payload = {
         "model": provider.model_name,
         "messages": messages,
-        "temperature": 0.75,
-        "presence_penalty": 0.4,
-        "frequency_penalty": 0.3,
-        token_limit_key: 500,
+        token_limit_key: output_token_limit,
     }
+    if is_vllm_provider:
+        payload["temperature"] = 0.2
+    else:
+        payload.update(
+            {
+                "temperature": 0.75,
+                "presence_penalty": 0.4,
+                "frequency_penalty": 0.3,
+            }
+        )
     if api_tools:
         payload["tools"] = api_tools
 
@@ -764,9 +1488,9 @@ def call_openai_format(provider, messages, timeout=20):
         message_count=len(messages),
         tools=1 if api_tools else 0,
         token_limit_key=token_limit_key,
-        timeout_sec=timeout,
+        timeout_sec=request_timeout,
     )
-    resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
+    resp = requests.post(url, headers=headers, json=payload, timeout=request_timeout)
     _log_ai_timing(
         "api_request_done",
         provider=provider.name,
@@ -776,18 +1500,18 @@ def call_openai_format(provider, messages, timeout=20):
     )
 
     if resp.status_code != 200:
-        frappe.log_error(
-            f"API Error {resp.status_code}: {resp.text}",
+        _safe_log_error(
             "WA AI Provider API Failure",
+            f"API Error {resp.status_code}: {resp.text}",
         )
         resp.raise_for_status()
 
     data = resp.json()
     choices = data.get("choices") or []
     if not choices:
-        frappe.log_error(
-            f"OpenAI empty choices for model {provider.model_name}: {resp.text[:500]}",
+        _safe_log_error(
             "WA AI Provider API Failure",
+            f"OpenAI empty choices for model {provider.model_name}: {resp.text[:500]}",
         )
         return ""
 
@@ -827,7 +1551,7 @@ def call_openai_format(provider, messages, timeout=20):
             model=provider.model_name,
             message_count=len(messages),
         )
-        resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        resp = requests.post(url, headers=headers, json=payload, timeout=request_timeout)
         _log_ai_timing(
             "api_followup_done",
             provider=provider.name,
@@ -840,6 +1564,6 @@ def call_openai_format(provider, messages, timeout=20):
         follow_choices = data.get("choices") or []
         if not follow_choices:
             return ""
-        return (follow_choices[0].get("message") or {}).get("content", "") or ""
+        return _strip_model_reasoning((follow_choices[0].get("message") or {}).get("content", "") or "")
 
-    return message.get("content", "") or ""
+    return _strip_model_reasoning(message.get("content", "") or "")

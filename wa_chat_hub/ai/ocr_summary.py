@@ -4,6 +4,9 @@ import base64
 from datetime import datetime
 from io import BytesIO
 import mimetypes
+import os
+import re
+import tempfile
 from typing import Dict, Optional
 
 import frappe
@@ -214,13 +217,6 @@ def _trim_notes_to_limit(existing: str, new_block: str, max_len: int) -> str:
 
 
 def _extract_text_from_media(media_url: str, content_type: str) -> str:
-    if content_type in ("Image", "Document"):
-        # Prefer the provider reading Interakt's full signed URL directly.
-        text = _extract_with_openai_vision(media_url)
-        if text:
-            return text
-
-    # Fallback: fetch once server-side, then OCR from bytes or parse text/PDF locally.
     media = _download_media(media_url)
     if media and _is_pdf_media(media_url, media.get("mime_type")):
         text = _extract_text_from_pdf(media.get("content") or b"")
@@ -236,6 +232,11 @@ def _extract_text_from_media(media_url: str, content_type: str) -> str:
         if text:
             return text
 
+    if content_type in ("Image", "Document") and not media:
+        text = _extract_with_openai_vision(media_url)
+        if text:
+            return text
+
     # Lightweight fallback for text files / public URLs.
     try:
         if not media:
@@ -246,6 +247,7 @@ def _extract_text_from_media(media_url: str, content_type: str) -> str:
     except Exception:
         return ""
     return ""
+
 
 
 def _is_pdf_media(media_url: str, mime_type: str | None) -> bool:
@@ -343,7 +345,16 @@ def _extract_with_openai_vision(
                 return content[:12000]
         except Exception:
             frappe.log_error(
-                frappe.get_traceback(),
+                frappe.get_traceback()
+                + "\n\n"
+                + frappe.as_json(
+                    {
+                        "provider": provider.get("name"),
+                        "model": provider.get("model_name"),
+                        "status_code": getattr(resp, "status_code", None) if "resp" in locals() else None,
+                        "response": (getattr(resp, "text", "") or "")[:2000] if "resp" in locals() else "",
+                    }
+                ),
                 f"OCR Vision Extraction Failed ({provider.get('name') or provider.get('model_name')})",
             )
     return ""
@@ -371,14 +382,81 @@ def _summarize_report_text(extracted: str, body_hint: str, content_type: str) ->
             summary = _summarize_with_model(provider, extracted)
             if summary:
                 return summary
-        # Heuristic fallback summary
-        return (
-            "Summary (fallback):\n"
-            + extracted[:1200]
-        )
+        return _heuristic_report_summary(extracted)
     if body_hint:
         return f"No OCR text extracted. User caption/body: {body_hint}"
     return f"No OCR text extracted for this {content_type.lower()}."
+
+
+def _heuristic_report_summary(extracted_text: str) -> str:
+    text = str(extracted_text or "").strip()
+    if not text:
+        return ""
+
+    lowered = text.lower()
+    if "kidney function" not in lowered and "kft" not in lowered and "creatinine" not in lowered:
+        return "Report summary:\n• OCR text extracted, but automatic report interpretation is limited.\n\nKey findings:\n• Review extracted report text manually.\n\nAbnormal values:\n• Not automatically identified.\n\nSuggested follow-up:\n• Ask doctor/team to review the attachment and confirm clinically."
+
+    checks = [
+        ("Blood Urea", "mg/dL", 15, 40),
+        ("Serum Creatinine", "mg/dL", 0.6, 1.2),
+        ("BUN / Creatinine Ratio", "", 10, 20),
+        ("Uric Acid", "mg/dL", 3.5, 7.2),
+        ("Sodium", "mEq/L", 135, 145),
+        ("Potassium", "mEq/L", 3.5, 5.0),
+        ("Chloride", "mEq/L", 98, 106),
+        ("Bicarbonate", "mEq/L", 22, 28),
+        ("Calcium", "mg/dL", 8.6, 10.2),
+        ("Phosphorus", "mg/dL", 2.5, 4.5),
+    ]
+    abnormal = []
+    for label, unit, low, high in checks:
+        value = _find_nearby_number(text, label)
+        if value is None:
+            continue
+        if value < low:
+            abnormal.append(f"{label}: {value:g} {unit}".strip() + f" (low; ref {low:g}-{high:g})")
+        elif value > high:
+            abnormal.append(f"{label}: {value:g} {unit}".strip() + f" (high; ref {low:g}-{high:g})")
+
+    if "reduced egfr" in lowered or "significantly reduced egfr" in lowered:
+        abnormal.append("eGFR: report impression says significantly reduced")
+    if "metabolic acidosis" in lowered:
+        abnormal.append("Report impression mentions metabolic acidosis")
+    if "renal impairment" in lowered:
+        abnormal.append("Report impression says findings are consistent with significant renal impairment")
+
+    key_findings = abnormal[:8] if abnormal else ["Kidney function report text extracted; doctor review advised."]
+    return (
+        "Report summary:\n"
+        "• KFT/kidney function report received and OCR text was readable.\n"
+        "• Report impression suggests renal/kidney function concern; clinical correlation is needed.\n\n"
+        "Key findings:\n"
+        + "\n".join(f"• {item}" for item in key_findings)
+        + "\n\nAbnormal values:\n"
+        + ("\n".join(f"• {item}" for item in abnormal) if abnormal else "• Not automatically identified.")
+        + "\n\nSuggested follow-up:\n"
+        "• Doctor/nephrologist review is advisable, especially because creatinine/urea/electrolytes appear abnormal.\n"
+        "• Ask patient for current symptoms, BP/diabetes history, urine output/swelling, and any previous creatinine reports."
+    )
+
+
+def _find_nearby_number(text: str, label: str) -> float | None:
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    label_lower = label.lower()
+    for idx, line in enumerate(lines):
+        if label_lower not in line.lower():
+            continue
+        for candidate in lines[idx + 1 : idx + 7]:
+            if "-" in candidate or "/" in candidate:
+                continue
+            match = re.search(r"\d+(?:\.\d+)?", candidate)
+            if match:
+                try:
+                    return float(match.group(0))
+                except Exception:
+                    return None
+    return None
 
 
 def _summarize_with_model(provider: Dict, extracted_text: str) -> str:

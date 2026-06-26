@@ -397,16 +397,15 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
         except Exception:
             frappe.log_error(frappe.get_traceback(), "CRM Lead Attachment Sync Failed")
         content_type = str(payload.get("content_type") or "").title()
-        if content_type in TRANSCRIPT_CONTENT_TYPES:
-            try:
-                process_transcript_for_lead_summary(conversation, message.name, payload)
-            except Exception:
-                frappe.log_error(frappe.get_traceback(), "Media Transcript Lead Summary Failed")
-        else:
-            try:
-                process_attachment_for_lead_summary(conversation, message.name, payload)
-            except Exception:
-                frappe.log_error(frappe.get_traceback(), "OCR Lead Summary Failed")
+        try:
+            _enqueue_inbound_media_lead_summary(
+                conversation=conversation,
+                message_name=message.name,
+                payload=payload,
+                content_type=content_type,
+            )
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "Media Lead Summary Enqueue Failed")
     if direction == "Inbound" and not (
         getattr(frappe.flags, "wa_ai_outbound_reply", False)
         or getattr(frappe.local, "wa_ai_outbound_reply", False)
@@ -445,6 +444,53 @@ def _enqueue_lead_scoring(conversation: str) -> None:
         deduplicate=True,
     )
     task_log("lead_score", "enqueue", conversation=conversation, queue="short")
+
+
+def _enqueue_inbound_media_lead_summary(
+    conversation: str,
+    message_name: str,
+    payload: Dict[str, Any],
+    content_type: str,
+) -> None:
+    """Run OCR/transcription lead-note work after commit so replies are not blocked."""
+    if content_type in TRANSCRIPT_CONTENT_TYPES:
+        method = "wa_chat_hub.services.process_inbound_transcript_lead_summary"
+        job_id = f"wa_media_transcript_summary_{message_name}"
+    else:
+        method = "wa_chat_hub.services.process_inbound_ocr_lead_summary"
+        job_id = f"wa_media_ocr_summary_{message_name}"
+
+    frappe.enqueue(
+        method,
+        queue="long",
+        conversation=conversation,
+        message_name=message_name,
+        payload=payload,
+        timeout=300,
+        enqueue_after_commit=True,
+        now=frappe.flags.in_test,
+        job_id=job_id,
+        deduplicate=True,
+    )
+    task_log("media_summary", "enqueue", conversation=conversation, message=message_name, queue="long")
+
+
+def process_inbound_ocr_lead_summary(conversation: str, message_name: str, payload: Dict[str, Any]) -> None:
+    try:
+        process_attachment_for_lead_summary(conversation, message_name, payload)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "OCR Lead Summary Failed")
+
+
+def process_inbound_transcript_lead_summary(
+    conversation: str,
+    message_name: str,
+    payload: Dict[str, Any],
+) -> None:
+    try:
+        process_transcript_for_lead_summary(conversation, message_name, payload)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "Media Transcript Lead Summary Failed")
 
 
 def cint_safe(value: Any) -> int:

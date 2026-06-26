@@ -7,6 +7,7 @@ from typing import Dict, List
 import frappe
 import requests
 
+from wa_chat_hub.ai.providers import CHAT_CAPABILITY, get_active_llm_provider_rows, get_provider_secret
 from wa_chat_hub.ai.conversation_stop import is_conversation_stopped
 from wa_chat_hub.ai.language import resolve_language_from_history
 from wa_chat_hub.db_retry import with_db_lock_retry
@@ -172,29 +173,13 @@ def _build_scoring_prompt(convo, history: List[Dict], lead_lan: str) -> str:
 
 
 def _load_active_providers() -> List[Dict]:
-    providers = frappe.get_all(
-        "WA LLM Provider",
-        filters={"is_active": 1},
-        fields=["name", "provider_type", "model_name", "base_url"],
-        order_by="priority asc",
-    )
     result = []
-    for row in providers:
+    for row in get_active_llm_provider_rows(CHAT_CAPABILITY, limit=5):
         if _is_chat_reply_only_provider(row):
             continue
-        doc = frappe.get_doc("WA LLM Provider", row.name)
-        api_key = doc.get_password("api_key")
-        if not api_key:
-            continue
-        result.append(
-            {
-                "name": row.name,
-                "provider_type": row.provider_type,
-                "model_name": row.model_name,
-                "base_url": row.base_url,
-                "api_key": api_key,
-            }
-        )
+        provider = get_provider_secret(row)
+        if provider and provider.get("api_key"):
+            result.append(provider)
     return result
 
 

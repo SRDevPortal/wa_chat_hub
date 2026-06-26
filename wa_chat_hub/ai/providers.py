@@ -26,12 +26,13 @@ def get_active_llm_provider_rows(capability: str | None = None, limit: int | Non
         if meta.has_field(fieldname):
             fields.append(fieldname)
 
+    query_limit = None if capability else limit
     rows = frappe.get_all(
         "WA LLM Provider",
         filters={"is_active": 1},
         fields=fields,
         order_by="priority asc, modified desc",
-        limit=limit,
+        limit=query_limit,
     )
     rows = [row for row in rows if row.provider_type in OPENAI_COMPATIBLE_PROVIDER_TYPES]
     if not capability:
@@ -40,29 +41,40 @@ def get_active_llm_provider_rows(capability: str | None = None, limit: int | Non
     if meta.has_field(capability):
         explicit = [row for row in rows if cint(row.get(capability))]
         if explicit:
-            return explicit
+            return explicit[:limit] if limit else explicit
 
     if capability == CHAT_CAPABILITY:
-        return [row for row in rows if not looks_like_transcription_model(row.model_name, row.base_url)]
+        matches = [row for row in rows if not looks_like_transcription_model(row.model_name, row.base_url)]
+        return matches[:limit] if limit else matches
     if capability == VISION_CAPABILITY:
-        return [row for row in rows if looks_like_vision_model(row.provider_type, row.model_name)]
+        matches = [row for row in rows if looks_like_vision_model(row.provider_type, row.model_name)]
+        return matches[:limit] if limit else matches
     if capability == TRANSCRIPTION_CAPABILITY:
-        return [row for row in rows if looks_like_transcription_provider(row.provider_type, row.model_name, row.base_url)]
+        matches = [
+            row
+            for row in rows
+            if looks_like_transcription_provider(row.provider_type, row.model_name, row.base_url)
+        ]
+        return matches[:limit] if limit else matches
     return rows
 
 
 def get_provider_secret(row: Any) -> dict[str, Any] | None:
     doc = frappe.get_doc("WA LLM Provider", row.name)
-    api_key = doc.get_password("api_key")
-    if not api_key:
+    api_key = doc.get_password("api_key", raise_exception=False)
+    if not api_key and provider_requires_api_key(row.base_url):
         return None
     return {
         "name": row.name,
         "provider_type": row.provider_type,
         "model_name": row.model_name,
         "base_url": row.base_url,
-        "api_key": api_key,
+        "api_key": api_key or "",
     }
+
+
+def provider_requires_api_key(base_url: str | None) -> bool:
+    return True
 
 
 def looks_like_vision_model(provider_type: str, model_name: str | None) -> bool:
@@ -87,6 +99,7 @@ def looks_like_vision_model(provider_type: str, model_name: str | None) -> bool:
         "nex-n2",
         "image",
         "video",
+        "ocr",
     )
     text_only_tokens = ("gpt-3.5", "text-", "embedding", "babbage", "davinci", "whisper")
     return any(token in model_name for token in vision_tokens) and not any(

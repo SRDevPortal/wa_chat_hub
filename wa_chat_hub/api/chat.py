@@ -217,10 +217,15 @@ def _conversation_sql_rows(filters: dict, limit) -> list:
     fields = ", ".join(f"c.`{fieldname}`" for fieldname in CONVERSATION_LIST_FIELDS)
     return frappe.db.sql(
         f"""
-        select {fields}
+        select {fields}, coalesce(lm.last_message_time, c.modified) as last_message_time
         from `tabChat Conversation` c
+        left join (
+            select conversation, max(creation) as last_message_time
+            from `tabChat Message`
+            group by conversation
+        ) lm on lm.conversation = c.name
         where {" and ".join(f"({condition})" for condition in conditions)}
-        order by c.modified desc
+        order by coalesce(lm.last_message_time, c.modified) desc
         limit %(limit)s
         """,
         values,
@@ -262,7 +267,9 @@ def _enrich_conversation_rows(rows: list) -> list:
                 **data,
                 "contact_display_name": contact.get("display_name"),
                 "contact_phone_number": contact.get("phone_number"),
-                "last_message_time": last_message_times.get(data.get("name")) or data.get("modified"),
+                "last_message_time": data.get("last_message_time")
+                or last_message_times.get(data.get("name"))
+                or data.get("modified"),
             }
         )
     return sorted(enriched, key=lambda row: str(row.get("last_message_time") or ""), reverse=True)
@@ -500,9 +507,10 @@ def get_messages(conversation, limit=100):
             "raw_transport_payload",
             "creation",
         ],
-        order_by="creation asc",
+        order_by="creation desc",
         limit_page_length=int(limit),
     )
+    rows.reverse()
     return {"success": True, "result": rows}
 
 

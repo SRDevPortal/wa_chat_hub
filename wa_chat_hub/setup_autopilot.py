@@ -12,6 +12,9 @@ For urgent symptoms, advise a qualified clinician. Keep each reply short and con
 DEFAULT_ESCALATION = """If the user asks for a human agent, appointment booking you cannot complete, or expresses anger, \
 reply politely and say a team member will follow up shortly."""
 
+BUOPSO_VLLM_PROVIDER_TITLE = "Buopso vLLM Qwen"
+BUOPSO_VLLM_CHAT_COMPLETIONS_URL = "https://vllm.buopso.net/v1/chat/completions"
+BUOPSO_VLLM_MODEL = "qwen3:4b"
 
 def configure_autopilot_settings():
     settings = frappe.get_single("WA Chat Hub Settings")
@@ -58,6 +61,44 @@ def ensure_default_llm_provider():
     doc.insert(ignore_permissions=True)
     frappe.db.commit()
     return doc.name
+
+
+def ensure_buopso_vllm_provider(api_key: str | None = None):
+    api_key = (
+        api_key
+        or frappe.conf.get("wa_buopso_vllm_api_key")
+        or frappe.conf.get("vllm_buopso_api_key")
+        or frappe.conf.get("wa_chat_hub_vllm_api_key")
+    )
+    if not api_key:
+        frappe.throw(
+            "Buopso vLLM API key is required. Pass api_key or set wa_buopso_vllm_api_key in site_config."
+        )
+
+    existing = frappe.db.exists("WA LLM Provider", BUOPSO_VLLM_PROVIDER_TITLE)
+    doc = frappe.get_doc("WA LLM Provider", existing) if existing else frappe.new_doc("WA LLM Provider")
+    doc.update(
+        {
+            "title": BUOPSO_VLLM_PROVIDER_TITLE,
+            "is_active": 1,
+            "priority": 1,
+            "provider_type": "Custom",
+            "model_name": BUOPSO_VLLM_MODEL,
+            "base_url": BUOPSO_VLLM_CHAT_COMPLETIONS_URL,
+            "use_for_chat": 1,
+            "use_for_vision": 0,
+            "use_for_transcription": 0,
+            "is_embedding_provider": 0,
+        }
+    )
+    doc.api_key = api_key
+    if doc.is_new():
+        doc.insert(ignore_permissions=True)
+    else:
+        doc.save(ignore_permissions=True)
+    frappe.db.commit()
+    return doc.name
+
 
 
 def run():

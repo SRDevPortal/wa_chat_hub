@@ -4,6 +4,7 @@ import base64
 from datetime import datetime
 import mimetypes
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -58,9 +59,15 @@ def build_transcript_context_for_chat(
                 "do not say the message was unclear when visible content is available."
             )
         else:
+            has_visible_frames = video_has_visible_frames(media_url)
+            if has_visible_frames:
+                lines.append("The video file has visible frames, but no local vision-description model is active.")
             lines.append(
-                f"{content_type} could not be transcribed or visually summarized. Acknowledge "
-                "receipt and ask the customer to resend it or type the details."
+                "The video was received successfully, but no usable voice transcript could be "
+                "generated. Do not say 'isme clearly kuch samajh nahi aa raha' and do not ask "
+                "the customer to resend the same video as the first response. Reply in Hindi/Hinglish: "
+                "video mil gaya hai, isme voice/text clear nahi hai, doctor/review team ko forward "
+                "kar rahe hain, and ask for patient name, age, symptoms, and a clear photo if available."
             )
     elif transcript:
         lines.append(
@@ -126,10 +133,11 @@ def transcribe_media(media_url: str, content_type: str = "Audio") -> str:
     if not media_bytes:
         return ""
 
-    endpoint = _build_audio_transcription_url(provider.get("base_url"))
     filename = upload.get("filename")
     model = _audio_transcription_model(provider)
     upload_mime = upload.get("mime_type")
+
+    endpoint = _build_audio_transcription_url(provider.get("base_url"))
 
     try:
         transcript = _post_transcription(
@@ -178,17 +186,19 @@ def transcribe_media(media_url: str, content_type: str = "Audio") -> str:
 
 
 def describe_video_media(media_url: str) -> str:
-    media = _download_media(media_url, "Video")
-    if not media or not (media.get("content") or b""):
-        return ""
-
-    frames = _extract_video_frames(media.get("content") or b"")
-    if not frames:
-        return ""
+    local_summary = describe_video_frames_locally(media_url)
 
     providers = _get_vision_providers()
     if not providers:
-        return ""
+        return local_summary
+
+    media = _download_media(media_url, "Video")
+    if not media or not (media.get("content") or b""):
+        return local_summary
+
+    frames = _extract_video_frames(media.get("content") or b"")
+    if not frames:
+        return local_summary
 
     content = [
         {
@@ -239,7 +249,105 @@ def describe_video_media(media_url: str) -> str:
                 frappe.get_traceback(),
                 f"WA Video Vision Summary Failed ({provider.get('name') or provider.get('model_name')})",
             )
-    return ""
+    return local_summary
+
+
+def describe_video_frames_locally(media_url: str) -> str:
+    """Cheap visual triage for videos when no vision-language model is active."""
+    media = _download_media(media_url, "Video")
+    if not media or not (media.get("content") or b""):
+        return ""
+
+    frames = _extract_video_frames(media.get("content") or b"")
+    if not frames:
+        return ""
+
+    observations = [_analyze_video_frame(frame) for frame in frames]
+    observations = [obs for obs in observations if obs]
+    if not observations:
+        return ""
+
+    skin_frames = [obs for obs in observations if obs.get("skin_ratio", 0) >= 0.08]
+    if not skin_frames:
+        return "Sampled frames are visible, but no clear skin/body area was detected locally."
+
+    avg_skin = sum(obs.get("skin_ratio", 0) for obs in skin_frames) / len(skin_frames)
+    avg_red = sum(obs.get("red_ratio", 0) for obs in skin_frames) / len(skin_frames)
+    avg_texture = sum(obs.get("texture_ratio", 0) for obs in skin_frames) / len(skin_frames)
+    avg_spot = sum(obs.get("spot_ratio", 0) for obs in skin_frames) / len(skin_frames)
+
+    details = ["Sampled frames show a close-up of a visible skin/body area."]
+    if avg_red >= 0.08:
+        details.append("There appears to be visible redness/irritation in part of the area.")
+    elif avg_red >= 0.035:
+        details.append("There may be mild redness/irritation.")
+
+    if avg_texture >= 0.055:
+        details.append("The skin surface looks uneven/rough, which can be seen with dryness, scaling, rash, or irritation.")
+    elif avg_texture >= 0.03:
+        details.append("There is some visible texture/roughness on the skin surface.")
+
+    if avg_spot >= 0.02:
+        details.append("Small darker or patchy spots are visible in the sampled frames.")
+
+    if len(details) == 1 and avg_skin >= 0.25:
+        details.append("No obvious printed report/text is visible; treat this as a visual skin/body concern.")
+
+    details.append(
+        "This is not a diagnosis. Ask about itching, pain/burning, swelling, discharge, fever, duration, and whether it is spreading; advise doctor/dermatology review if severe or worsening."
+    )
+    return " ".join(details)[:2000]
+
+
+def _analyze_video_frame(frame_bytes: bytes) -> dict:
+    if not frame_bytes:
+        return {}
+    try:
+        import cv2
+        import numpy as np
+
+        data = np.frombuffer(frame_bytes, dtype=np.uint8)
+        image = cv2.imdecode(data, cv2.IMREAD_COLOR)
+        if image is None:
+            return {}
+
+        h, w = image.shape[:2]
+        if h <= 0 or w <= 0:
+            return {}
+
+        ycrcb = cv2.cvtColor(image, cv2.COLOR_BGR2YCrCb)
+        lower = np.array([0, 133, 77], dtype=np.uint8)
+        upper = np.array([255, 173, 127], dtype=np.uint8)
+        skin_mask = cv2.inRange(ycrcb, lower, upper) > 0
+
+        skin_count = int(np.count_nonzero(skin_mask))
+        total = int(h * w)
+        if not total:
+            return {}
+
+        b, g, r = cv2.split(image)
+        red_mask = skin_mask & (r > 120) & (r > (g.astype("float32") * 1.12)) & (r > (b.astype("float32") * 1.18))
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray, 60, 140) > 0
+        texture_mask = skin_mask & edges
+        spot_mask = skin_mask & (gray < 95)
+
+        return {
+            "skin_ratio": skin_count / total,
+            "red_ratio": int(np.count_nonzero(red_mask)) / max(skin_count, 1),
+            "texture_ratio": int(np.count_nonzero(texture_mask)) / max(skin_count, 1),
+            "spot_ratio": int(np.count_nonzero(spot_mask)) / max(skin_count, 1),
+        }
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "WA Local Video Frame Analysis Failed")
+        return {}
+
+
+def video_has_visible_frames(media_url: str) -> bool:
+    media = _download_media(media_url, "Video")
+    if not media or not (media.get("content") or b""):
+        return False
+    return bool(_extract_video_frames(media.get("content") or b""))
 
 
 def _prepare_transcription_upload(media_url: str, media: Dict, content_type: str) -> Dict:
@@ -394,20 +502,20 @@ def _post_transcription(
     mime_type: str,
     content_type: str,
 ) -> str:
+    audio_format = _audio_format(filename, mime_type)
     resp = requests.post(
         endpoint,
-        headers={"Authorization": f"Bearer {provider['api_key']}"},
-        data={
-            "model": model,
-            "response_format": "text",
-            "temperature": "0",
+        headers={
+            "Authorization": f"Bearer {provider['api_key']}",
+            "Content-Type": "application/json",
         },
-        files={
-            "file": (
-                filename,
-                media_bytes,
-                mime_type or "application/octet-stream",
-            )
+        json={
+            "model": model,
+            "input_audio": {
+                "data": base64.b64encode(media_bytes).decode("ascii"),
+                "format": audio_format,
+            },
+            "temperature": 0,
         },
         timeout=90,
     )
@@ -426,10 +534,26 @@ def _post_transcription(
             f"WA {content_type} Transcription API Failure",
         )
     resp.raise_for_status()
-    if "application/json" in str(resp.headers.get("Content-Type") or "").lower():
-        data = resp.json()
-        return str(data.get("text") or data.get("transcript") or "")[:12000]
-    return str(resp.text or "")[:12000]
+    data = resp.json()
+    return str(data.get("text") or data.get("transcript") or "")[:12000]
+
+
+
+def _audio_format(filename: str | None, mime_type: str | None) -> str:
+    extension = str(filename or "").rsplit(".", 1)[-1].lower() if "." in str(filename or "") else ""
+    if extension in {"wav", "mp3", "flac", "m4a", "ogg", "webm", "aac"}:
+        return extension
+    mime = str(mime_type or "").split(";", 1)[0].strip().lower()
+    return {
+        "audio/wav": "wav",
+        "audio/mpeg": "mp3",
+        "audio/mp3": "mp3",
+        "audio/flac": "flac",
+        "audio/mp4": "m4a",
+        "audio/ogg": "ogg",
+        "audio/webm": "webm",
+        "audio/aac": "aac",
+    }.get(mime, "mp3")
 
 
 def _is_useful_transcript(transcript: str, content_type: str) -> bool:
@@ -624,13 +748,12 @@ def _get_vision_providers() -> list[Dict]:
         provider = get_provider_secret(row)
         if provider:
             providers.append(provider)
-    if providers:
-        return providers
-    frappe.log_error(
-        "No active vision-capable WA LLM Provider found for video frame summaries. Configure a provider with Use for Vision / OCR enabled.",
-        "WA Video Vision Provider Missing",
-    )
-    return []
+    if not providers:
+        frappe.log_error(
+            "No active vision-capable WA LLM Provider found for video frame summaries. Configure a provider with Use for Vision / OCR enabled.",
+            "WA Video Vision Provider Missing",
+        )
+    return providers
 
 
 def _get_vision_provider() -> Optional[Dict]:
@@ -655,9 +778,10 @@ def _build_audio_transcription_url(base_url: str | None) -> str:
 
 
 def _audio_transcription_model(provider: Dict) -> str:
-    model_name = str(provider.get("model_name") or "").strip().lower()
-    if "transcribe" in model_name or model_name == "whisper-1":
-        return str(provider.get("model_name") or "").strip()
+    configured = str(provider.get("model_name") or "").strip()
+    model_name = configured.lower()
+    if "whisper" in model_name or "transcribe" in model_name:
+        return configured
     return "whisper-1"
 
 
