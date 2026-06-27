@@ -158,17 +158,38 @@ def receive_interakt():
         payload["channel_account"] = channel_account
         webhook_type = payload.get("type")
 
-        result = _process_interakt_payload(payload, raw_body)
-        frappe.db.commit()
+        queue = _interakt_webhook_queue(payload)
+        job_id = _interakt_webhook_job_id(channel_account, payload, raw_body)
+        run_now = bool(getattr(frappe.flags, "in_test", False))
+        job = frappe.enqueue(
+            "wa_chat_hub.api.webhook.process_interakt_webhook",
+            queue=queue,
+            payload=payload,
+            raw_body=raw_body,
+            channel_account=channel_account,
+            timeout=900 if queue == "long" else 300,
+            job_id=job_id,
+            deduplicate=True,
+            enqueue_after_commit=False,
+            now=run_now,
+        )
         task_log(
             "webhook",
-            "receive_done",
+            "receive_queued",
             provider="Interakt",
             channel_account=channel_account,
             webhook_type=webhook_type,
+            queue=queue,
+            job_id=job_id,
             duration_sec=elapsed(started),
         )
-        return result
+        return {
+            "success": True,
+            "queued": not run_now,
+            "queue": queue,
+            "job_id": job_id,
+            "result": job if run_now else None,
+        }
     except frappe.ValidationError as exc:
         task_log(
             "webhook",

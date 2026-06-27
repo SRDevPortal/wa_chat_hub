@@ -14,7 +14,7 @@ from wa_chat_hub.permissions import conversation_access_sql_condition
 from wa_chat_hub.permissions import ensure_can_read_conversation
 from wa_chat_hub.permissions import filter_accessible_conversation_rows
 from wa_chat_hub.permissions import filter_accessible_reference_names
-from wa_chat_hub.services import append_message, build_erp_actions, mark_conversation_read
+from wa_chat_hub.services import append_message, build_erp_actions, conversation_update_lock, mark_conversation_read
 from wa_chat_hub.services import normalize_phone
 
 CHAT_HUB_SCOPE_DOCTYPES = {"CRM Lead", "Lead", "Patient", "Patient Encounter"}
@@ -521,19 +521,20 @@ def bulk_assign(conversations, user=None):
 
     for name in names:
         _ensure_conversation_write(name)
-        frappe.db.set_value("Chat Conversation", name, "assigned_to", user or None)
-        assign_to.clear("Chat Conversation", name)
-        if user:
-            assign_to.add(
-                {
-                    "assign_to": [user],
-                    "doctype": "Chat Conversation",
-                    "name": name,
-                    "description": _("WhatsApp conversation assigned"),
-                    "notify": 0,
-                },
-                ignore_permissions=True,
-            )
+        with conversation_update_lock(name):
+            frappe.db.set_value("Chat Conversation", name, "assigned_to", user or None)
+            assign_to.clear("Chat Conversation", name)
+            if user:
+                assign_to.add(
+                    {
+                        "assign_to": [user],
+                        "doctype": "Chat Conversation",
+                        "name": name,
+                        "description": _("WhatsApp conversation assigned"),
+                        "notify": 0,
+                    },
+                    ignore_permissions=True,
+                )
 
     frappe.db.commit()
     return {"success": True, "updated": len(names)}
@@ -557,7 +558,8 @@ def bulk_update(conversations, fieldname, value):
 
     for name in names:
         _ensure_conversation_write(name)
-        frappe.db.set_value("Chat Conversation", name, fieldname, value)
+        with conversation_update_lock(name):
+            frappe.db.set_value("Chat Conversation", name, fieldname, value)
 
     frappe.db.commit()
     return {"success": True, "updated": len(names)}

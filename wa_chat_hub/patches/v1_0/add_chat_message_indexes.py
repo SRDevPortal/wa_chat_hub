@@ -7,7 +7,9 @@ def execute() -> None:
     ensure_chat_message_indexes()
     ensure_chat_conversation_indexes()
     ensure_chat_contact_indexes()
+    ensure_chat_contact_channel_profile_indexes()
     ensure_crm_lead_indexes()
+    ensure_reference_phone_indexes()
 
 
 def ensure_chat_message_indexes() -> None:
@@ -71,6 +73,16 @@ def ensure_chat_conversation_indexes() -> None:
         )
         frappe.db.add_index(
             "Chat Conversation",
+            ["channel_account", "contact", "status"],
+            index_name="idx_chat_conversation_channel_contact_status",
+        )
+        frappe.db.add_index(
+            "Chat Conversation",
+            ["channel_account", "contact", "modified"],
+            index_name="idx_chat_conversation_channel_contact_modified",
+        )
+        frappe.db.add_index(
+            "Chat Conversation",
             ["modified"],
             index_name="idx_chat_conversation_modified",
         )
@@ -129,6 +141,27 @@ def ensure_chat_contact_indexes() -> None:
             ["source_doctype", "source_name"],
             index_name="idx_chat_contact_source",
         )
+        frappe.db.add_index(
+            "Chat Contact",
+            ["phone_number"],
+            index_name="idx_chat_contact_phone_number",
+        )
+    finally:
+        frappe.flags.in_migrate = previous
+
+
+def ensure_chat_contact_channel_profile_indexes() -> None:
+    if not frappe.db.exists("DocType", "Chat Contact Channel Profile"):
+        return
+
+    previous = getattr(frappe.flags, "in_migrate", False)
+    frappe.flags.in_migrate = True
+    try:
+        frappe.db.add_index(
+            "Chat Contact Channel Profile",
+            ["contact", "channel_account"],
+            index_name="idx_chat_profile_contact_channel",
+        )
     finally:
         frappe.flags.in_migrate = previous
 
@@ -154,5 +187,31 @@ def ensure_crm_lead_indexes() -> None:
                 ["lead_owner", "sr_lead_pipeline"],
                 index_name="idx_crmlead_owner_pipeline",
             )
+    finally:
+        frappe.flags.in_migrate = previous
+
+
+def ensure_reference_phone_indexes() -> None:
+    for doctype, fields in {
+        "CRM Lead": ("mobile_no", "phone", "mobile", "custom_whatsapp_number"),
+        "Lead": ("mobile_no", "phone", "mobile", "custom_whatsapp_number"),
+        "Patient": ("mobile", "mobile_no", "phone", "custom_whatsapp_number"),
+        "Customer": ("mobile_no", "phone", "custom_whatsapp_number"),
+    }.items():
+        _ensure_phone_indexes_for_doctype(doctype, fields)
+
+
+def _ensure_phone_indexes_for_doctype(doctype: str, fields: tuple[str, ...]) -> None:
+    if not frappe.db.exists("DocType", doctype):
+        return
+
+    previous = getattr(frappe.flags, "in_migrate", False)
+    frappe.flags.in_migrate = True
+    try:
+        for fieldname in fields:
+            if not frappe.db.has_column(doctype, fieldname):
+                continue
+            index_name = f"idx_wa_{doctype.lower().replace(' ', '_')}_{fieldname}"
+            frappe.db.add_index(doctype, [fieldname], index_name=index_name[:64])
     finally:
         frappe.flags.in_migrate = previous

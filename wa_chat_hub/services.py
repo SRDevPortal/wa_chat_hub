@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from contextlib import contextmanager
@@ -8,6 +9,7 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 import frappe
 from frappe import _
+from frappe.utils.synchronization import filelock
 
 from wa_chat_hub.ai.ocr_summary import build_attachment_filename, process_attachment_for_lead_summary
 from wa_chat_hub.ai.media_transcription import (
@@ -26,6 +28,8 @@ from wa_chat_hub.task_logger import elapsed, task_log
 DEFAULT_CONVERSATION_STATUS = "Open"
 WA_LEAD_CONTEXT_MARKER = "WA_CHAT_HUB_CONTEXT_JSON"
 WA_LEAD_PAYLOAD_MARKER = "WA_CHAT_HUB_PAYLOAD_JSON"
+APPEND_MESSAGE_LOCK_TIMEOUT = 30
+CONVERSATION_UPDATE_LOCK_TIMEOUT = 30
 
 
 @contextmanager
@@ -60,6 +64,27 @@ def normalize_phone(phone: Optional[str]) -> str:
     if not phone:
         return ""
     return "".join(ch for ch in str(phone) if ch.isdigit())
+
+
+def _record_lock_name(prefix: str, token: str) -> str:
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:24]
+    return f"wa_chat_{prefix}_{digest}"
+
+
+def _append_message_lock_name(payload: Dict[str, Any]) -> str:
+    channel_account = str(payload.get("channel_account") or "unknown").strip()
+    phone_number = normalize_phone(payload.get("phone_number") or payload.get("to") or payload.get("from"))
+    token = f"{channel_account}:{phone_number or payload.get('conversation') or 'unknown'}"
+    return _record_lock_name("append", token)
+
+
+@contextmanager
+def conversation_update_lock(conversation: str):
+    with filelock(
+        _record_lock_name("conversation", str(conversation or "unknown")),
+        timeout=CONVERSATION_UPDATE_LOCK_TIMEOUT,
+    ):
+        yield
 
 
 def _valid_link(doctype: str, value: Optional[str]) -> Optional[str]:
@@ -126,8 +151,17 @@ def get_or_create_contact(phone_number: str, display_name: Optional[str] = None)
     normalized = normalize_phone(phone_number)
     existing = frappe.db.get_value("Chat Contact", {"phone_number": normalized}, "name")
     if existing:
-        if display_name:
-            frappe.db.set_value("Chat Contact", existing, "display_name", display_name)
+        if display_name and frappe.db.get_value("Chat Contact", existing, "display_name") != display_name:
+            with_db_lock_retry(
+                "contact_display_name_update",
+                lambda: frappe.db.set_value(
+                    "Chat Contact",
+                    existing,
+                    "display_name",
+                    display_name,
+                    update_modified=False,
+                ),
+            )
         return existing
 
     doc = frappe.get_doc({
@@ -140,7 +174,16 @@ def get_or_create_contact(phone_number: str, display_name: Optional[str] = None)
     except frappe.DuplicateEntryError:
         existing = frappe.db.get_value("Chat Contact", {"phone_number": normalized}, "name") or normalized
         if display_name and frappe.db.exists("Chat Contact", existing):
-            frappe.db.set_value("Chat Contact", existing, "display_name", display_name)
+            with_db_lock_retry(
+                "contact_display_name_update",
+                lambda: frappe.db.set_value(
+                    "Chat Contact",
+                    existing,
+                    "display_name",
+                    display_name,
+                    update_modified=False,
+                ),
+            )
         return existing
     return doc.name
 
@@ -167,7 +210,12 @@ def get_or_create_conversation(
         if updates:
             with_db_lock_retry(
                 "conversation_routing_update",
-                lambda: frappe.db.set_value("Chat Conversation", existing, updates),
+                lambda: frappe.db.set_value(
+                    "Chat Conversation",
+                    existing,
+                    updates,
+                    update_modified=False,
+                ),
             )
         return existing
 
@@ -207,7 +255,8 @@ def append_message(payload: Dict[str, Any]) -> Dict[str, str]:
     frappe.flags.wa_chat_in_append_message = True
     frappe.local.wa_chat_in_append_message = True
     try:
-        result = _append_message_impl(payload)
+        with filelock(_append_message_lock_name(payload), timeout=APPEND_MESSAGE_LOCK_TIMEOUT):
+            result = _append_message_impl(payload)
         task_log(
             "message",
             "append_done",
@@ -407,40 +456,41 @@ def cint_safe(value: Any) -> int:
 
 def update_conversation_after_message(conversation_name: str, payload: Dict[str, Any]) -> None:
     """Update preview/unread without full doc save (avoids TimestampMismatch under concurrent updates)."""
-    body = payload.get("body")
-    content_type = payload.get("content_type") or "Text"
-    media_url = payload.get("media_url")
-    if media_url and content_type != "Text":
-        preview = build_media_preview(content_type, body)
-    else:
-        preview = body or content_type or ""
+    with conversation_update_lock(conversation_name):
+        body = payload.get("body")
+        content_type = payload.get("content_type") or "Text"
+        media_url = payload.get("media_url")
+        if media_url and content_type != "Text":
+            preview = build_media_preview(content_type, body)
+        else:
+            preview = body or content_type or ""
 
-    if payload.get("direction", "Inbound") == "Inbound":
+        if payload.get("direction", "Inbound") == "Inbound":
+            with_db_lock_retry(
+                "conversation_unread_increment",
+                lambda: frappe.db.sql(
+                    """
+                    UPDATE `tabChat Conversation`
+                    SET last_message_preview = %s,
+                        unread_count = COALESCE(unread_count, 0) + 1,
+                        modified = NOW(6),
+                        modified_by = %s
+                    WHERE name = %s
+                    """,
+                    ((preview or "")[:500], frappe.session.user, conversation_name),
+                ),
+            )
+            return
+
         with_db_lock_retry(
-            "conversation_unread_increment",
-            lambda: frappe.db.sql(
-                """
-                UPDATE `tabChat Conversation`
-                SET last_message_preview = %s,
-                    unread_count = COALESCE(unread_count, 0) + 1,
-                    modified = NOW(6),
-                    modified_by = %s
-                WHERE name = %s
-                """,
-                ((preview or "")[:500], frappe.session.user, conversation_name),
+            "conversation_preview_update",
+            lambda: frappe.db.set_value(
+                "Chat Conversation",
+                conversation_name,
+                {"last_message_preview": (preview or "")[:500]},
+                update_modified=True,
             ),
         )
-        return
-
-    with_db_lock_retry(
-        "conversation_preview_update",
-        lambda: frappe.db.set_value(
-            "Chat Conversation",
-            conversation_name,
-            {"last_message_preview": (preview or "")[:500]},
-            update_modified=True,
-        ),
-    )
 
 
 def build_media_preview(content_type: str, body: Optional[str] = None) -> str:
@@ -466,20 +516,21 @@ def _clean_media_body(content_type: str, body: Optional[str]) -> str:
 
 
 def mark_conversation_read(conversation_name: str) -> None:
-    with_db_lock_retry(
-        "conversation_mark_read",
-        lambda: frappe.db.sql(
-            """
-            UPDATE `tabChat Conversation`
-            SET unread_count = 0,
-                modified = NOW(6),
-                modified_by = %s
-            WHERE name = %s
-              AND COALESCE(unread_count, 0) != 0
-            """,
-            (frappe.session.user, conversation_name),
-        ),
-    )
+    with conversation_update_lock(conversation_name):
+        with_db_lock_retry(
+            "conversation_mark_read",
+            lambda: frappe.db.sql(
+                """
+                UPDATE `tabChat Conversation`
+                SET unread_count = 0,
+                    modified = NOW(6),
+                    modified_by = %s
+                WHERE name = %s
+                  AND COALESCE(unread_count, 0) != 0
+                """,
+                (frappe.session.user, conversation_name),
+            ),
+        )
     frappe.publish_realtime(
         "wa_chat_conversation_updated",
         {"conversation": conversation_name, "unread_count": 0},
@@ -554,15 +605,21 @@ def _link_or_create_master_record(
 
     patient_name = _find_by_phone("Patient", ["mobile", "mobile_no", "phone", "custom_whatsapp_number"], phone_number)
     if patient_name:
-        contact.linked_patient = patient_name
-        contact.source_doctype = "Patient"
-        contact.source_name = patient_name
+        contact_updates = {
+            "linked_patient": patient_name,
+            "source_doctype": "Patient",
+            "source_name": patient_name,
+        }
         if display_name and not contact.display_name:
-            contact.display_name = display_name
-        contact.save(ignore_permissions=True)
-        convo.linked_reference_doctype = "Patient"
-        convo.linked_reference_name = patient_name
-        convo.save(ignore_permissions=True)
+            contact_updates["display_name"] = display_name
+        _set_contact_fields(contact, contact_updates)
+        _set_conversation_fields(
+            convo,
+            {
+                "linked_reference_doctype": "Patient",
+                "linked_reference_name": patient_name,
+            },
+        )
         try:
             from wa_chat_hub.interakt.contact_sync import enqueue_push_for_conversation
 
@@ -573,14 +630,20 @@ def _link_or_create_master_record(
 
     customer_name = _find_by_phone("Customer", ["mobile_no", "phone", "custom_whatsapp_number"], phone_number)
     if customer_name:
-        contact.source_doctype = "Customer"
-        contact.source_name = customer_name
+        contact_updates = {
+            "source_doctype": "Customer",
+            "source_name": customer_name,
+        }
         if display_name and not contact.display_name:
-            contact.display_name = display_name
-        contact.save(ignore_permissions=True)
-        convo.linked_reference_doctype = "Customer"
-        convo.linked_reference_name = customer_name
-        convo.save(ignore_permissions=True)
+            contact_updates["display_name"] = display_name
+        _set_contact_fields(contact, contact_updates)
+        _set_conversation_fields(
+            convo,
+            {
+                "linked_reference_doctype": "Customer",
+                "linked_reference_name": customer_name,
+            },
+        )
         return
 
     existing_lead = _find_existing_lead_by_phone(phone_number)
@@ -599,19 +662,27 @@ def _link_or_create_master_record(
     if not lead_name:
         return
 
-    contact.linked_lead = lead_name if lead_doctype == "Lead" else None
-    contact.source_doctype = lead_doctype
-    contact.source_name = lead_name
+    contact_updates = {
+        "linked_lead": lead_name if lead_doctype == "Lead" else None,
+        "source_doctype": lead_doctype,
+        "source_name": lead_name,
+    }
     if display_name and not contact.display_name:
-        contact.display_name = display_name
-    contact.save(ignore_permissions=True)
+        contact_updates["display_name"] = display_name
+    _set_contact_fields(contact, contact_updates)
 
     if lead_doctype == "CRM Lead":
         set_conversation_crm_lead(convo, lead_name)
     else:
         convo.linked_reference_doctype = lead_doctype
         convo.linked_reference_name = lead_name
-    convo.save(ignore_permissions=True)
+    conversation_updates = {
+        "linked_reference_doctype": convo.linked_reference_doctype,
+        "linked_reference_name": convo.linked_reference_name,
+    }
+    if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
+        conversation_updates["linked_crm_lead"] = getattr(convo, "linked_crm_lead", None)
+    _set_conversation_fields(convo, conversation_updates)
 
     if lead_doctype == "CRM Lead":
         _finalize_crm_lead_after_inbound(
@@ -627,6 +698,40 @@ def _link_or_create_master_record(
         enqueue_push_for_conversation(conversation)
     except Exception:
         frappe.log_error(frappe.get_traceback(), "Interakt Contact Push Enqueue Failed")
+
+
+def _set_contact_fields(contact, updates: Dict[str, Any]) -> None:
+    updates = dict(updates or {})
+    if not updates:
+        return
+    with_db_lock_retry(
+        "contact_link_update",
+        lambda: frappe.db.set_value(
+            "Chat Contact",
+            contact.name,
+            updates,
+            update_modified=False,
+        ),
+    )
+    for key, value in updates.items():
+        setattr(contact, key, value)
+
+
+def _set_conversation_fields(convo, updates: Dict[str, Any]) -> None:
+    updates = {key: value for key, value in (updates or {}).items()}
+    if not updates:
+        return
+    with_db_lock_retry(
+        "conversation_link_update",
+        lambda: frappe.db.set_value(
+            "Chat Conversation",
+            convo.name,
+            updates,
+            update_modified=False,
+        ),
+    )
+    for key, value in updates.items():
+        setattr(convo, key, value)
 
 
 def _finalize_crm_lead_after_inbound(
@@ -903,13 +1008,25 @@ def _normalize_existing_lead_link(convo) -> None:
     lead_name = get_conversation_crm_lead(convo)
     if lead_name:
         set_conversation_crm_lead(convo, lead_name)
-        convo.save(ignore_permissions=True)
+        updates = {
+            "linked_reference_doctype": convo.linked_reference_doctype,
+            "linked_reference_name": convo.linked_reference_name,
+        }
+        if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
+            updates["linked_crm_lead"] = getattr(convo, "linked_crm_lead", None)
+        _set_conversation_fields(convo, updates)
         return
     if convo.linked_reference_doctype != "Lead" or not convo.linked_reference_name:
         return
     if frappe.db.exists("CRM Lead", convo.linked_reference_name):
         set_conversation_crm_lead(convo, convo.linked_reference_name)
-        convo.save(ignore_permissions=True)
+        updates = {
+            "linked_reference_doctype": convo.linked_reference_doctype,
+            "linked_reference_name": convo.linked_reference_name,
+        }
+        if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
+            updates["linked_crm_lead"] = getattr(convo, "linked_crm_lead", None)
+        _set_conversation_fields(convo, updates)
 
 
 def _sanitize_contact_links(contact) -> None:
@@ -928,16 +1045,26 @@ def _sanitize_contact_links(contact) -> None:
         changed = True
 
     if changed:
-        contact.save(ignore_permissions=True)
+        _set_contact_fields(
+            contact,
+            {
+                "linked_lead": getattr(contact, "linked_lead", None),
+                "linked_patient": getattr(contact, "linked_patient", None),
+            },
+        )
 
 
 def _sanitize_conversation_links(convo) -> None:
     crm_lead = getattr(convo, "linked_crm_lead", None)
     if crm_lead and not frappe.db.exists("CRM Lead", crm_lead):
-        convo.linked_crm_lead = None
-        convo.linked_reference_doctype = None
-        convo.linked_reference_name = None
-        convo.save(ignore_permissions=True)
+        _set_conversation_fields(
+            convo,
+            {
+                "linked_crm_lead": None,
+                "linked_reference_doctype": None,
+                "linked_reference_name": None,
+            },
+        )
         return
 
     ref_doctype = getattr(convo, "linked_reference_doctype", None)
@@ -945,14 +1072,22 @@ def _sanitize_conversation_links(convo) -> None:
     if not ref_doctype or not ref_name:
         return
     if not frappe.db.exists("DocType", ref_doctype):
-        convo.linked_reference_doctype = None
-        convo.linked_reference_name = None
-        convo.save(ignore_permissions=True)
+        _set_conversation_fields(
+            convo,
+            {
+                "linked_reference_doctype": None,
+                "linked_reference_name": None,
+            },
+        )
         return
     if not frappe.db.exists(ref_doctype, ref_name):
-        convo.linked_reference_doctype = None
-        convo.linked_reference_name = None
-        convo.save(ignore_permissions=True)
+        _set_conversation_fields(
+            convo,
+            {
+                "linked_reference_doctype": None,
+                "linked_reference_name": None,
+            },
+        )
 
 
 def _resolve_whatsapp_source_value(meta) -> Optional[str]:
