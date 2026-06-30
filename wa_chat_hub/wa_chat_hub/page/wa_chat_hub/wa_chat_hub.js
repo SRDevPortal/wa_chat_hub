@@ -243,10 +243,10 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
             type: 'POST',
             args: { conversation, body, content_type, media_url },
         }),
-        sendMediaReply: (conversation, body, content_type, media_url, display_media_url = null, file_name = null, file_size = null) => frappe.call({
+        sendMediaReply: (conversation, body, content_type, media_url, display_media_url = null, file_name = null, file_size = null, attachment_file = null) => frappe.call({
             method: 'wa_chat_hub.api.runtime.send_reply',
             type: 'POST',
-            args: { conversation, body, content_type, media_url, display_media_url, file_name, file_size },
+            args: { conversation, body, content_type, media_url, display_media_url, file_name, file_size, attachment_file },
         }),
         getInteraktTemplates: (args) => frappe.call('wa_chat_hub.api.runtime.get_interakt_templates', args),
         sendTemplate: (args) => frappe.call({
@@ -1583,7 +1583,10 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
                         values.caption || '',
                         'Image',
                         upload.media_url,
-                        upload.file_url
+                        upload.file_url,
+                        upload.file_name || file.name,
+                        upload.file_size,
+                        upload.file
                     ))
                     .then((r) => {
                         const sent = notifyOutboundSendOutcome(r, __('Image sent'));
@@ -1642,7 +1645,8 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
                         upload.media_url,
                         upload.file_url,
                         upload.file_name || file.name,
-                        upload.file_size
+                        upload.file_size,
+                        upload.file
                     ))
                     .then((r) => {
                         const sent = notifyOutboundSendOutcome(r, __('Document sent'));

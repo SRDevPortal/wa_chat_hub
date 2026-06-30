@@ -332,6 +332,7 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
         "content_type": payload.get("content_type", "Text"),
         "body": payload.get("body"),
         "media_url": payload.get("media_url"),
+        "attachment_file": payload.get("attachment_file"),
         "channel_message_id": payload.get("channel_message_id"),
         "delivery_status": delivery_status,
         "raw_payload": frappe.as_json(payload),
@@ -357,6 +358,12 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
             frappe.log_error(frappe.get_traceback(), "Messaging Window Update Failed")
 
     message.insert(ignore_permissions=True)
+
+    if payload.get("attachment_file"):
+        try:
+            _attach_outbound_file_to_message(message, str(payload.get("attachment_file")))
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "Outbound Attachment Link Failed")
 
     if direction == "Inbound":
         try:
@@ -406,6 +413,16 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
             )
         except Exception:
             frappe.log_error(frappe.get_traceback(), "Media Lead Summary Enqueue Failed")
+    if payload.get("attachment_file") and direction == "Outbound":
+        try:
+            _sync_outbound_attachment_to_linked_record(
+                conversation=conversation,
+                chat_file_name=str(payload.get("attachment_file")),
+                message_name=message.name,
+                payload=payload,
+            )
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "CRM Lead Outbound Attachment Sync Failed")
     if direction == "Inbound" and not (
         getattr(frappe.flags, "wa_ai_outbound_reply", False)
         or getattr(frappe.local, "wa_ai_outbound_reply", False)
@@ -1271,6 +1288,20 @@ def _persist_inbound_attachment(message_doc, payload: Dict[str, Any]) -> Optiona
     return file_doc.name
 
 
+def _attach_outbound_file_to_message(message_doc, file_name: str) -> None:
+    """Move the uploaded local file from conversation-level staging onto the Chat Message."""
+    if not file_name or not frappe.db.exists("File", file_name):
+        return
+
+    updates = {
+        "attached_to_doctype": "Chat Message",
+        "attached_to_name": message_doc.name,
+    }
+    frappe.db.set_value("File", file_name, updates, update_modified=False)
+    if frappe.get_meta("Chat Message").has_field("attachment_file"):
+        frappe.db.set_value("Chat Message", message_doc.name, "attachment_file", file_name, update_modified=False)
+
+
 def _sync_inbound_attachment_to_linked_record(
     conversation: str,
     chat_file_name: str,
@@ -1323,6 +1354,57 @@ def _sync_inbound_attachment_to_linked_record(
             "doctype": "File",
             "file_name": lead_filename,
             "file_url": chat_file.file_url or media_url,
+            "is_private": 0,
+            "attached_to_doctype": ref_doctype,
+            "attached_to_name": ref_name,
+        }
+    )
+    lead_file.insert(ignore_permissions=True)
+    _repair_remote_attachment_comment_url(ref_doctype, ref_name, lead_file.file_name, lead_file.file_url)
+
+
+def _sync_outbound_attachment_to_linked_record(
+    conversation: str,
+    chat_file_name: str,
+    message_name: str,
+    payload: Dict[str, Any],
+) -> None:
+    """Mirror outbound chat media on linked CRM Lead."""
+    if not chat_file_name or not frappe.db.exists("File", chat_file_name):
+        return
+
+    convo = frappe.get_doc("Chat Conversation", conversation)
+    crm_lead = get_conversation_crm_lead(convo)
+    if not crm_lead:
+        return
+
+    ref_doctype = "CRM Lead"
+    ref_name = crm_lead
+    chat_file = frappe.get_doc("File", chat_file_name)
+    file_url = str(chat_file.file_url or payload.get("media_url") or "").strip()
+    if not file_url:
+        return
+
+    lead_filename = f"WA-{message_name}-{chat_file.file_name or payload.get('file_name') or 'attachment'}"
+    existing_lead_file = frappe.db.get_value(
+        "File",
+        {
+            "attached_to_doctype": ref_doctype,
+            "attached_to_name": ref_name,
+            "file_url": file_url,
+        },
+        "name",
+    )
+    if existing_lead_file:
+        lead_file_doc = frappe.get_doc("File", existing_lead_file)
+        _repair_remote_attachment_comment_url(ref_doctype, ref_name, lead_file_doc.file_name, lead_file_doc.file_url)
+        return
+
+    lead_file = frappe.get_doc(
+        {
+            "doctype": "File",
+            "file_name": lead_filename,
+            "file_url": file_url,
             "is_private": 0,
             "attached_to_doctype": ref_doctype,
             "attached_to_name": ref_name,

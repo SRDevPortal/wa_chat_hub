@@ -5,6 +5,7 @@ import time
 import frappe
 import requests
 from frappe import _
+from frappe.utils.file_manager import save_file
 
 from wa_chat_hub.interakt.templates_api import (
     fetch_approved_templates,
@@ -97,14 +98,24 @@ def _upload_media_for_send(allowed_mimetypes, missing_file_message, invalid_file
     if not media_url:
         frappe.throw(_("Interakt did not return a media URL"))
 
+    local_file = save_file(
+        filename,
+        content,
+        "Chat Conversation",
+        conversation,
+        decode=False,
+        is_private=0,
+    )
+
     return {
         "success": True,
         "result": {
-            "file": None,
-            "file_url": media_url,
+            "file": local_file.name,
+            "file_url": local_file.file_url,
             "media_url": media_url,
+            "provider_file_url": media_url,
             "mimetype": mimetype,
-            "file_name": (data or {}).get("file_name") or filename,
+            "file_name": local_file.file_name or (data or {}).get("file_name") or filename,
             "file_size": _format_file_size(len(content)),
             "file_size_bytes": len(content),
             "file_handle": (data or {}).get("file_handle"),
@@ -123,6 +134,7 @@ def send_reply():
     conversation = payload.get("conversation")
     body = payload.get("body")
     media_url = payload.get("media_url")
+    attachment_file = payload.get("attachment_file") or payload.get("file")
     file_name = payload.get("file_name")
     file_size = payload.get("file_size")
     display_media_url = payload.get("display_media_url") or media_url
@@ -171,7 +183,8 @@ def send_reply():
         "media_url": display_media_url,
         "delivery_status": delivery_status,
         "channel_message_id": outbound.get("provider_message_id"),
-        "raw_transport_payload": {**outbound, "file_name": file_name, "file_size": file_size},
+        "attachment_file": attachment_file,
+        "raw_transport_payload": {**outbound, "file_name": file_name, "file_size": file_size, "attachment_file": attachment_file},
     })
     task_log(
         "runtime",
