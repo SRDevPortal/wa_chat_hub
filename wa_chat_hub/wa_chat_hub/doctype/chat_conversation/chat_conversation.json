@@ -16,6 +16,7 @@
   "lead_temperature",
   "conversation_stopped",
   "last_message_preview",
+  "last_message_time",
   "unread_count",
   "ai_summary",
   "linked_crm_lead",
@@ -115,6 +116,13 @@
    "fieldtype": "Small Text",
    "in_list_view": 1,
    "label": "Last Message Preview"
+  },
+  {
+   "fieldname": "last_message_time",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Last Message Time",
+   "read_only": 1
   },
   {
    "default": "0",
@@ -250,7 +258,7 @@
   }
  ],
  "row_format": "Dynamic",
- "sort_field": "modified",
+ "sort_field": "last_message_time",
  "sort_order": "DESC",
  "states": [],
  "title_field": "contact",

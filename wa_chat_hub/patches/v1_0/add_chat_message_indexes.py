@@ -86,6 +86,17 @@ def ensure_chat_conversation_indexes() -> None:
             ["modified"],
             index_name="idx_chat_conversation_modified",
         )
+        if frappe.db.has_column("Chat Conversation", "last_message_time"):
+            frappe.db.add_index(
+                "Chat Conversation",
+                ["last_message_time"],
+                index_name="idx_chat_conversation_last_message_time",
+            )
+            frappe.db.add_index(
+                "Chat Conversation",
+                ["status", "last_message_time"],
+                index_name="idx_chat_conversation_status_last_message",
+            )
         if frappe.db.has_column("Chat Conversation", "linked_crm_lead"):
             frappe.db.add_index(
                 "Chat Conversation",

@@ -129,6 +129,13 @@ REFERENCE_STATUS_CACHE_TTL = 5
 REFERENCE_CHAT_STATUS_ENABLED = False
 
 
+def _has_conversation_last_message_time() -> bool:
+    try:
+        return frappe.db.has_column("Chat Conversation", "last_message_time")
+    except Exception:
+        return False
+
+
 def _short_cache_get(key: str):
     try:
         return frappe.cache().get_value(key)
@@ -214,18 +221,18 @@ def _conversation_sql_rows(filters: dict, limit) -> list:
             conditions.append(f"c.`{fieldname}` = %({param})s")
             values[param] = value
 
-    fields = ", ".join(f"c.`{fieldname}`" for fieldname in CONVERSATION_LIST_FIELDS)
+    has_last_message_time = _has_conversation_last_message_time()
+    select_fields = list(CONVERSATION_LIST_FIELDS)
+    if has_last_message_time:
+        select_fields.append("last_message_time")
+    fields = ", ".join(f"c.`{fieldname}`" for fieldname in select_fields)
+    order_expression = "coalesce(c.`last_message_time`, c.`modified`)" if has_last_message_time else "c.`modified`"
     return frappe.db.sql(
         f"""
-        select {fields}, coalesce(lm.last_message_time, c.modified) as last_message_time
+        select {fields}
         from `tabChat Conversation` c
-        left join (
-            select conversation, max(creation) as last_message_time
-            from `tabChat Message`
-            group by conversation
-        ) lm on lm.conversation = c.name
         where {" and ".join(f"({condition})" for condition in conditions)}
-        order by coalesce(lm.last_message_time, c.modified) desc
+        order by {order_expression} desc
         limit %(limit)s
         """,
         values,
@@ -239,15 +246,10 @@ def _limit_visible_rows(rows: list, limit) -> list:
 
 def _enrich_conversation_rows(rows: list) -> list:
     contact_names = []
-    conversation_names = []
     for row in rows:
         data = row if isinstance(row, dict) else row.as_dict()
-        if data.get("name"):
-            conversation_names.append(data["name"])
         if data.get("contact"):
             contact_names.append(data["contact"])
-
-    last_message_times = _conversation_last_message_times(conversation_names)
 
     contacts: dict = {}
     if contact_names:
@@ -267,31 +269,10 @@ def _enrich_conversation_rows(rows: list) -> list:
                 **data,
                 "contact_display_name": contact.get("display_name"),
                 "contact_phone_number": contact.get("phone_number"),
-                "last_message_time": data.get("last_message_time")
-                or last_message_times.get(data.get("name"))
-                or data.get("modified"),
+                "last_message_time": data.get("last_message_time") or data.get("modified"),
             }
         )
     return sorted(enriched, key=lambda row: str(row.get("last_message_time") or ""), reverse=True)
-
-
-def _conversation_last_message_times(conversation_names: list[str]) -> dict[str, str]:
-    if not conversation_names:
-        return {}
-
-    return {
-        row.conversation: row.last_message_time
-        for row in frappe.db.sql(
-            """
-            select conversation, max(creation) as last_message_time
-            from `tabChat Message`
-            where conversation in %(conversation_names)s
-            group by conversation
-            """,
-            {"conversation_names": tuple(conversation_names)},
-            as_dict=True,
-        )
-    }
 
 
 def _matching_contact_names(query: str) -> list[str]:

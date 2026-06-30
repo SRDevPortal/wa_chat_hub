@@ -506,18 +506,21 @@ def update_conversation_after_message(conversation_name: str, payload: Dict[str,
         body = payload.get("body")
         content_type = payload.get("content_type") or "Text"
         media_url = payload.get("media_url")
+        has_last_message_time = frappe.db.has_column("Chat Conversation", "last_message_time")
         if media_url and content_type != "Text":
             preview = build_media_preview(content_type, body)
         else:
             preview = body or content_type or ""
 
         if payload.get("direction", "Inbound") == "Inbound":
+            last_message_sql = "last_message_time = NOW(6)," if has_last_message_time else ""
             with_db_lock_retry(
                 "conversation_unread_increment",
                 lambda: frappe.db.sql(
-                    """
+                    f"""
                     UPDATE `tabChat Conversation`
                     SET last_message_preview = %s,
+                        {last_message_sql}
                         unread_count = COALESCE(unread_count, 0) + 1,
                         modified = NOW(6),
                         modified_by = %s
@@ -528,12 +531,15 @@ def update_conversation_after_message(conversation_name: str, payload: Dict[str,
             )
             return
 
+        values = {"last_message_preview": (preview or "")[:500]}
+        if has_last_message_time:
+            values["last_message_time"] = frappe.utils.now_datetime()
         with_db_lock_retry(
             "conversation_preview_update",
             lambda: frappe.db.set_value(
                 "Chat Conversation",
                 conversation_name,
-                {"last_message_preview": (preview or "")[:500]},
+                values,
                 update_modified=True,
             ),
         )
