@@ -7,7 +7,7 @@ from typing import Optional
 
 from frappe import _
 
-from wa_chat_hub.connector.interakt.adapter import extract_interakt_customer_phone
+from wa_chat_hub.connector.interakt.adapter import extract_interakt_customer_phone, extract_interakt_media_url
 from wa_chat_hub.connector.registry import get_adapter
 from wa_chat_hub.interakt.account_config import account_routing_context, get_interakt_account, should_verify_webhook_signature
 from wa_chat_hub.services import append_message, normalize_phone
@@ -573,6 +573,7 @@ def _create_interakt_outbound_from_webhook(payload, delivery_status):
 
     body = _extract_interakt_message_body(message)
     content_type = message.get("message_content_type") or message.get("content_type") or message.get("type") or "Text"
+    media_url = extract_interakt_media_url(message) or extract_interakt_media_url(payload)
 
     result = append_message({
         "channel_account": payload["channel_account"],
@@ -582,9 +583,11 @@ def _create_interakt_outbound_from_webhook(payload, delivery_status):
         "sender_type": "Agent",
         "content_type": str(content_type or "Text").title(),
         "body": body,
+        "media_url": media_url,
         "channel_message_id": channel_message_id,
         "delivery_status": delivery_status or "Sent",
         "raw_payload": payload,
+        "raw_transport_payload": payload,
     })
     return {"updated": False, "created": True, **result, "delivery_status": delivery_status}
 

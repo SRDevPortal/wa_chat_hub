@@ -492,7 +492,29 @@ def get_messages(conversation, limit=100):
         limit_page_length=int(limit),
     )
     rows.reverse()
+    _attach_message_file_urls(rows)
     return {"success": True, "result": rows}
+
+
+def _attach_message_file_urls(rows: list) -> None:
+    file_names = [row.get("attachment_file") for row in rows if row.get("attachment_file")]
+    if not file_names:
+        return
+
+    files = {
+        row.name: row
+        for row in frappe.get_all(
+            "File",
+            filters={"name": ["in", file_names]},
+            fields=["name", "file_name", "file_url"],
+        )
+    }
+    for row in rows:
+        file_doc = files.get(row.get("attachment_file"))
+        if not file_doc:
+            continue
+        row["attachment_url"] = file_doc.file_url
+        row["attachment_file_name"] = file_doc.file_name
 
 
 @frappe.whitelist(methods=["POST"])

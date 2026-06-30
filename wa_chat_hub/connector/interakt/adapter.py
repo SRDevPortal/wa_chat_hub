@@ -121,7 +121,7 @@ class InteraktAdapter(ConnectorAdapter):
             body = None
 
         content_type = _normalize_content_type(message.get("message_content_type") or message.get("content_type") or message.get("type") or "Text")
-        media_url = _extract_media_url(message)
+        media_url = extract_interakt_media_url(message)
         if media_url and not body:
             body = f"[{content_type} message received]"
 
@@ -255,7 +255,7 @@ def _normalize_content_type(value: Any) -> str:
     return aliases.get(lowered, normalized.title())
 
 
-def _extract_media_url(message: Dict[str, Any] | str | None) -> str | None:
+def extract_interakt_media_url(message: Dict[str, Any] | str | None) -> str | None:
     if isinstance(message, str):
         try:
             message = json.loads(message)
@@ -264,19 +264,33 @@ def _extract_media_url(message: Dict[str, Any] | str | None) -> str | None:
     if not isinstance(message, dict):
         return None
 
-    for key in ("media_url", "mediaUrl", "url", "file_url", "fileUrl", "download_url", "downloadUrl"):
+    for key in (
+        "media_url",
+        "mediaUrl",
+        "provider_file_url",
+        "providerFileUrl",
+        "file_url",
+        "fileUrl",
+        "download_url",
+        "downloadUrl",
+        "media",
+        "url",
+        "link",
+    ):
         if message.get(key):
-            return message.get(key)
+            value = message.get(key)
+            if isinstance(value, str):
+                return value
 
-    for key in ("media", "file", "attachment", "attachments", "image", "video", "audio", "document", "sticker"):
+    for key in ("data", "message", "file", "attachment", "attachments", "image", "video", "audio", "document", "sticker"):
         value = message.get(key)
         if isinstance(value, list):
             for item in value:
-                nested = _extract_media_url(item)
+                nested = extract_interakt_media_url(item)
                 if nested:
                     return nested
         if isinstance(value, dict):
-            nested = _extract_media_url(value)
+            nested = extract_interakt_media_url(value)
             if nested:
                 return nested
 

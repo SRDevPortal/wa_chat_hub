@@ -791,7 +791,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
 
     function renderMessageContent(row) {
         const contentType = row.content_type || 'Text';
-        const mediaUrl = safeMediaUrl(row.media_url || '');
+        const mediaUrl = safeMediaUrl(row.attachment_url || row.media_url || '');
         const rawBody = row.body || '';
         const body = ['none', 'null', 'undefined'].includes(String(rawBody).trim().toLowerCase()) ? '' : rawBody;
         const safeUrl = escapeHtml(mediaUrl);
@@ -816,11 +816,17 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
                 <template>${mediaFallbackHtml(mediaUrl, safeBody || 'Open image')}</template>
             `;
         } else if (contentType === 'Video') {
-            mediaHtml = `<video class="wa-media-video" src="${safeUrl}" controls preload="metadata"></video>`;
+            mediaHtml = `
+                <video class="wa-media-video" src="${safeUrl}" controls preload="metadata"></video>
+                <template>${mediaFallbackHtml(mediaUrl, safeBody || 'Open video')}</template>
+            `;
         } else if (contentType === 'Audio') {
-            mediaHtml = `<audio class="wa-media-audio" src="${safeUrl}" controls preload="metadata"></audio>`;
+            mediaHtml = `
+                <audio class="wa-media-audio" src="${safeUrl}" controls preload="metadata"></audio>
+                <template>${mediaFallbackHtml(mediaUrl, safeBody || 'Open audio')}</template>
+            `;
         } else if (contentType === 'Document') {
-            const fileName = transport.file_name || extractNestedValue(transport, ['fileName', 'file_name']) || extractFileName(mediaUrl, '') || 'Document';
+            const fileName = row.attachment_file_name || transport.file_name || extractNestedValue(transport, ['fileName', 'file_name']) || extractFileName(mediaUrl, '') || 'Document';
             const fileExt = getFileExtension(fileName) || 'FILE';
             const fileSize = transport.file_size || row.file_size || '';
             mediaHtml = `
@@ -975,6 +981,12 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
             const fallback = link && link.nextElementSibling;
             if (link && fallback && fallback.tagName === 'TEMPLATE') {
                 link.outerHTML = fallback.innerHTML;
+            }
+        });
+        $('#wa-message-list .wa-media-video, #wa-message-list .wa-media-audio').on('error', function() {
+            const fallback = this.nextElementSibling;
+            if (fallback && fallback.tagName === 'TEMPLATE') {
+                this.outerHTML = fallback.innerHTML;
             }
         });
         const messageList = document.getElementById('wa-message-list');
