@@ -24,12 +24,6 @@ from wa_chat_hub.ai.clinical_history import (
     build_clinical_history_reply,
     is_clinical_history_query,
 )
-from wa_chat_hub.ai.conversation_stop import (
-    FINAL_WARNING_MESSAGE,
-    STOP_MESSAGE,
-    evaluate_stop_rule,
-    mark_conversation_stopped,
-)
 from wa_chat_hub.ai.service import create_ai_suggestion
 from wa_chat_hub.api.vector_search import search_knowledge_base
 from wa_chat_hub.outbound import send_outbound_message
@@ -139,39 +133,6 @@ def process_message(message_id):
             message=message_id,
             conversation=conversation,
             reason="already_replied",
-            total_sec=elapsed(total_started),
-        )
-        return
-
-    stop_decision = evaluate_stop_rule(conversation, message_id)
-    if stop_decision.action == "skip":
-        _log_ai_timing(
-            "skip",
-            message=message_id,
-            conversation=conversation,
-            reason=stop_decision.reason or "conversation_stopped",
-            total_sec=elapsed(total_started),
-        )
-        return
-    if stop_decision.action == "send_final_warning":
-        _deliver_ai_reply(conversation, FINAL_WARNING_MESSAGE)
-        _log_ai_timing(
-            "total_done",
-            message=message_id,
-            conversation=conversation,
-            mode="final_warning",
-            total_sec=elapsed(total_started),
-        )
-        return
-    if stop_decision.action == "send_stop":
-        _deliver_ai_reply(conversation, STOP_MESSAGE)
-        mark_conversation_stopped(conversation)
-        frappe.db.commit()
-        _log_ai_timing(
-            "total_done",
-            message=message_id,
-            conversation=conversation,
-            mode="conversation_stopped",
             total_sec=elapsed(total_started),
         )
         return
