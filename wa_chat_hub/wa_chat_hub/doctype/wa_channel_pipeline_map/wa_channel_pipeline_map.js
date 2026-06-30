@@ -1,4 +1,24 @@
 frappe.ui.form.on("WA Channel Pipeline Map", {
+	setup(frm) {
+		frm.set_query("chat_channel_account", () => ({
+			filters: {
+				is_active: 1,
+			},
+		}));
+
+		frm.set_query("sr_lead_pipeline", () => ({
+			filters: {
+				is_active: 1,
+			},
+		}));
+
+		frm.set_query("sr_lead_source", () => ({
+			filters: {
+				is_active: 1,
+			},
+		}));
+	},
+
 	refresh(frm) {
 		frm.set_intro(
 			__(
