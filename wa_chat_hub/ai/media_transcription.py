@@ -357,6 +357,13 @@ def _prepare_transcription_upload(media_url: str, media: Dict, content_type: str
     upload_mime = _transcription_upload_mime(source_mime, filename, content_type)
 
     if content_type != "Video":
+        converted = _convert_audio_to_mp3(media_bytes, filename)
+        if converted:
+            return {
+                "content": converted,
+                "filename": f"wa-audio-{frappe.generate_hash(length=8)}.mp3",
+                "mime_type": "audio/mpeg",
+            }
         return {"content": media_bytes, "filename": filename, "mime_type": upload_mime}
 
     extracted = _extract_audio_from_video(media_bytes)
@@ -368,6 +375,61 @@ def _prepare_transcription_upload(media_url: str, media: Dict, content_type: str
         }
 
     return {"content": media_bytes, "filename": filename, "mime_type": upload_mime}
+
+
+def _convert_audio_to_mp3(audio_bytes: bytes, filename: str | None = None) -> bytes:
+    if not audio_bytes:
+        return b""
+    ffmpeg = _get_ffmpeg_executable()
+    if not ffmpeg:
+        frappe.log_error(
+            "ffmpeg is not available. Audio will be sent to transcription provider in original format.",
+            "WA Audio Conversion Missing",
+        )
+        return b""
+
+    suffix = os.path.splitext(str(filename or ""))[1] or ".ogg"
+    input_path = None
+    output_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as source:
+            source.write(audio_bytes)
+            input_path = source.name
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as target:
+            output_path = target.name
+
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-i",
+                input_path,
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-b:a",
+                "64k",
+                output_path,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=60,
+            check=True,
+        )
+        with open(output_path, "rb") as audio_file:
+            return audio_file.read()
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "WA Audio Conversion Failed")
+        return b""
+    finally:
+        for path in (input_path, output_path):
+            if path and os.path.exists(path):
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
 
 
 def _extract_audio_from_video(video_bytes: bytes) -> bytes:
@@ -502,20 +564,17 @@ def _post_transcription(
     mime_type: str,
     content_type: str,
 ) -> str:
-    audio_format = _audio_format(filename, mime_type)
     resp = requests.post(
         endpoint,
         headers={
             "Authorization": f"Bearer {provider['api_key']}",
-            "Content-Type": "application/json",
         },
-        json={
+        data={
             "model": model,
-            "input_audio": {
-                "data": base64.b64encode(media_bytes).decode("ascii"),
-                "format": audio_format,
-            },
             "temperature": 0,
+        },
+        files={
+            "file": (filename, media_bytes, mime_type or "application/octet-stream"),
         },
         timeout=90,
     )

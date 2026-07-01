@@ -68,11 +68,18 @@ def build_media_context_for_chat(
         if not extracted and content_type == "Document":
             extracted = _extract_with_openai_vision(media_url)
         if extracted:
-            lines.append(f"Extracted text from attachment:\n{extracted[:3500]}")
+            lines.append(f"Attachment OCR / visual classification:\n{extracted[:3500]}")
+            lines.append(
+                "Use this classification before replying. If it is a medical report, say report received "
+                "and move to doctor/team review. If it is a skin/body photo, prescription photo, chat "
+                "screenshot, bill/payment screenshot, random/non-medical image, or unclear photo, do not "
+                "call it a report; acknowledge the actual image type and ask the next relevant question."
+            )
         else:
             lines.append(
-                "No readable text could be extracted. Acknowledge receipt and ask for a clearer "
-                "photo or typed details if clinically relevant."
+                "No readable text or reliable visual classification could be extracted. Do not call this "
+                "a report by default. Acknowledge the image/photo and ask the customer what it shows or "
+                "request a clearer photo if clinically relevant."
             )
     else:
         lines.append(f"Attachment URL: {media_url[:200]}")
@@ -321,7 +328,20 @@ def _extract_with_openai_vision(
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "Extract all readable medical/report text from this image."},
+                        {
+                            "type": "text",
+                            "text": (
+                                "Classify this WhatsApp attachment first, then extract useful text. "
+                                "Return concise plain text with these fields:\n"
+                                "Image type: one of medical report, prescription, skin/body photo, "
+                                "payment/bill screenshot, chat/app screenshot, medicine/product photo, "
+                                "non-medical/random image, unclear.\n"
+                                "Medical relevance: short reason.\n"
+                                "Readable text: key readable text only.\n"
+                                "Reply guidance: how a healthcare coordinator should acknowledge it. "
+                                "Do not assume every image is a report."
+                            ),
+                        },
                         {"type": "image_url", "image_url": {"url": image_url}},
                     ],
                 }
@@ -535,4 +555,3 @@ def build_attachment_filename(payload: Dict, media_url: str, fallback_prefix: st
     ext_map = {"image": ".jpg", "document": ".pdf", "video": ".mp4", "audio": ".mp3"}
     ext = ext_map.get(content_type, "")
     return f"{fallback_prefix}-{frappe.generate_hash(length=8)}{ext}"
-

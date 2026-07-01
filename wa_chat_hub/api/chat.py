@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import mimetypes
+from urllib.parse import quote, urlparse
 
 import frappe
+import requests
 from frappe import _
 from frappe.desk.form import assign_to
 from frappe.utils import cint, now_datetime
@@ -18,6 +21,8 @@ from wa_chat_hub.services import append_message, build_erp_actions, conversation
 from wa_chat_hub.services import normalize_phone
 
 CHAT_HUB_SCOPE_DOCTYPES = {"CRM Lead", "Lead", "Patient", "Patient Encounter"}
+MEDIA_PROXY_MAX_BYTES = 20 * 1024 * 1024
+MEDIA_PROXY_CONTENT_TYPES = {"Image", "Video", "Audio", "Document", "Sticker"}
 
 
 def _chat_hub_scope_key(user: str | None = None) -> str:
@@ -499,6 +504,7 @@ def get_messages(conversation, limit=100):
 def _attach_message_file_urls(rows: list) -> None:
     file_names = [row.get("attachment_file") for row in rows if row.get("attachment_file")]
     if not file_names:
+        _attach_message_media_proxy_urls(rows)
         return
 
     files = {
@@ -515,6 +521,73 @@ def _attach_message_file_urls(rows: list) -> None:
             continue
         row["attachment_url"] = file_doc.file_url
         row["attachment_file_name"] = file_doc.file_name
+    _attach_message_media_proxy_urls(rows)
+
+
+def _attach_message_media_proxy_urls(rows: list) -> None:
+    for row in rows:
+        if row.get("media_url") and row.get("content_type") in MEDIA_PROXY_CONTENT_TYPES:
+            row["media_proxy_url"] = (
+                "/api/method/wa_chat_hub.api.chat.get_message_media"
+                f"?message={quote(str(row.get('name') or ''))}"
+            )
+
+
+@frappe.whitelist()
+def get_message_media(message):
+    row = frappe.db.get_value(
+        "Chat Message",
+        message,
+        ["name", "conversation", "content_type", "media_url", "attachment_file"],
+        as_dict=True,
+    )
+    if not row:
+        frappe.throw(_("Message not found"))
+    ensure_can_read_conversation(row.conversation)
+
+    media_url = str(row.media_url or "").strip()
+    file_name = "wa-media"
+    if row.attachment_file:
+        file_doc = frappe.db.get_value(
+            "File",
+            row.attachment_file,
+            ["file_name", "file_url"],
+            as_dict=True,
+        )
+        if file_doc:
+            file_name = file_doc.file_name or file_name
+            if not media_url:
+                media_url = str(file_doc.file_url or "").strip()
+
+    if not media_url:
+        frappe.throw(_("Media URL not found"))
+    parsed = urlparse(media_url)
+    if parsed.scheme not in {"http", "https"}:
+        frappe.throw(_("Unsupported media URL"))
+
+    response = requests.get(media_url, timeout=25, stream=True)
+    response.raise_for_status()
+
+    content_length = cint(response.headers.get("content-length"))
+    if content_length and content_length > MEDIA_PROXY_MAX_BYTES:
+        frappe.throw(_("Media file is too large to preview"))
+
+    chunks = []
+    total = 0
+    for chunk in response.iter_content(chunk_size=64 * 1024):
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > MEDIA_PROXY_MAX_BYTES:
+            frappe.throw(_("Media file is too large to preview"))
+        chunks.append(chunk)
+
+    content_type = response.headers.get("content-type") or mimetypes.guess_type(media_url.split("?", 1)[0])[0]
+    frappe.response["type"] = "download"
+    frappe.response["filename"] = file_name
+    frappe.response["filecontent"] = b"".join(chunks)
+    frappe.response["content_type"] = content_type or "application/octet-stream"
+    frappe.response["display_content_as"] = "inline"
 
 
 @frappe.whitelist(methods=["POST"])

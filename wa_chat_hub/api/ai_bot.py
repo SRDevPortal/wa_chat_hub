@@ -500,17 +500,12 @@ def _should_auto_send(settings) -> bool:
 
 def _quick_media_only_reply(content_type: str, body: str, media_url: str) -> str:
     content_type = str(content_type or "Text").title()
-    if content_type not in ("Image", "Document") or not str(media_url or "").strip():
+    if content_type != "Document" or not str(media_url or "").strip():
         return ""
     if _meaningful_body(body, content_type) and not _generic_report_caption(body):
         return ""
-    if content_type == "Document":
-        return (
-            "Report mil gayi. Main ise review ke liye forward kar raha hoon. "
-            "Aap patient ka naam, age aur current symptoms bhi share kar dijiye."
-        )
     return (
-        "Image/report mil gayi. Main ise review ke liye forward kar raha hoon. "
+        "Report/document mil gaya. Main ise review ke liye forward kar raha hoon. "
         "Aap patient ka naam, age aur current symptoms bhi share kar dijiye."
     )
 

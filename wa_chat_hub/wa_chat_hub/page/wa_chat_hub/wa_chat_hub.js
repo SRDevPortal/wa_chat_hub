@@ -792,23 +792,25 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     function renderMessageContent(row) {
         const contentType = row.content_type || 'Text';
         const mediaUrl = safeMediaUrl(row.attachment_url || row.media_url || '');
+        const previewUrl = safeMediaUrl(row.media_proxy_url || row.attachment_url || row.media_url || '');
         const rawBody = row.body || '';
         const body = ['none', 'null', 'undefined'].includes(String(rawBody).trim().toLowerCase()) ? '' : rawBody;
         const safeUrl = escapeHtml(mediaUrl);
+        const safePreviewUrl = escapeHtml(previewUrl);
         const safeBody = escapeHtml(body);
         const transport = parseJson(row.raw_transport_payload);
 
-        if (!mediaUrl) {
+        if (!previewUrl) {
             return `<div class="wa-message-body">${safeBody}</div>`;
         }
 
         let mediaHtml = '';
         if (contentType === 'Image') {
             mediaHtml = `
-                <a class="wa-media-image-link" href="${safeUrl}" data-media-url="${safeUrl}" data-media-caption="${safeBody}" data-media-time="${escapeHtml(formatMessageTime(row.creation))}">
+                <a class="wa-media-image-link" href="${safePreviewUrl}" data-media-url="${safePreviewUrl}" data-media-caption="${safeBody}" data-media-time="${escapeHtml(formatMessageTime(row.creation))}">
                     <img
                         class="wa-media-image"
-                        src="${safeUrl}"
+                        src="${safePreviewUrl}"
                         alt="${safeBody || 'Image message'}"
                         loading="lazy"
                     />
@@ -817,12 +819,12 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
             `;
         } else if (contentType === 'Video') {
             mediaHtml = `
-                <video class="wa-media-video" src="${safeUrl}" controls preload="metadata"></video>
+                <video class="wa-media-video" src="${safePreviewUrl}" controls preload="metadata"></video>
                 <template>${mediaFallbackHtml(mediaUrl, safeBody || 'Open video')}</template>
             `;
         } else if (contentType === 'Audio') {
             mediaHtml = `
-                <audio class="wa-media-audio" src="${safeUrl}" controls preload="metadata"></audio>
+                <audio class="wa-media-audio" src="${safePreviewUrl}" controls preload="metadata"></audio>
                 <template>${mediaFallbackHtml(mediaUrl, safeBody || 'Open audio')}</template>
             `;
         } else if (contentType === 'Document') {
