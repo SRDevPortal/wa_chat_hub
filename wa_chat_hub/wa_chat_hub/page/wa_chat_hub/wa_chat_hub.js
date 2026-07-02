@@ -962,35 +962,78 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     }
 
     function updateMessageStatus(data) {
-        if (!data || data.conversation !== currentConversation || !data.message) return false;
-        const message = $(`.wa-message[data-message="${data.message}"]`);
+        if (!data || String(data.conversation || '') !== String(currentConversation || '') || !data.message) return false;
+        const message = findMessageElement(data.message);
         if (!message.length) return false;
         message.find('.wa-message-ticks').replaceWith(renderStatusTicks(data.delivery_status));
         return true;
     }
 
-    function renderMessages(rows) {
-        const html = rows.length ? rows.map(row => `
-            <div class="wa-message ${row.direction === 'Outbound' ? 'outbound' : 'inbound'}" data-message="${row.name}">
+    function findMessageElement(messageName) {
+        const normalizedName = String(messageName || '');
+        return $('#wa-message-list .wa-message').filter(function() {
+            return String($(this).attr('data-message') || '') === normalizedName;
+        });
+    }
+
+    function renderMessageRow(row) {
+        return `
+            <div class="wa-message ${row.direction === 'Outbound' ? 'outbound' : 'inbound'}" data-message="${escapeHtml(row.name)}">
                 ${renderMessageContent(row)}
                 ${renderMessageFooter(row)}
             </div>
-        `).join('') : '<div class="wa-empty">No messages.</div>';
-        $('#wa-message-list').html(html);
-        bindMediaViewerLinks();
-        $('#wa-message-list .wa-media-image').on('error', function() {
+        `;
+    }
+
+    function bindMessageMediaFallbacks(scope) {
+        const $scope = scope ? $(scope) : $('#wa-message-list');
+        $scope.find('.wa-media-image').off('error.waMediaFallback').on('error.waMediaFallback', function() {
             const link = this.closest('.wa-media-image-link');
             const fallback = link && link.nextElementSibling;
             if (link && fallback && fallback.tagName === 'TEMPLATE') {
                 link.outerHTML = fallback.innerHTML;
             }
         });
-        $('#wa-message-list .wa-media-video, #wa-message-list .wa-media-audio').on('error', function() {
+        $scope.find('.wa-media-video, .wa-media-audio').off('error.waMediaFallback').on('error.waMediaFallback', function() {
             const fallback = this.nextElementSibling;
             if (fallback && fallback.tagName === 'TEMPLATE') {
                 this.outerHTML = fallback.innerHTML;
             }
         });
+    }
+
+    function appendRealtimeMessage(row) {
+        if (!row || !row.name || !currentConversation) return false;
+        const rowConversation = String(row.conversation || currentConversation);
+        if (rowConversation !== String(currentConversation)) return false;
+
+        const $list = $('#wa-message-list');
+        if (!$list.length) return false;
+
+        const messageName = String(row.name);
+        const existing = findMessageElement(messageName);
+        const html = renderMessageRow(row);
+        if (existing.length) {
+            existing.replaceWith(html);
+        } else {
+            $list.find('.wa-empty, .wa-thread-empty-state').remove();
+            $list.append(html);
+        }
+
+        const messageList = document.getElementById('wa-message-list');
+        bindMessageMediaFallbacks(messageList);
+        bindMediaViewerLinks();
+        if (messageList) {
+            messageList.scrollTop = messageList.scrollHeight;
+        }
+        return true;
+    }
+
+    function renderMessages(rows) {
+        const html = rows.length ? rows.map(row => renderMessageRow(row)).join('') : '<div class="wa-empty">No messages.</div>';
+        $('#wa-message-list').html(html);
+        bindMediaViewerLinks();
+        bindMessageMediaFallbacks();
         const messageList = document.getElementById('wa-message-list');
         if (messageList) {
             messageList.scrollTop = messageList.scrollHeight;
@@ -1346,14 +1389,16 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         frappe.realtime.on('wa_chat_new_message', function(data) {
             if (!isWaChatHubCurrentRoute()) return;
             scheduleConversationRefresh();
-            if (isWaChatHubRouteActive() && data && data.conversation === currentConversation) {
-                refreshCurrentConversation();
+            if (isWaChatHubRouteActive() && data && String(data.conversation || '') === String(currentConversation || '')) {
+                if (!appendRealtimeMessage(data.message)) {
+                    refreshCurrentConversation();
+                }
             }
         });
 
         frappe.realtime.on('wa_chat_message_status_updated', function(data) {
             if (!isWaChatHubRouteActive()) return;
-            if (data && data.conversation === currentConversation) {
+            if (data && String(data.conversation || '') === String(currentConversation || '')) {
                 if (!updateMessageStatus(data)) {
                     refreshCurrentConversation();
                 }
