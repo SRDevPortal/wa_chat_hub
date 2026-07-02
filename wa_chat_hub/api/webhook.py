@@ -10,6 +10,16 @@ from frappe import _
 from wa_chat_hub.connector.interakt.adapter import extract_interakt_customer_phone, extract_interakt_media_url
 from wa_chat_hub.connector.registry import get_adapter
 from wa_chat_hub.interakt.account_config import account_routing_context, get_interakt_account, should_verify_webhook_signature
+from wa_chat_hub.security import (
+    assert_ai_doctype_permission,
+    safe_ai_exists,
+    safe_ai_get_all,
+    safe_ai_get_doc,
+    safe_ai_get_value,
+    safe_ai_set_value,
+    set_ai_security_context,
+    set_service_user_context,
+)
 from wa_chat_hub.services import append_message, normalize_phone
 from wa_chat_hub.task_logger import elapsed, task_log
 
@@ -28,6 +38,13 @@ INTERAKT_STATUS_TYPES = {
     "message_read",
     "message_failed",
 }
+
+
+def _assert_webhook_message_write_permissions(include_crm_lead: bool = True) -> None:
+    for doctype in ("Chat Contact", "Chat Conversation", "Chat Message"):
+        assert_ai_doctype_permission(doctype, "write")
+    if include_crm_lead and safe_ai_exists("DocType", "CRM Lead"):
+        assert_ai_doctype_permission("CRM Lead", "write")
 
 
 @frappe.whitelist(allow_guest=True)
@@ -58,18 +75,18 @@ def receive():
             # Fallback for media if body is empty
             body = f"[{msg_type} message received]"
             
-        frappe.set_user("Administrator")
+        set_service_user_context("generic_webhook")
 
         channel_account = None
         to_id = payload.get("to")
         if to_id:
-            channel_account = frappe.db.get_value("Chat Channel Account", {"phone_id": to_id}, "name")
+            channel_account = safe_ai_get_value("Chat Channel Account", {"phone_id": to_id}, "name")
             if not channel_account:
-                channel_account = frappe.db.get_value(
+                channel_account = safe_ai_get_value(
                     "Chat Channel Account", {"phone_number": to_id}, "name"
                 )
         if not channel_account:
-            channel_account = frappe.db.get_value(
+            channel_account = safe_ai_get_value(
                 "Chat Channel Account",
                 {"is_active": 1, "channel_type": "Interakt"},
                 "name",
@@ -77,6 +94,8 @@ def receive():
             )
         if not channel_account:
             return {"success": False, "message": "No active Chat Channel Account configured"}
+        set_ai_security_context(channel_account=channel_account)
+        _assert_webhook_message_write_permissions()
 
         result = append_message(
             {
@@ -152,6 +171,7 @@ def receive_interakt():
             frappe.local.response["http_status_code"] = 405
             return {"success": False, "message": "Only POST requests accepted"}
 
+        set_service_user_context("interakt_webhook_receive")
         raw_body = frappe.request.get_data(cache=True) or b"{}"
         payload = json.loads(raw_body)
         channel_account = _resolve_interakt_channel_account(payload, raw_body)
@@ -217,11 +237,12 @@ def receive_interakt():
 def process_interakt_webhook(payload: dict, raw_body: str | bytes | None = None, channel_account: str | None = None):
     """Background worker for Interakt webhooks after the HTTP endpoint has acknowledged."""
     started = time.monotonic()
-    frappe.set_user("Administrator")
+    set_service_user_context("interakt_webhook")
     if not isinstance(payload, dict):
         payload = json.loads(payload or "{}")
     if channel_account:
         payload["channel_account"] = channel_account
+    set_ai_security_context(channel_account=payload.get("channel_account") or "")
     raw_body_bytes = raw_body.encode("utf-8") if isinstance(raw_body, str) else (raw_body or b"{}")
     try:
         result = _process_interakt_payload(payload, raw_body_bytes)
@@ -244,6 +265,7 @@ def process_interakt_webhook(payload: dict, raw_body: str | bytes | None = None,
 
 def _process_interakt_payload(payload: dict, raw_body: bytes | None = None):
     channel_account = payload.get("channel_account") or _resolve_interakt_channel_account(payload, raw_body or b"{}")
+    assert_ai_doctype_permission("Chat Channel Account", "read")
     account_doc = get_interakt_account(channel_account)
     routing = account_routing_context(account_doc)
 
@@ -275,12 +297,14 @@ def _process_interakt_payload(payload: dict, raw_body: bytes | None = None):
                 "message": "Could not resolve customer phone from Interakt payload",
             }
 
-        if event.channel_message_id and frappe.db.exists("Chat Message", {"channel_message_id": event.channel_message_id}):
+        if event.channel_message_id and safe_ai_exists("Chat Message", {"channel_message_id": event.channel_message_id}):
             return {"success": True, "message": "Duplicate message ignored"}
 
         event_dict = event.__dict__
         event_dict["phone_number"] = normalized_phone
         event_dict["channel_department"] = routing.get("channel_department")
+        set_ai_security_context(channel_account=channel_account)
+        _assert_webhook_message_write_permissions()
         result = append_message(event_dict)
         task_log(
             "webhook",
@@ -295,6 +319,8 @@ def _process_interakt_payload(payload: dict, raw_body: bytes | None = None):
 
     if webhook_type in INTERAKT_STATUS_TYPES:
         event = adapter.normalize_status(payload)
+        set_ai_security_context(channel_account=channel_account)
+        assert_ai_doctype_permission("Chat Message", "write")
         result = _update_message_status(event.channel_message_id, event.delivery_status, payload)
         if not result.get("updated"):
             result = _create_interakt_outbound_from_webhook(payload, event.delivery_status)
@@ -368,7 +394,7 @@ def _resolve_interakt_channel_account(payload, raw_body: bytes):
         or frappe.form_dict.get("account")
         or payload.get("channel_account")
     )
-    accounts = frappe.get_all(
+    accounts = safe_ai_get_all(
         "Chat Channel Account",
         filters={"channel_type": "Interakt", "is_active": 1},
         pluck="name",
@@ -379,24 +405,24 @@ def _resolve_interakt_channel_account(payload, raw_body: bytes):
     if requested:
         if requested not in accounts:
             frappe.throw(_("Unknown Chat Channel Account: {0}").format(requested))
-        account = frappe.get_doc("Chat Channel Account", requested)
+        account = safe_ai_get_doc("Chat Channel Account", requested)
         _verify_interakt_signature(account, raw_body)
         return requested
 
     if len(accounts) == 1:
-        account = frappe.get_doc("Chat Channel Account", accounts[0])
+        account = safe_ai_get_doc("Chat Channel Account", accounts[0])
         _verify_interakt_signature(account, raw_body)
         return accounts[0]
 
     from_payload = _match_interakt_channel_from_payload(payload, accounts)
     if from_payload:
-        account = frappe.get_doc("Chat Channel Account", from_payload)
+        account = safe_ai_get_doc("Chat Channel Account", from_payload)
         _verify_interakt_signature(account, raw_body)
         return from_payload
 
     signature_matches = _match_interakt_channels_by_signature(accounts, raw_body)
     if len(signature_matches) == 1:
-        account = frappe.get_doc("Chat Channel Account", signature_matches[0])
+        account = safe_ai_get_doc("Chat Channel Account", signature_matches[0])
         _verify_interakt_signature(account, raw_body)
         return signature_matches[0]
     if len(signature_matches) > 1:
@@ -445,7 +471,7 @@ def _match_interakt_channel_from_payload(payload, account_names: list) -> Option
         return None
 
     normalized_candidates = {normalize_phone(value) for value in candidate_values if normalize_phone(value)}
-    rows = frappe.get_all(
+    rows = safe_ai_get_all(
         "Chat Channel Account",
         filters={"name": ["in", account_names]},
         fields=["name", "phone_number", "phone_id", "waba_id"],
@@ -511,7 +537,7 @@ def _match_interakt_channels_by_signature(account_names: list, raw_body: bytes) 
 
     matched = []
     for name in account_names:
-        account = frappe.get_doc("Chat Channel Account", name)
+        account = safe_ai_get_doc("Chat Channel Account", name)
         secret = account.get_password("interakt_webhook_secret")
         if secret and _interakt_signature_matches(secret, raw_body, received):
             matched.append(name)
@@ -555,10 +581,10 @@ def _create_interakt_outbound_from_webhook(payload, delivery_status):
     message = data.get("message") or {}
     channel_message_id = message.get("id") or payload.get("channel_message_id")
 
-    if channel_message_id and frappe.db.exists("Chat Message", {"channel_message_id": channel_message_id}):
+    if channel_message_id and safe_ai_exists("Chat Message", {"channel_message_id": channel_message_id}):
         return {
             "updated": True,
-            "message": frappe.db.get_value("Chat Message", {"channel_message_id": channel_message_id}, "name"),
+            "message": safe_ai_get_value("Chat Message", {"channel_message_id": channel_message_id}, "name"),
             "delivery_status": delivery_status,
         }
 
@@ -575,6 +601,8 @@ def _create_interakt_outbound_from_webhook(payload, delivery_status):
     content_type = message.get("message_content_type") or message.get("content_type") or message.get("type") or "Text"
     media_url = extract_interakt_media_url(message) or extract_interakt_media_url(payload)
 
+    set_ai_security_context(channel_account=payload.get("channel_account") or "")
+    _assert_webhook_message_write_permissions()
     result = append_message({
         "channel_account": payload["channel_account"],
         "phone_number": phone_number,
@@ -659,8 +687,8 @@ def _update_message_status(channel_message_id, delivery_status, payload):
         return {"updated": False, "message": "Missing Interakt message id"}
 
     message_name = (
-        frappe.db.get_value("Chat Message", {"channel_message_id": channel_message_id}, "name")
-        or frappe.db.get_value("Chat Message", {"provider_message_id": channel_message_id}, "name")
+        safe_ai_get_value("Chat Message", {"channel_message_id": channel_message_id}, "name")
+        or safe_ai_get_value("Chat Message", {"provider_message_id": channel_message_id}, "name")
     )
     if not message_name:
         return {"updated": False, "message": f"No Chat Message found for {channel_message_id}"}
@@ -668,8 +696,8 @@ def _update_message_status(channel_message_id, delivery_status, payload):
     updates = {"delivery_status": delivery_status or "Pending"}
     if frappe.get_meta("Chat Message").has_field("raw_payload"):
         updates["raw_payload"] = frappe.as_json(payload)
-    frappe.db.set_value("Chat Message", message_name, updates)
-    conversation = frappe.db.get_value("Chat Message", message_name, "conversation")
+    safe_ai_set_value("Chat Message", message_name, updates)
+    conversation = safe_ai_get_value("Chat Message", message_name, "conversation")
     frappe.publish_realtime(
         "wa_chat_message_status_updated",
         {

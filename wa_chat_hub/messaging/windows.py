@@ -13,6 +13,13 @@ from pymysql.err import InterfaceError, OperationalError
 
 from wa_chat_hub.db_retry import with_db_lock_retry
 from wa_chat_hub.messaging.attribution import extract_attribution, json_loads_payload
+from wa_chat_hub.security import (
+    assert_ai_doctype_permission,
+    safe_ai_exists,
+    safe_ai_get_all,
+    safe_ai_get_doc,
+    safe_ai_set_value,
+)
 
 CUSTOMER_SERVICE_HOURS = 24
 CTWA_ENTRY_HOURS = 72
@@ -64,9 +71,9 @@ def messaging_windows_backfill_completed() -> bool:
     """Return true when historical conversations do not need the backfill anymore."""
     if frappe.db.get_global(BACKFILL_COMPLETED_DEFAULT) == "1":
         return True
-    if not frappe.db.exists("DocType", "Chat Conversation"):
+    if not safe_ai_exists("DocType", "Chat Conversation"):
         return True
-    if not frappe.db.exists("DocType", "Chat Message"):
+    if not safe_ai_exists("DocType", "Chat Message"):
         return True
 
     meta = frappe.get_meta("Chat Conversation")
@@ -103,6 +110,8 @@ def messaging_windows_backfill_completed() -> bool:
             """
         )
 
+    assert_ai_doctype_permission("Chat Conversation", "read")
+    assert_ai_doctype_permission("Chat Message", "read")
     rows = frappe.db.sql(
         f"""
         SELECT c.name
@@ -123,7 +132,7 @@ def mark_messaging_windows_backfill_completed() -> None:
 
 
 def _messaging_window_fields_ready() -> bool:
-    if not frappe.db.exists("DocType", "Chat Conversation"):
+    if not safe_ai_exists("DocType", "Chat Conversation"):
         return False
     meta = frappe.get_meta("Chat Conversation")
     return meta.has_field("customer_service_window_expires_at")
@@ -151,6 +160,7 @@ def _set_convo_field(convo: Any, fieldname: str, value: Any) -> None:
 
 def _last_customer_inbound_at(conversation: str):
     """Latest inbound message from the customer (not agent/AI/system)."""
+    assert_ai_doctype_permission("Chat Message", "read")
     rows = frappe.db.sql(
         """
         SELECT MAX(creation) AS last_at
@@ -282,7 +292,7 @@ def update_windows_on_message(
     if not _messaging_window_fields_ready():
         return get_messaging_window_state(conversation, message_time=message_time)
 
-    convo = frappe.get_doc("Chat Conversation", conversation)
+    convo = safe_ai_get_doc("Chat Conversation", conversation)
     now = get_datetime(message_time) if message_time else now_datetime()
     direction = (direction or "Inbound").strip()
     sender_type = (sender_type or "Customer").strip()
@@ -324,7 +334,7 @@ def update_windows_on_message(
     db_updates["messaging_window_mode"] = mode
 
     if db_updates:
-        frappe.db.set_value(
+        safe_ai_set_value(
             "Chat Conversation",
             conversation,
             db_updates,
@@ -392,12 +402,12 @@ def get_messaging_window_state(
         return _fallback_window_state_from_messages(conversation, now)
 
     if convo is None:
-        convo = frappe.get_doc("Chat Conversation", conversation)
+        convo = safe_ai_get_doc("Chat Conversation", conversation)
     else:
         try:
             convo.reload()
         except Exception:
-            convo = frappe.get_doc("Chat Conversation", conversation)
+            convo = safe_ai_get_doc("Chat Conversation", conversation)
 
     # 24h window: always derived from latest customer inbound message (source of truth).
     last_at = _last_customer_inbound_at(conversation)
@@ -453,6 +463,7 @@ def repair_ctwa_false_positives() -> None:
     """Clear CTWA window rows that were set without a real ctwa_clid (bad backfill)."""
     if not _messaging_window_fields_ready():
         return
+    assert_ai_doctype_permission("Chat Conversation", "write")
     frappe.db.sql(
         """
         UPDATE `tabChat Conversation`
@@ -501,7 +512,7 @@ def _sync_persisted_window_fields(
     if needs_save:
         with_db_lock_retry(
             "conversation_window_sync",
-            lambda: frappe.db.set_value(
+            lambda: safe_ai_set_value(
                 "Chat Conversation",
                 conversation,
                 updates,
@@ -516,7 +527,7 @@ def backfill_messaging_windows_from_history(force: bool = False) -> None:
     """Set window fields from existing Chat Message rows."""
     if not force and messaging_windows_backfill_completed():
         return
-    if not frappe.db.exists("DocType", "Chat Conversation"):
+    if not safe_ai_exists("DocType", "Chat Conversation"):
         return
     meta = frappe.get_meta("Chat Conversation")
     if not meta.has_field("last_customer_message_at"):
@@ -524,7 +535,7 @@ def backfill_messaging_windows_from_history(force: bool = False) -> None:
 
     repair_ctwa_false_positives()
 
-    conversations = frappe.get_all("Chat Conversation", pluck="name")
+    conversations = safe_ai_get_all("Chat Conversation", pluck="name")
     for conversation in conversations:
         try:
             _backfill_single_conversation(conversation)
@@ -540,7 +551,7 @@ def _backfill_single_conversation(conversation: str) -> None:
     now = now_datetime()
     last_at = _last_customer_inbound_at(conversation)
     if not last_at:
-        frappe.db.set_value(
+        safe_ai_set_value(
             "Chat Conversation",
             conversation,
             {
@@ -562,7 +573,7 @@ def _backfill_single_conversation(conversation: str) -> None:
         "ctwa_window_expires_at": None,
     }
 
-    inbound_rows = frappe.get_all(
+    inbound_rows = safe_ai_get_all(
         "Chat Message",
         filters={"conversation": conversation, "direction": "Inbound"},
         fields=["raw_payload", "creation"],
@@ -597,7 +608,7 @@ def _backfill_single_conversation(conversation: str) -> None:
         ctwa_active = False
 
     updates["messaging_window_mode"] = "free_form" if (cs_active or ctwa_active) else "template_only"
-    frappe.db.set_value("Chat Conversation", conversation, updates, update_modified=False)
+    safe_ai_set_value("Chat Conversation", conversation, updates, update_modified=False)
 
 
 def _compute_mode(convo, now) -> str:

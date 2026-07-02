@@ -9,6 +9,8 @@ import frappe
 import requests
 from frappe import _
 
+from wa_chat_hub.security import safe_ai_get_doc, safe_ai_get_value
+
 ORG_ID_PATTERN = re.compile(
     r"/organizations/([0-9a-fA-F-]{36})/message-templates",
     re.IGNORECASE,
@@ -39,7 +41,7 @@ API_LIST_UNAVAILABLE_MSG = _(
 
 
 def fetch_approved_templates(channel_account: str, force_refresh: bool = False) -> List[Dict[str, Any]]:
-    account = frappe.get_doc("Chat Channel Account", channel_account)
+    account = safe_ai_get_doc("Chat Channel Account", channel_account)
     if account.channel_type != "Interakt":
         frappe.throw(_("Templates are only available for Interakt channel accounts"))
 
@@ -596,7 +598,7 @@ def _count_variables(
 
 
 def resolve_channel_account_from_conversation(conversation: str) -> str:
-    channel_account = frappe.db.get_value("Chat Conversation", conversation, "channel_account")
+    channel_account = safe_ai_get_value("Chat Conversation", conversation, "channel_account")
     if not channel_account:
         frappe.throw(_("Conversation has no channel account"))
     return channel_account

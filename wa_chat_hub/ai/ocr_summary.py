@@ -20,6 +20,13 @@ from wa_chat_hub.ai.providers import (
     looks_like_vision_model,
 )
 from wa_chat_hub.prompts import get_conversation_crm_lead
+from wa_chat_hub.security import (
+    WAChatHubSecurityError,
+    assert_ai_doctype_permission,
+    safe_ai_get_doc,
+    safe_ai_get_value,
+    safe_ai_save,
+)
 
 # Max length for sr_lead_notes (Small Text); keep headroom for separators.
 SR_LEAD_NOTES_MAX_LEN = 6000
@@ -99,14 +106,14 @@ def process_attachment_for_lead_summary(
     message_name: str,
     payload: Dict,
 ) -> None:
-    convo = frappe.get_doc("Chat Conversation", conversation)
+    convo = safe_ai_get_doc("Chat Conversation", conversation)
     crm_lead = get_conversation_crm_lead(convo)
     if not crm_lead:
         return
 
     media_url = payload.get("media_url")
     if not media_url:
-        media_url = frappe.db.get_value("Chat Message", message_name, "media_url")
+        media_url = safe_ai_get_value("Chat Message", message_name, "media_url")
     if not media_url:
         return
 
@@ -187,6 +194,7 @@ def _normalize_summary_sections(summary: str) -> str:
 
 
 def _resolve_notes_fieldname(doctype: str) -> Optional[str]:
+    assert_ai_doctype_permission(doctype, "read")
     meta = frappe.get_meta(doctype)
     if meta.has_field("sr_lead_notes"):
         return "sr_lead_notes"
@@ -196,16 +204,20 @@ def _resolve_notes_fieldname(doctype: str) -> Optional[str]:
 
 
 def _append_to_lead_notes(doctype: str, name: str, note_block: str) -> None:
-    lead_doc = frappe.get_doc(doctype, name)
-    notes_field = _resolve_notes_fieldname(doctype)
-    if notes_field:
-        existing = str(getattr(lead_doc, notes_field, "") or "").strip()
-        merged = f"{existing}\n\n{note_block}".strip() if existing else note_block
-        if len(merged) > SR_LEAD_NOTES_MAX_LEN:
-            merged = _trim_notes_to_limit(existing, note_block, SR_LEAD_NOTES_MAX_LEN)
-        setattr(lead_doc, notes_field, merged)
-        lead_doc.save(ignore_permissions=True)
-    lead_doc.add_comment("Comment", note_block)
+    try:
+        lead_doc = safe_ai_get_doc(doctype, name)
+        notes_field = _resolve_notes_fieldname(doctype)
+        if notes_field:
+            existing = str(getattr(lead_doc, notes_field, "") or "").strip()
+            merged = f"{existing}\n\n{note_block}".strip() if existing else note_block
+            if len(merged) > SR_LEAD_NOTES_MAX_LEN:
+                merged = _trim_notes_to_limit(existing, note_block, SR_LEAD_NOTES_MAX_LEN)
+            setattr(lead_doc, notes_field, merged)
+            safe_ai_save(lead_doc)
+        assert_ai_doctype_permission("Comment", "write")
+        lead_doc.add_comment("Comment", note_block)
+    except WAChatHubSecurityError:
+        return
 
 
 def _trim_notes_to_limit(existing: str, new_block: str, max_len: int) -> str:

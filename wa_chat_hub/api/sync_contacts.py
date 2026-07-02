@@ -1,32 +1,23 @@
 import frappe
 import re
 
+from wa_chat_hub.security import (
+    safe_ai_exists,
+    safe_ai_get_all,
+    safe_ai_insert,
+    set_service_user_context,
+)
+
+
 def add_schema():
-    frappe.set_user("Administrator")
-    doc = frappe.get_doc("DocType", "Chat Contact")
-    # Quick schema append logic natively
-    fields = [f.fieldname for f in doc.fields]
-    changed = False
-    
-    if "source_doctype" not in fields:
-        doc.append("fields", {
-            "fieldname": "source_doctype",
-            "fieldtype": "Data",
-            "label": "Source DocType"
-        })
-        changed = True
-        
-    if "source_name" not in fields:
-        doc.append("fields", {
-            "fieldname": "source_name",
-            "fieldtype": "Data",
-            "label": "Source Name"
-        })
-        changed = True
-        
-    if changed:
-        doc.save(ignore_permissions=True)
-        frappe.db.commit()
+    # Schema changes must be handled by patches, not by the WhatsApp service user.
+    meta = frappe.get_meta("Chat Contact")
+    missing = [field for field in ("source_doctype", "source_name") if not meta.has_field(field)]
+    if missing:
+        frappe.log_error(
+            f"Chat Contact source fields missing: {', '.join(missing)}",
+            "WA Contact Sync Schema Missing",
+        )
 
 def sanitize_phone(phone):
     if not phone: return None
@@ -37,19 +28,19 @@ def sanitize_phone(phone):
 
 @frappe.whitelist()
 def sync_all():
+    set_service_user_context("contact_sync")
     add_schema()
     
     synced = 0
-    frappe.set_user("Administrator")
     
     # 1. Customers
-    if frappe.db.exists("DocType", "Customer"):
+    if safe_ai_exists("DocType", "Customer"):
         meta = frappe.get_meta("Customer")
         cust_fields = ["name", "customer_name"]
         if meta.has_field("mobile_no"): cust_fields.append("mobile_no")
         if meta.has_field("custom_whatsapp_number"): cust_fields.append("custom_whatsapp_number")
         
-        cs = frappe.get_all("Customer", fields=cust_fields)
+        cs = safe_ai_get_all("Customer", fields=cust_fields)
         for c in cs:
             p = sanitize_phone(c.get("custom_whatsapp_number") or c.get("mobile_no"))
             if p:
@@ -57,7 +48,7 @@ def sync_all():
 
     # 2. Leads (try CRM Lead and Lead)
     for dt in ["Lead", "CRM Lead"]:
-        if frappe.db.exists("DocType", dt):
+        if safe_ai_exists("DocType", dt):
             lead_fields = ["name"]
             meta = frappe.get_meta(dt)
             if meta.has_field("mobile_no"): lead_fields.append("mobile_no")
@@ -65,7 +56,7 @@ def sync_all():
             if meta.has_field("lead_name"): lead_fields.append("lead_name")
             if meta.has_field("first_name"): lead_fields.append("first_name")
             
-            ls = frappe.get_all(dt, fields=lead_fields)
+            ls = safe_ai_get_all(dt, fields=lead_fields)
             for l in ls:
                 raw_phone = l.get("mobile_no") or l.get("phone")
                 p = sanitize_phone(raw_phone)
@@ -77,7 +68,7 @@ def sync_all():
 
 def upsert_contact(phone, name, source_dt, source_nm):
     try:
-        if frappe.db.exists("Chat Contact", phone):
+        if safe_ai_exists("Chat Contact", phone):
             # Already exists (because autoname is phone_number format)
             return 0
             
@@ -87,7 +78,7 @@ def upsert_contact(phone, name, source_dt, source_nm):
         if hasattr(contact, "source_doctype"):
             contact.source_doctype = source_dt
             contact.source_name = source_nm
-        contact.insert(ignore_permissions=True)
+        safe_ai_insert(contact)
         frappe.db.commit()
         return 1
     except Exception as e:

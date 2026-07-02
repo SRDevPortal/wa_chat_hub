@@ -7,6 +7,14 @@ from typing import Iterable
 import frappe
 
 from wa_chat_hub.prompts import get_conversation_crm_lead
+from wa_chat_hub.security import (
+    assert_ai_doctype_permission,
+    safe_ai_exists,
+    safe_ai_get_all,
+    safe_ai_get_doc,
+    safe_ai_get_value,
+    safe_ai_set_value,
+)
 
 
 FINAL_WARNING_MESSAGE = (
@@ -29,7 +37,7 @@ class StopDecision:
 
 def evaluate_stop_rule(conversation: str, message_id: str) -> StopDecision:
     """Return autopilot action for repeated irrelevant/time-wasting conversations."""
-    latest = frappe.db.get_value(
+    latest = safe_ai_get_value(
         "Chat Message",
         message_id,
         ["body", "content_type", "media_url"],
@@ -61,6 +69,7 @@ def evaluate_stop_rule(conversation: str, message_id: str) -> StopDecision:
 
 
 def mark_conversation_stopped(conversation: str) -> None:
+    assert_ai_doctype_permission("Chat Conversation", "read")
     meta = frappe.get_meta("Chat Conversation")
     updates = {}
     if meta.has_field("conversation_stopped"):
@@ -70,15 +79,16 @@ def mark_conversation_stopped(conversation: str) -> None:
     if meta.has_field("lead_temperature"):
         updates["lead_temperature"] = "Cold"
     if updates:
-        frappe.db.set_value("Chat Conversation", conversation, updates, update_modified=False)
+        safe_ai_set_value("Chat Conversation", conversation, updates, update_modified=False)
 
     _sync_stopped_score_to_linked_lead(conversation)
 
 
 def clear_conversation_stopped(conversation: str) -> None:
+    assert_ai_doctype_permission("Chat Conversation", "read")
     meta = frappe.get_meta("Chat Conversation")
     if meta.has_field("conversation_stopped"):
-        frappe.db.set_value(
+        safe_ai_set_value(
             "Chat Conversation",
             conversation,
             {"conversation_stopped": 0},
@@ -119,9 +129,10 @@ def is_protected_customer_intent(
 
 
 def _conversation_stopped(conversation: str) -> bool:
+    assert_ai_doctype_permission("Chat Conversation", "read")
     if not frappe.get_meta("Chat Conversation").has_field("conversation_stopped"):
         return False
-    return bool(frappe.db.get_value("Chat Conversation", conversation, "conversation_stopped"))
+    return bool(safe_ai_get_value("Chat Conversation", conversation, "conversation_stopped"))
 
 
 def _irrelevant_inbound_count_since_last_protected_intent(conversation: str) -> int:
@@ -149,7 +160,7 @@ def _has_final_warning_after_last_protected_intent(conversation: str) -> bool:
 
 
 def _load_recent_rows(conversation: str) -> Iterable:
-    return frappe.get_all(
+    return safe_ai_get_all(
         "Chat Message",
         filters={"conversation": conversation},
         fields=["direction", "sender_type", "body", "content_type", "media_url", "creation"],
@@ -170,10 +181,11 @@ def _looks_like_final_warning(body: str | None) -> bool:
 
 def _sync_stopped_score_to_linked_lead(conversation: str) -> None:
     try:
-        convo = frappe.get_doc("Chat Conversation", conversation)
+        convo = safe_ai_get_doc("Chat Conversation", conversation)
         lead_name = get_conversation_crm_lead(convo)
-        if not lead_name or not frappe.db.exists("CRM Lead", lead_name):
+        if not lead_name or not safe_ai_exists("CRM Lead", lead_name):
             return
+        assert_ai_doctype_permission("CRM Lead", "read")
         meta = frappe.get_meta("CRM Lead")
         updates = {}
         if meta.has_field("lead_score"):
@@ -181,7 +193,7 @@ def _sync_stopped_score_to_linked_lead(conversation: str) -> None:
         if meta.has_field("lead_temperature"):
             updates["lead_temperature"] = "Cold"
         if updates:
-            frappe.db.set_value("CRM Lead", lead_name, updates, update_modified=False)
+            safe_ai_set_value("CRM Lead", lead_name, updates, update_modified=False)
     except Exception:
         frappe.log_error(frappe.get_traceback(), "WA Conversation Stop Lead Sync Failed")
 

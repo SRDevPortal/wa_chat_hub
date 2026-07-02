@@ -15,6 +15,13 @@ from wa_chat_hub.channel_resolver import (
 )
 from wa_chat_hub.interakt.contacts_api import extract_interakt_user_id, track_user
 from wa_chat_hub.messaging.channel_map import get_pipeline_map
+from wa_chat_hub.security import (
+    safe_ai_exists,
+    safe_ai_get_all,
+    safe_ai_get_doc,
+    safe_ai_get_value,
+    safe_ai_set_value,
+)
 from wa_chat_hub.services import get_or_create_contact, normalize_phone
 
 
@@ -26,14 +33,14 @@ def push_contact_to_interakt(
     pipeline_map_row: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Upsert one Chat Contact on Interakt for the given channel account."""
-    if not contact_name or not frappe.db.exists("Chat Contact", contact_name):
+    if not contact_name or not safe_ai_exists("Chat Contact", contact_name):
         frappe.throw(_("Chat Contact {0} not found.").format(contact_name))
 
-    contact_doc = frappe.get_doc("Chat Contact", contact_name)
+    contact_doc = safe_ai_get_doc("Chat Contact", contact_name)
     if not contact_doc.phone_number:
         frappe.throw(_("Chat Contact {0} has no phone number.").format(contact_name))
 
-    account = frappe.get_doc("Chat Channel Account", channel_account)
+    account = safe_ai_get_doc("Chat Channel Account", channel_account)
     if pipeline_map_row is None:
         pipeline_map_row = get_pipeline_map(channel_account=channel_account)
 
@@ -78,14 +85,14 @@ def push_contact_to_interakt(
     try:
         result = track_user(channel_account, payload)
     except Exception as exc:
-        frappe.db.set_value(
+        safe_ai_set_value(
             "Chat Contact Channel Profile",
             profile,
             {"interakt_synced": 0, "last_sync_error": str(exc)[:500]},
         )
         raise
 
-    frappe.db.set_value(
+    safe_ai_set_value(
         "Chat Contact Channel Profile",
         profile,
         {
@@ -127,13 +134,13 @@ def push_reference_to_interakt(reference_doc, channel_account: Optional[str] = N
         phone_number=normalized,
         display_name=_display_name_from_reference(reference_doc),
     )
-    frappe.db.set_value(
+    safe_ai_set_value(
         "Chat Contact",
         contact_name,
         {"source_doctype": doctype, "source_name": reference_doc.name},
     )
     if doctype == "Patient" and frappe.get_meta("Chat Contact").has_field("linked_patient"):
-        frappe.db.set_value("Chat Contact", contact_name, "linked_patient", reference_doc.name)
+        safe_ai_set_value("Chat Contact", contact_name, "linked_patient", reference_doc.name)
 
     return push_contact_to_interakt(
         channel_account,
@@ -145,7 +152,7 @@ def push_reference_to_interakt(reference_doc, channel_account: Optional[str] = N
 
 def push_pipeline_map_contacts(pipeline_map_name: str) -> Dict[str, Any]:
     """Bulk push Patients, CRM Leads, and chat contacts for one pipeline map row."""
-    row = frappe.get_doc("WA Channel Pipeline Map", pipeline_map_name)
+    row = safe_ai_get_doc("WA Channel Pipeline Map", pipeline_map_name)
     if not row.is_active:
         frappe.throw(_("Pipeline map {0} is not active.").format(pipeline_map_name))
 
@@ -157,13 +164,13 @@ def push_pipeline_map_contacts(pipeline_map_name: str) -> Dict[str, Any]:
         _push_one(
             stats,
             lambda pn=patient_name: push_reference_to_interakt(
-                frappe.get_doc("Patient", pn), channel_account
+                safe_ai_get_doc("Patient", pn), channel_account
             ),
         )
 
-    if frappe.db.exists("DocType", "CRM Lead"):
+    if safe_ai_exists("DocType", "CRM Lead"):
         for lead_name in _crm_lead_names_for_map(row):
-            _push_one(stats, lambda ln=lead_name: push_reference_to_interakt(frappe.get_doc("CRM Lead", ln), channel_account))
+            _push_one(stats, lambda ln=lead_name: push_reference_to_interakt(safe_ai_get_doc("CRM Lead", ln), channel_account))
 
     for contact_name in _chat_contact_names_for_channel(channel_account):
         _push_one(
@@ -184,10 +191,10 @@ def push_pipeline_map_contacts(pipeline_map_name: str) -> Dict[str, Any]:
 
 def enqueue_push_for_conversation(conversation: str) -> None:
     """Background push after inbound message links a contact."""
-    if not conversation or not frappe.db.exists("Chat Conversation", conversation):
+    if not conversation or not safe_ai_exists("Chat Conversation", conversation):
         return
-    channel_account = frappe.db.get_value("Chat Conversation", conversation, "channel_account")
-    if not channel_account or not frappe.db.exists("WA Channel Pipeline Map", {"chat_channel_account": channel_account, "is_active": 1}):
+    channel_account = safe_ai_get_value("Chat Conversation", conversation, "channel_account")
+    if not channel_account or not safe_ai_exists("WA Channel Pipeline Map", {"chat_channel_account": channel_account, "is_active": 1}):
         return
 
     frappe.enqueue(
@@ -200,10 +207,10 @@ def enqueue_push_for_conversation(conversation: str) -> None:
 
 
 def push_conversation_contact(conversation: str) -> Optional[Dict[str, Any]]:
-    if not conversation or not frappe.db.exists("Chat Conversation", conversation):
+    if not conversation or not safe_ai_exists("Chat Conversation", conversation):
         return None
 
-    convo = frappe.get_doc("Chat Conversation", conversation)
+    convo = safe_ai_get_doc("Chat Conversation", conversation)
     if not convo.channel_account or not convo.contact:
         return None
 
@@ -212,11 +219,11 @@ def push_conversation_contact(conversation: str) -> Optional[Dict[str, Any]]:
     except Exception:
         return None
 
-    contact_doc = frappe.get_doc("Chat Contact", convo.contact)
+    contact_doc = safe_ai_get_doc("Chat Contact", convo.contact)
     reference_doc = resolve_reference_for_contact(contact_doc)
     if not reference_doc and convo.linked_reference_doctype in ("Patient", "CRM Lead") and convo.linked_reference_name:
-        if frappe.db.exists(convo.linked_reference_doctype, convo.linked_reference_name):
-            reference_doc = frappe.get_doc(convo.linked_reference_doctype, convo.linked_reference_name)
+        if safe_ai_exists(convo.linked_reference_doctype, convo.linked_reference_name):
+            reference_doc = safe_ai_get_doc(convo.linked_reference_doctype, convo.linked_reference_name)
 
     return push_contact_to_interakt(
         convo.channel_account,
@@ -227,18 +234,18 @@ def push_conversation_contact(conversation: str) -> Optional[Dict[str, Any]]:
 
 
 def resolve_reference_for_contact(contact_doc) -> Any:
-    if getattr(contact_doc, "linked_patient", None) and frappe.db.exists("Patient", contact_doc.linked_patient):
-        return frappe.get_doc("Patient", contact_doc.linked_patient)
+    if getattr(contact_doc, "linked_patient", None) and safe_ai_exists("Patient", contact_doc.linked_patient):
+        return safe_ai_get_doc("Patient", contact_doc.linked_patient)
 
     source_dt = contact_doc.source_doctype
     source_name = contact_doc.source_name
-    if source_dt in ("Patient", "CRM Lead") and source_name and frappe.db.exists(source_dt, source_name):
-        return frappe.get_doc(source_dt, source_name)
+    if source_dt in ("Patient", "CRM Lead") and source_name and safe_ai_exists(source_dt, source_name):
+        return safe_ai_get_doc(source_dt, source_name)
 
-    if getattr(contact_doc, "linked_lead", None) and frappe.db.exists("CRM Lead", contact_doc.linked_lead):
-        return frappe.get_doc("CRM Lead", contact_doc.linked_lead)
-    if getattr(contact_doc, "linked_lead", None) and frappe.db.exists("Lead", contact_doc.linked_lead):
-        return frappe.get_doc("Lead", contact_doc.linked_lead)
+    if getattr(contact_doc, "linked_lead", None) and safe_ai_exists("CRM Lead", contact_doc.linked_lead):
+        return safe_ai_get_doc("CRM Lead", contact_doc.linked_lead)
+    if getattr(contact_doc, "linked_lead", None) and safe_ai_exists("Lead", contact_doc.linked_lead):
+        return safe_ai_get_doc("Lead", contact_doc.linked_lead)
 
     return None
 
@@ -264,14 +271,14 @@ def _build_interakt_tags(pipeline_map_row: Dict[str, Any]) -> List[str]:
 
 
 def _patient_names_for_map(row) -> List[str]:
-    if not row.sr_medical_department or not frappe.db.exists("DocType", "Patient"):
+    if not row.sr_medical_department or not safe_ai_exists("DocType", "Patient"):
         return []
     if not frappe.get_meta("Patient").has_field("sr_medical_department"):
         return []
     filters = {"sr_medical_department": row.sr_medical_department}
     if frappe.get_meta("Patient").has_field("mobile"):
         filters["mobile"] = ["is", "set"]
-    return frappe.get_all("Patient", filters=filters, pluck="name", limit_page_length=0)
+    return safe_ai_get_all("Patient", filters=filters, pluck="name", limit_page_length=0)
 
 
 def _crm_lead_names_for_map(row) -> List[str]:
@@ -289,11 +296,11 @@ def _crm_lead_names_for_map(row) -> List[str]:
         if meta.has_field(field):
             filters[field] = ["is", "set"]
             break
-    return frappe.get_all("CRM Lead", filters=filters, pluck="name", limit_page_length=0)
+    return safe_ai_get_all("CRM Lead", filters=filters, pluck="name", limit_page_length=0)
 
 
 def _chat_contact_names_for_channel(channel_account: str) -> List[str]:
-    conversations = frappe.get_all(
+    conversations = safe_ai_get_all(
         "Chat Conversation",
         filters={"channel_account": channel_account},
         pluck="contact",

@@ -10,6 +10,7 @@ from frappe import _
 
 from wa_chat_hub.connector.registry import get_adapter
 from wa_chat_hub.messaging.windows import evaluate_send_permission
+from wa_chat_hub.security import safe_ai_get_doc
 from wa_chat_hub.task_logger import elapsed, task_log
 
 
@@ -20,9 +21,9 @@ def build_outbound_message_payload(
     media_url: str | None = None,
     file_name: str | None = None,
 ) -> Dict[str, Any]:
-    convo = frappe.get_doc("Chat Conversation", conversation)
-    contact = frappe.get_doc("Chat Contact", convo.contact)
-    account = frappe.get_doc("Chat Channel Account", convo.channel_account)
+    convo = safe_ai_get_doc("Chat Conversation", conversation)
+    contact = safe_ai_get_doc("Chat Contact", convo.contact)
+    account = safe_ai_get_doc("Chat Channel Account", convo.channel_account)
     adapter = get_adapter(account.channel_type)
 
     if not (contact.phone_number or "").strip():
@@ -67,8 +68,8 @@ def send_outbound_message(
     )
     evaluate_send_permission(conversation, content_type).ensure_allowed(content_type)
     outbound = build_outbound_message_payload(conversation, body, content_type, media_url, file_name=file_name)
-    convo = frappe.get_doc("Chat Conversation", conversation)
-    account = frappe.get_doc("Chat Channel Account", convo.channel_account)
+    convo = safe_ai_get_doc("Chat Conversation", conversation)
+    account = safe_ai_get_doc("Chat Channel Account", convo.channel_account)
 
     try:
         if account.channel_type == "Interakt":
@@ -160,9 +161,9 @@ def send_provider_message(account, outbound: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def build_interakt_template_payload(conversation: str, template: Dict[str, Any]) -> Dict[str, Any]:
-    convo = frappe.get_doc("Chat Conversation", conversation)
-    contact = frappe.get_doc("Chat Contact", convo.contact)
-    account = frappe.get_doc("Chat Channel Account", convo.channel_account)
+    convo = safe_ai_get_doc("Chat Conversation", conversation)
+    contact = safe_ai_get_doc("Chat Contact", convo.contact)
+    account = safe_ai_get_doc("Chat Channel Account", convo.channel_account)
     adapter = get_adapter(account.channel_type)
 
     message = {
@@ -193,7 +194,7 @@ def build_interakt_template_payload(conversation: str, template: Dict[str, Any])
 
 def send_interakt_template_message(conversation: str, template: Dict[str, Any]) -> Dict[str, Any]:
     outbound = build_interakt_template_payload(conversation, template)
-    account = frappe.get_doc("Chat Channel Account", outbound["channel_account"])
+    account = safe_ai_get_doc("Chat Channel Account", outbound["channel_account"])
     return send_interakt_message(account, outbound)
 
 

@@ -7,6 +7,13 @@ from frappe import _
 
 from wa_chat_hub.messaging.channel_map import get_pipeline_map
 from wa_chat_hub.prompts import set_conversation_crm_lead
+from wa_chat_hub.security import (
+    safe_ai_get_doc,
+    safe_ai_get_value,
+    safe_ai_insert,
+    safe_ai_save,
+    safe_ai_set_value,
+)
 from wa_chat_hub.services import DEFAULT_CONVERSATION_STATUS, get_or_create_contact, normalize_phone
 
 
@@ -38,7 +45,7 @@ def get_or_create_lead_contact(lead) -> str:
         "source_doctype": "CRM Lead",
         "source_name": lead.name,
     }
-    frappe.db.set_value("Chat Contact", contact_name, updates)
+    safe_ai_set_value("Chat Contact", contact_name, updates)
     return contact_name
 
 
@@ -128,7 +135,7 @@ def get_or_create_patient_contact(patient) -> str:
         phone_number=normalized_phone,
         display_name=_get_patient_display_name(patient),
     )
-    frappe.db.set_value(
+    safe_ai_set_value(
         "Chat Contact",
         contact_name,
         {
@@ -168,14 +175,14 @@ def get_or_create_mapped_patient_conversation(patient) -> dict[str, Any]:
 
 
 def get_or_create_contact_channel_profile(contact: str, channel_account: str, pipeline: str | None = None) -> str:
-    existing = frappe.db.get_value(
+    existing = safe_ai_get_value(
         "Chat Contact Channel Profile",
         {"contact": contact, "channel_account": channel_account},
         "name",
     )
     if existing:
         if pipeline:
-            frappe.db.set_value("Chat Contact Channel Profile", existing, "pipeline", pipeline)
+            safe_ai_set_value("Chat Contact Channel Profile", existing, "pipeline", pipeline)
         return existing
 
     doc = frappe.get_doc(
@@ -186,7 +193,7 @@ def get_or_create_contact_channel_profile(contact: str, channel_account: str, pi
             "pipeline": pipeline,
         }
     )
-    doc.insert(ignore_permissions=True)
+    safe_ai_insert(doc)
     return doc.name
 
 
@@ -204,7 +211,7 @@ def _get_or_create_reference_conversation(
 
     if conversation:
         updates = {}
-        existing = frappe.db.get_value(
+        existing = safe_ai_get_value(
             "Chat Conversation",
             conversation,
             ["linked_reference_doctype", "linked_reference_name"],
@@ -215,7 +222,7 @@ def _get_or_create_reference_conversation(
         if not existing.linked_reference_name:
             updates["linked_reference_name"] = reference_name
         if updates:
-            frappe.db.set_value("Chat Conversation", conversation, updates)
+            safe_ai_set_value("Chat Conversation", conversation, updates)
         return conversation, False
 
     doc = frappe.get_doc(
@@ -229,20 +236,20 @@ def _get_or_create_reference_conversation(
             "linked_reference_name": reference_name,
         }
     )
-    doc.insert(ignore_permissions=True)
+    safe_ai_insert(doc)
     return doc.name, True
 
 
 def _conversation_department_for_account(channel_account: str) -> str | None:
-    return frappe.db.get_value("Chat Channel Account", channel_account, "department")
+    return safe_ai_get_value("Chat Channel Account", channel_account, "department")
 
 
 def _link_crm_lead_on_conversation(conversation: str, lead_name: str) -> None:
     if not frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
         return
-    convo = frappe.get_doc("Chat Conversation", conversation)
+    convo = safe_ai_get_doc("Chat Conversation", conversation)
     set_conversation_crm_lead(convo, lead_name)
-    convo.save(ignore_permissions=True)
+    safe_ai_save(convo)
 
 
 def _find_conversation_for_contact_on_channel(contact: str, channel_account: str, open_only: bool) -> str | None:
@@ -253,7 +260,7 @@ def _find_conversation_for_contact_on_channel(contact: str, channel_account: str
     if open_only:
         filters["status"] = ["!=", "Closed"]
 
-    return frappe.db.get_value(
+    return safe_ai_get_value(
         "Chat Conversation",
         filters,
         "name",
@@ -332,5 +339,4 @@ def _build_interakt_traits(contact_doc, reference_doc) -> dict[str, Any]:
                 traits[fieldname] = reference_doc.get(fieldname)
 
     return {key: value for key, value in traits.items() if value not in (None, "")}
-
 

@@ -7,6 +7,8 @@ from typing import Any, Dict, Optional
 import frappe
 from frappe import _
 
+from wa_chat_hub.security import safe_ai_exists, safe_ai_get_all, safe_ai_get_doc
+
 
 PIPELINE_MAP_FIELDS = [
     "name",
@@ -25,7 +27,7 @@ def get_pipeline_map(
     channel_account: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Return a single active WA Channel Pipeline Map row."""
-    if not frappe.db.exists("DocType", "WA Channel Pipeline Map"):
+    if not safe_ai_exists("DocType", "WA Channel Pipeline Map"):
         frappe.throw(_("WA Channel Pipeline Map is not installed."))
 
     filters: Dict[str, Any] = {"is_active": 1}
@@ -36,7 +38,7 @@ def get_pipeline_map(
     if medical_department:
         filters["sr_medical_department"] = medical_department
 
-    rows = frappe.get_all(
+    rows = safe_ai_get_all(
         "WA Channel Pipeline Map",
         filters=filters,
         fields=_pipeline_map_fields(),
@@ -69,9 +71,9 @@ def get_channel_account_for_patient(patient) -> str:
 
 def get_pipeline_map_row_for_channel_account(channel_account: Optional[str]) -> Optional[Dict[str, Any]]:
     """One active WA Channel Pipeline Map row per Interakt Chat Channel Account."""
-    if not channel_account or not frappe.db.exists("DocType", "WA Channel Pipeline Map"):
+    if not channel_account or not safe_ai_exists("DocType", "WA Channel Pipeline Map"):
         return None
-    rows = frappe.get_all(
+    rows = safe_ai_get_all(
         "WA Channel Pipeline Map",
         filters={"chat_channel_account": channel_account, "is_active": 1},
         fields=_pipeline_map_fields(),
@@ -125,7 +127,7 @@ def require_sr_lead_pipeline_for_channel_account(channel_account: str) -> str:
 
 
 def _validate_channel_account(channel_account: str) -> None:
-    account = frappe.get_cached_doc("Chat Channel Account", channel_account)
+    account = safe_ai_get_doc("Chat Channel Account", channel_account)
     if not account.is_active:
         frappe.throw(_("Mapped WhatsApp channel {0} is not active.").format(channel_account))
     if account.channel_type != "Interakt":

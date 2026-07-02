@@ -8,6 +8,14 @@ import frappe
 
 from wa_chat_hub.messaging.attribution import extract_attribution
 from wa_chat_hub.prompts import get_conversation_crm_lead
+from wa_chat_hub.security import (
+    assert_ai_doctype_permission,
+    safe_ai_exists,
+    safe_ai_get_all,
+    safe_ai_get_doc,
+    safe_ai_get_value,
+    safe_ai_set_value,
+)
 
 CONVERSATION_TO_LEAD = {
     "source_id": "sr_w_source_id",
@@ -27,8 +35,9 @@ def sync_crm_lead_meta_from_conversation(
     Only fills empty lead fields unless force=True.
     """
     if isinstance(conversation, str):
-        convo = frappe.get_doc("Chat Conversation", conversation)
+        convo = safe_ai_get_doc("Chat Conversation", conversation)
     else:
+        assert_ai_doctype_permission("Chat Conversation", "read")
         convo = conversation
 
     lead_name = get_conversation_crm_lead(convo)
@@ -43,7 +52,7 @@ def sync_crm_lead_meta_from_conversation(
     if not any(attribution.values()):
         return {"updated": False, "reason": "no_attribution_data", "lead": lead_name}
 
-    existing = frappe.db.get_value(
+    existing = safe_ai_get_value(
         "CRM Lead",
         lead_name,
         list(CONVERSATION_TO_LEAD.values()),
@@ -61,7 +70,7 @@ def sync_crm_lead_meta_from_conversation(
     if not updates:
         return {"updated": False, "reason": "lead_already_has_meta", "lead": lead_name}
 
-    frappe.db.set_value("CRM Lead", lead_name, updates, update_modified=True)
+    safe_ai_set_value("CRM Lead", lead_name, updates, update_modified=True)
     return {"updated": True, "lead": lead_name, "fields": updates}
 
 
@@ -91,7 +100,7 @@ def _coerce_payload_dict(raw_payload: Any) -> Dict[str, Any]:
 
 def backfill_all_linked_leads() -> Dict[str, int]:
     """bench execute helper: copy conversation attribution to CRM Leads."""
-    if not frappe.db.exists("DocType", "Chat Conversation"):
+    if not safe_ai_exists("DocType", "Chat Conversation"):
         return {"updated": 0, "skipped": 0}
 
     meta = frappe.get_meta("Chat Conversation")
@@ -107,7 +116,7 @@ def backfill_all_linked_leads() -> Dict[str, int]:
 
     updated = 0
     skipped = 0
-    for row in frappe.get_all("Chat Conversation", filters=filters, fields=fields, limit_page_length=0):
+    for row in safe_ai_get_all("Chat Conversation", filters=filters, fields=fields, limit_page_length=0):
         result = sync_crm_lead_meta_from_conversation(row.name, force=False)
         if result.get("updated"):
             updated += 1

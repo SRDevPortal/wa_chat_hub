@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Dict, List
 
 from wa_chat_hub.settings import get_active_knowledge_base
+from wa_chat_hub.security import safe_ai_get_all, safe_ai_insert
 
 import frappe
 
@@ -13,7 +14,7 @@ Prefer summarization, intent extraction, routing, structured drafting, and safe 
 
 
 def build_conversation_context(conversation: str, limit: int = 30) -> List[Dict[str, str]]:
-    rows = frappe.get_all(
+    rows = safe_ai_get_all(
         "Chat Message",
         filters={"conversation": conversation},
         fields=["direction", "sender_type", "body", "creation"],
@@ -31,7 +32,7 @@ def create_ai_suggestion(conversation: str, suggestion_type: str, content: str) 
         "content": content,
         "status": "Draft",
     })
-    doc.insert(ignore_permissions=True)
+    safe_ai_insert(doc)
     return doc.name
 
 

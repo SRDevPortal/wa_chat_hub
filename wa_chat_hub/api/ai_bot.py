@@ -33,6 +33,15 @@ from wa_chat_hub.prompts import (
     get_multilingual_policy,
 )
 from wa_chat_hub.services import append_message
+from wa_chat_hub.security import (
+    assert_ai_doctype_permission,
+    safe_ai_exists,
+    safe_ai_get_all,
+    safe_ai_get_doc,
+    safe_ai_get_value,
+    set_ai_security_context,
+    set_service_user_context,
+)
 from wa_chat_hub.task_logger import elapsed, queue_wait_seconds, task_log
 
 CONVERSATION_HISTORY_LIMIT = 4
@@ -65,15 +74,16 @@ def on_message_received(doc, method):
 
 def schedule_autopilot_for_message(message_name: str) -> None:
     """Queue AI autopilot after inbound message, lead link, and messaging window are ready."""
-    if not message_name or not frappe.db.exists("Chat Message", message_name):
+    if not message_name or not safe_ai_exists("Chat Message", message_name):
         return
 
-    doc = frappe.get_doc("Chat Message", message_name)
+    doc = safe_ai_get_doc("Chat Message", message_name)
     if doc.direction != "Inbound":
         return
     if not _inbound_triggers_autopilot(doc):
         return
 
+    assert_ai_doctype_permission("WA Chat Hub Settings", "read")
     settings = frappe.get_single("WA Chat Hub Settings")
     if not settings.enable_ai_autopilot:
         return
@@ -103,12 +113,17 @@ def schedule_autopilot_for_message(message_name: str) -> None:
 
 def process_message(message_id):
     total_started = time.monotonic()
-    frappe.set_user("Administrator")
+    set_service_user_context("ai_autopilot")
 
-    msg_doc = frappe.get_doc("Chat Message", message_id)
+    msg_doc = safe_ai_get_doc("Chat Message", message_id)
     frappe.flags.wa_ai_reply_to_message = str(message_id)
     frappe.local.wa_ai_reply_to_message = str(message_id)
     conversation = msg_doc.conversation
+    set_ai_security_context(
+        operation="ai_autopilot",
+        conversation=conversation,
+        message=str(message_id),
+    )
     _log_ai_timing(
         "start",
         message=message_id,
@@ -154,6 +169,7 @@ def process_message(message_id):
         )
         return
 
+    assert_ai_doctype_permission("WA Chat Hub Settings", "read")
     settings = frappe.get_single("WA Chat Hub Settings")
     body_text = str(msg_doc.body or "").strip()
     content_type = str(msg_doc.content_type or "Text").title()
@@ -241,7 +257,7 @@ def process_message(message_id):
     history = _load_recent_conversation_history(conversation)
     history_before_current = [row for row in history if str(row.name) != str(message_id)]
 
-    conversation_context = frappe.db.get_value(
+    conversation_context = safe_ai_get_value(
         "Chat Conversation",
         conversation,
         ["channel_account", "department"],
@@ -249,6 +265,7 @@ def process_message(message_id):
     ) or {}
     channel_account = conversation_context.get("channel_account")
     department = conversation_context.get("department")
+    set_ai_security_context(channel_account=channel_account)
     prompt_config = get_effective_prompt_config(channel_account)
 
     media_context = ""
@@ -971,7 +988,7 @@ def _build_recent_attachment_followup_context(conversation: str, msg_doc) -> str
     if current_creation:
         filters["creation"] = ["<", current_creation]
 
-    recent = frappe.get_all(
+    recent = safe_ai_get_all(
         "Chat Message",
         filters=filters,
         fields=["name", "creation", "content_type", "body", "media_url"],
@@ -1018,7 +1035,7 @@ def _meaningful_body(body: str, content_type: str = "Text") -> str:
 
 
 def _load_recent_conversation_history(conversation: str):
-    rows = frappe.get_all(
+    rows = safe_ai_get_all(
         "Chat Message",
         filters={"conversation": conversation},
         fields=["name", "direction", "body", "content_type", "media_url"],
@@ -1112,16 +1129,18 @@ def _looks_like_degenerate_reply(text: str) -> bool:
 
 
 def _conversation_allows_autopilot(conversation: str) -> bool:
-    status = frappe.db.get_value("Chat Conversation", conversation, "status")
+    status = safe_ai_get_value("Chat Conversation", conversation, "status")
     return status in (None, "", "Open")
 
 
 def _already_replied_to_inbound(conversation: str, inbound_message_id: str) -> bool:
     """Only skip duplicate work for the same inbound message, not the whole conversation."""
-    inbound_creation = frappe.db.get_value("Chat Message", inbound_message_id, "creation")
+    inbound_creation = safe_ai_get_value("Chat Message", inbound_message_id, "creation")
     if not inbound_creation:
         return False
 
+    # Raw SQL is used for this duplicate-reply lookup, so gate it explicitly.
+    assert_ai_doctype_permission("Chat Message", "read")
     prior_ai = frappe.db.sql(
         """
         SELECT delivery_status, raw_transport_payload
@@ -1153,7 +1172,7 @@ def _load_providers():
     rows = get_active_llm_provider_rows(CHAT_CAPABILITY)
     providers = []
     for row in rows:
-        doc = frappe.get_doc("WA LLM Provider", row.name)
+        doc = safe_ai_get_doc("WA LLM Provider", row.name)
         api_key = doc.get_password("api_key")
         if not api_key:
             continue
@@ -1171,8 +1190,8 @@ def _load_providers():
 
 def _deliver_ai_reply(conversation: str, response_text: str) -> None:
     send_started = time.monotonic()
-    convo = frappe.get_doc("Chat Conversation", conversation)
-    phone_number = frappe.db.get_value("Chat Contact", convo.contact, "phone_number")
+    convo = safe_ai_get_doc("Chat Conversation", conversation)
+    phone_number = safe_ai_get_value("Chat Contact", convo.contact, "phone_number")
     reply_to_message = (
         getattr(frappe.local, "wa_ai_reply_to_message", None)
         or getattr(frappe.flags, "wa_ai_reply_to_message", None)
@@ -1259,13 +1278,14 @@ def call_provider(provider, system_prompt, history, latest_user_text=None, curre
 
 
 def fetch_mcp_tools():
+    assert_ai_doctype_permission("WA Chat Hub Settings", "read")
     settings = frappe.get_single("WA Chat Hub Settings")
     if not getattr(settings, "allow_mcp_access", 0):
         return []
-    if not frappe.db.exists("DocType", "WA MCP Tool Endpoint"):
+    if not safe_ai_exists("DocType", "WA MCP Tool Endpoint"):
         return []
 
-    tools_docs = frappe.get_all(
+    tools_docs = safe_ai_get_all(
         "WA MCP Tool Endpoint",
         filters={"is_active": 1},
         fields=["tool_name", "description", "parameters_schema", "endpoint_url", "http_method"],

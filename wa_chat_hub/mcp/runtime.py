@@ -6,18 +6,26 @@ import frappe
 import requests
 from frappe import _
 
+from wa_chat_hub.security import (
+    assert_ai_doctype_permission,
+    safe_ai_exists,
+    safe_ai_get_all,
+    safe_ai_get_value,
+)
+
 
 def build_mcp_runtime_context(department: Optional[str] = None) -> Dict[str, Any]:
     """Return MCP servers/tools available to the desk runtime."""
+    assert_ai_doctype_permission("WA Chat Hub Settings", "read")
     settings = frappe.get_single("WA Chat Hub Settings")
     allow_mcp = bool(getattr(settings, "allow_mcp_access", 0))
 
     servers = []
-    if frappe.db.exists("DocType", "WA MCP Server"):
+    if safe_ai_exists("DocType", "WA MCP Server"):
         filters: Dict[str, Any] = {"is_active": 1}
         if department:
             filters["department"] = ["in", ["", department]]
-        servers = frappe.get_all(
+        servers = safe_ai_get_all(
             "WA MCP Server",
             filters=filters,
             fields=[
@@ -32,8 +40,8 @@ def build_mcp_runtime_context(department: Optional[str] = None) -> Dict[str, Any
         )
 
     tools = []
-    if allow_mcp and frappe.db.exists("DocType", "WA MCP Tool Endpoint"):
-        tools = frappe.get_all(
+    if allow_mcp and safe_ai_exists("DocType", "WA MCP Tool Endpoint"):
+        tools = safe_ai_get_all(
             "WA MCP Tool Endpoint",
             filters={"is_active": 1},
             fields=[
@@ -66,10 +74,10 @@ def invoke_mcp_tool(
     if not tool_name:
         frappe.throw(_("tool_name is required"))
 
-    if not frappe.db.exists("DocType", "WA MCP Tool Endpoint"):
+    if not safe_ai_exists("DocType", "WA MCP Tool Endpoint"):
         frappe.throw(_("WA MCP Tool Endpoint is not installed"))
 
-    row = frappe.db.get_value(
+    row = safe_ai_get_value(
         "WA MCP Tool Endpoint",
         {"tool_name": tool_name, "is_active": 1},
         ["name", "endpoint_url", "http_method", "server"],

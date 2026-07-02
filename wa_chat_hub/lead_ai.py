@@ -8,6 +8,14 @@ import frappe
 from frappe.utils import now_datetime
 
 from wa_chat_hub.prompts import get_conversation_crm_lead
+from wa_chat_hub.security import (
+    safe_ai_exists,
+    safe_ai_get_all,
+    safe_ai_get_doc,
+    safe_ai_get_value,
+    safe_ai_insert,
+    safe_ai_set_value,
+)
 
 
 HOT_TERMS = {
@@ -53,10 +61,10 @@ def on_chat_message_after_insert(doc, method=None):
 
 
 def auto_update_lead_from_conversation(lead_name: str, conversation: str | None = None) -> dict[str, Any]:
-    if not frappe.db.exists("CRM Lead", lead_name):
+    if not safe_ai_exists("CRM Lead", lead_name):
         return {"updated": False, "reason": "Lead not found"}
 
-    lead = frappe.get_doc("CRM Lead", lead_name)
+    lead = safe_ai_get_doc("CRM Lead", lead_name)
     context = _get_context_for_lead(lead)
     if context and not context.auto_update_lead_fields:
         return {"updated": False, "reason": "Context auto update disabled"}
@@ -82,11 +90,11 @@ def auto_update_lead_from_conversation(lead_name: str, conversation: str | None 
 
 def _get_context_for_lead(lead):
     pipeline = lead.get("sr_lead_pipeline")
-    if not pipeline or not frappe.db.exists("DocType", "WA Channel Context"):
+    if not pipeline or not safe_ai_exists("DocType", "WA Channel Context"):
         return None
 
-    name = frappe.db.get_value("WA Channel Context", {"pipeline": pipeline, "is_active": 1}, "name")
-    return frappe.get_doc("WA Channel Context", name) if name else None
+    name = safe_ai_get_value("WA Channel Context", {"pipeline": pipeline, "is_active": 1}, "name")
+    return safe_ai_get_doc("WA Channel Context", name) if name else None
 
 
 def _build_lead_text(lead, conversation: str | None = None) -> str:
@@ -96,7 +104,7 @@ def _build_lead_text(lead, conversation: str | None = None) -> str:
             parts.append(str(lead.get(fieldname)))
 
     if conversation:
-        rows = frappe.get_all(
+        rows = safe_ai_get_all(
             "Chat Message",
             filters={"conversation": conversation},
             fields=["body"],
@@ -190,12 +198,12 @@ def _apply_to_lead(lead, scoring: dict[str, Any], extraction: dict[str, Any]) ->
     if not updates:
         return []
 
-    frappe.db.set_value("CRM Lead", lead.name, updates, update_modified=True)
+    safe_ai_set_value("CRM Lead", lead.name, updates, update_modified=True)
     return sorted(updates)
 
 
 def _create_insight(lead, conversation, context, insight_type: str, output: dict[str, Any], applied_fields: list[str], input_snapshot: str):
-    convo = frappe.get_doc("Chat Conversation", conversation) if conversation else None
+    convo = safe_ai_get_doc("Chat Conversation", conversation) if conversation else None
     doc = frappe.get_doc(
         {
             "doctype": "WA Lead AI Insight",
@@ -211,7 +219,7 @@ def _create_insight(lead, conversation, context, insight_type: str, output: dict
             "applied_fields": ", ".join(applied_fields),
         }
     )
-    doc.insert(ignore_permissions=True)
+    safe_ai_insert(doc)
 
 
 def _extract_sentence_matches(text: str, keywords: list[str]) -> str:

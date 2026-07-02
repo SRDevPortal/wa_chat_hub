@@ -7,9 +7,11 @@ from typing import Any, Dict, Optional
 
 import frappe
 
+from wa_chat_hub.security import safe_ai_get_all
+
 
 def get_conversation_attribution(conversation: str) -> Dict[str, Optional[str]]:
-    rows = frappe.get_all(
+    rows = safe_ai_get_all(
         "Chat Message",
         filters={"conversation": conversation, "direction": "Inbound"},
         fields=["raw_payload", "creation"],

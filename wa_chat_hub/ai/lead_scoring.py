@@ -12,6 +12,13 @@ from wa_chat_hub.ai.conversation_stop import is_conversation_stopped
 from wa_chat_hub.ai.language import resolve_language_from_history
 from wa_chat_hub.db_retry import with_db_lock_retry
 from wa_chat_hub.prompts import get_conversation_crm_lead
+from wa_chat_hub.security import (
+    assert_ai_doctype_permission,
+    safe_ai_exists,
+    safe_ai_get_all,
+    safe_ai_get_doc,
+    safe_ai_set_value,
+)
 
 
 @dataclass
@@ -34,7 +41,7 @@ def score_and_sync_conversation(conversation: str) -> Dict[str, str]:
 
 
 def recompute_conversation_metrics(conversation: str) -> ScoreResult:
-    convo = frappe.get_doc("Chat Conversation", conversation)
+    convo = safe_ai_get_doc("Chat Conversation", conversation)
     if is_conversation_stopped(conversation):
         score_result = ScoreResult(
             lead_score=0,
@@ -44,7 +51,7 @@ def recompute_conversation_metrics(conversation: str) -> ScoreResult:
         )
         with_db_lock_retry(
             "conversation_stopped_score_update",
-            lambda: frappe.db.set_value(
+            lambda: safe_ai_set_value(
                 "Chat Conversation",
                 conversation,
                 {
@@ -58,7 +65,7 @@ def recompute_conversation_metrics(conversation: str) -> ScoreResult:
         sync_to_linked_lead(conversation, score_result)
         return score_result
 
-    history = frappe.get_all(
+    history = safe_ai_get_all(
         "Chat Message",
         filters={"conversation": conversation},
         fields=["direction", "body", "creation"],
@@ -69,7 +76,7 @@ def recompute_conversation_metrics(conversation: str) -> ScoreResult:
 
     with_db_lock_retry(
         "conversation_lead_score_update",
-        lambda: frappe.db.set_value(
+        lambda: safe_ai_set_value(
             "Chat Conversation",
             conversation,
             {
@@ -84,7 +91,7 @@ def recompute_conversation_metrics(conversation: str) -> ScoreResult:
 
 
 def sync_to_linked_lead(conversation: str, result: ScoreResult | None = None) -> None:
-    convo = frappe.get_doc("Chat Conversation", conversation)
+    convo = safe_ai_get_doc("Chat Conversation", conversation)
     crm_lead = get_conversation_crm_lead(convo)
     if not crm_lead:
         return
@@ -98,9 +105,10 @@ def sync_to_linked_lead(conversation: str, result: ScoreResult | None = None) ->
         )
 
     target_dt = "CRM Lead"
-    if not frappe.db.exists(target_dt, crm_lead):
+    if not safe_ai_exists(target_dt, crm_lead):
         return
 
+    assert_ai_doctype_permission(target_dt, "read")
     meta = frappe.get_meta(target_dt)
     updates = {}
     if meta.has_field("lead_score"):
@@ -112,7 +120,7 @@ def sync_to_linked_lead(conversation: str, result: ScoreResult | None = None) ->
     if not updates:
         return
 
-    frappe.db.set_value(
+    safe_ai_set_value(
         target_dt,
         crm_lead,
         updates,

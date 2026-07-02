@@ -5,6 +5,8 @@ from typing import Any
 import frappe
 from frappe.utils import cint
 
+from wa_chat_hub.security import safe_ai_get_all, safe_ai_get_doc
+
 
 CHAT_CAPABILITY = "use_for_chat"
 VISION_CAPABILITY = "use_for_vision"
@@ -27,7 +29,7 @@ def get_active_llm_provider_rows(capability: str | None = None, limit: int | Non
             fields.append(fieldname)
 
     query_limit = None if capability else limit
-    rows = frappe.get_all(
+    rows = safe_ai_get_all(
         "WA LLM Provider",
         filters={"is_active": 1},
         fields=fields,
@@ -60,7 +62,7 @@ def get_active_llm_provider_rows(capability: str | None = None, limit: int | Non
 
 
 def get_provider_secret(row: Any) -> dict[str, Any] | None:
-    doc = frappe.get_doc("WA LLM Provider", row.name)
+    doc = safe_ai_get_doc("WA LLM Provider", row.name)
     api_key = doc.get_password("api_key", raise_exception=False)
     if not api_key and provider_requires_api_key(row.base_url):
         return None

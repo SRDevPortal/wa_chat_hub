@@ -22,6 +22,16 @@ from wa_chat_hub.prompts import (
     get_conversation_linked_reference,
     set_conversation_crm_lead,
 )
+from wa_chat_hub.security import (
+    WAChatHubSecurityError,
+    assert_ai_doctype_permission,
+    safe_ai_exists,
+    safe_ai_get_all,
+    safe_ai_get_doc,
+    safe_ai_get_value,
+    safe_ai_insert,
+    safe_ai_set_value,
+)
 from wa_chat_hub.task_logger import elapsed, task_log
 
 
@@ -92,8 +102,11 @@ def _valid_link(doctype: str, value: Optional[str]) -> Optional[str]:
     name = (value or "").strip()
     if not name:
         return None
-    if frappe.db.exists(doctype, name):
-        return name
+    try:
+        if safe_ai_exists(doctype, name):
+            return name
+    except WAChatHubSecurityError:
+        return None
     frappe.logger("wa_chat_hub").warning(
         "Ignored invalid %s link on Chat Conversation: %s", doctype, name
     )
@@ -138,23 +151,26 @@ def find_assignment_owner(
     if priority:
         filters["priority"] = priority
 
-    rows = frappe.get_all(
-        "Chat Assignment Rule",
-        filters=filters,
-        fields=["assign_to"],
-        limit=1,
-    )
+    try:
+        rows = safe_ai_get_all(
+            "Chat Assignment Rule",
+            filters=filters,
+            fields=["assign_to"],
+            limit=1,
+        )
+    except WAChatHubSecurityError:
+        return None
     return rows[0].assign_to if rows else None
 
 
 def get_or_create_contact(phone_number: str, display_name: Optional[str] = None) -> str:
     normalized = normalize_phone(phone_number)
-    existing = frappe.db.get_value("Chat Contact", {"phone_number": normalized}, "name")
+    existing = safe_ai_get_value("Chat Contact", {"phone_number": normalized}, "name")
     if existing:
-        if display_name and frappe.db.get_value("Chat Contact", existing, "display_name") != display_name:
+        if display_name and safe_ai_get_value("Chat Contact", existing, "display_name") != display_name:
             with_db_lock_retry(
                 "contact_display_name_update",
-                lambda: frappe.db.set_value(
+                lambda: safe_ai_set_value(
                     "Chat Contact",
                     existing,
                     "display_name",
@@ -170,13 +186,13 @@ def get_or_create_contact(phone_number: str, display_name: Optional[str] = None)
         "display_name": display_name or normalized,
     })
     try:
-        doc.insert(ignore_permissions=True)
+        safe_ai_insert(doc)
     except frappe.DuplicateEntryError:
-        existing = frappe.db.get_value("Chat Contact", {"phone_number": normalized}, "name") or normalized
-        if display_name and frappe.db.exists("Chat Contact", existing):
+        existing = safe_ai_get_value("Chat Contact", {"phone_number": normalized}, "name") or normalized
+        if display_name and safe_ai_exists("Chat Contact", existing):
             with_db_lock_retry(
                 "contact_display_name_update",
-                lambda: frappe.db.set_value(
+                lambda: safe_ai_set_value(
                     "Chat Contact",
                     existing,
                     "display_name",
@@ -199,7 +215,7 @@ def get_or_create_conversation(
 
     existing = with_db_lock_retry(
         "conversation_lookup",
-        lambda: frappe.db.get_value("Chat Conversation", filters, "name"),
+        lambda: safe_ai_get_value("Chat Conversation", filters, "name"),
     )
     if existing:
         updates = {}
@@ -210,7 +226,7 @@ def get_or_create_conversation(
         if updates:
             with_db_lock_retry(
                 "conversation_routing_update",
-                lambda: frappe.db.set_value(
+                lambda: safe_ai_set_value(
                     "Chat Conversation",
                     existing,
                     updates,
@@ -229,12 +245,12 @@ def get_or_create_conversation(
             "status": status,
         })
         try:
-            doc.insert(ignore_permissions=True)
+            safe_ai_insert(doc)
             return doc.name
         except Exception as exc:
             if not is_db_lock_conflict(exc):
                 raise
-            concurrent = frappe.db.get_value("Chat Conversation", filters, "name")
+            concurrent = safe_ai_get_value("Chat Conversation", filters, "name")
             if concurrent:
                 return concurrent
             raise
@@ -287,7 +303,7 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
     contact = get_or_create_contact(phone_number=phone_number, display_name=payload.get("display_name"))
 
     channel_account = payload["channel_account"]
-    existing_conversation = frappe.db.get_value(
+    existing_conversation = safe_ai_get_value(
         "Chat Conversation",
         {"channel_account": channel_account, "contact": contact, "status": ["!=", "Closed"]},
         "name",
@@ -298,7 +314,7 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
     # sr_medical_department on WA Channel Pipeline Map is only for Patient routing / Interakt traits.
     channel_department = _valid_link("Department", payload.get("channel_department"))
     if not channel_department and not existing_conversation:
-        account_department = frappe.db.get_value(
+        account_department = safe_ai_get_value(
             "Chat Channel Account", channel_account, "department"
         )
         channel_department = _valid_link("Department", account_department)
@@ -357,7 +373,7 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
         except Exception:
             frappe.log_error(frappe.get_traceback(), "Messaging Window Update Failed")
 
-    message.insert(ignore_permissions=True)
+    safe_ai_insert(message)
 
     if payload.get("attachment_file"):
         try:
@@ -523,6 +539,7 @@ def update_conversation_after_message(conversation_name: str, payload: Dict[str,
         body = payload.get("body")
         content_type = payload.get("content_type") or "Text"
         media_url = payload.get("media_url")
+        assert_ai_doctype_permission("Chat Conversation", "read")
         has_last_message_time = frappe.db.has_column("Chat Conversation", "last_message_time")
         if media_url and content_type != "Text":
             preview = build_media_preview(content_type, body)
@@ -531,6 +548,7 @@ def update_conversation_after_message(conversation_name: str, payload: Dict[str,
 
         if payload.get("direction", "Inbound") == "Inbound":
             last_message_sql = "last_message_time = NOW(6)," if has_last_message_time else ""
+            assert_ai_doctype_permission("Chat Conversation", "write")
             with_db_lock_retry(
                 "conversation_unread_increment",
                 lambda: frappe.db.sql(
@@ -553,7 +571,7 @@ def update_conversation_after_message(conversation_name: str, payload: Dict[str,
             values["last_message_time"] = frappe.utils.now_datetime()
         with_db_lock_retry(
             "conversation_preview_update",
-            lambda: frappe.db.set_value(
+            lambda: safe_ai_set_value(
                 "Chat Conversation",
                 conversation_name,
                 values,
@@ -586,6 +604,7 @@ def _clean_media_body(content_type: str, body: Optional[str]) -> str:
 
 def mark_conversation_read(conversation_name: str) -> None:
     with conversation_update_lock(conversation_name):
+        assert_ai_doctype_permission("Chat Conversation", "write")
         with_db_lock_retry(
             "conversation_mark_read",
             lambda: frappe.db.sql(
@@ -608,6 +627,7 @@ def mark_conversation_read(conversation_name: str) -> None:
 
 
 def repair_inbound_pending_statuses() -> None:
+    assert_ai_doctype_permission("Chat Message", "write")
     frappe.db.sql("""
         update `tabChat Message`
         set delivery_status = 'Received'
@@ -654,13 +674,13 @@ def _link_or_create_master_record(
     if not phone_number:
         return
 
-    convo = frappe.get_doc("Chat Conversation", conversation)
-    contact = frappe.get_doc("Chat Contact", contact_name)
+    convo = safe_ai_get_doc("Chat Conversation", conversation)
+    contact = safe_ai_get_doc("Chat Contact", contact_name)
     _sanitize_contact_links(contact)
     _sanitize_conversation_links(convo)
     _normalize_existing_lead_link(convo)
     existing_crm_lead = get_conversation_crm_lead(convo)
-    if existing_crm_lead and frappe.db.exists("CRM Lead", existing_crm_lead):
+    if existing_crm_lead and safe_ai_exists("CRM Lead", existing_crm_lead):
         _finalize_crm_lead_after_inbound(
             conversation,
             existing_crm_lead,
@@ -749,6 +769,7 @@ def _link_or_create_master_record(
         "linked_reference_doctype": convo.linked_reference_doctype,
         "linked_reference_name": convo.linked_reference_name,
     }
+    assert_ai_doctype_permission("Chat Conversation", "read")
     if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
         conversation_updates["linked_crm_lead"] = getattr(convo, "linked_crm_lead", None)
     _set_conversation_fields(convo, conversation_updates)
@@ -775,7 +796,7 @@ def _set_contact_fields(contact, updates: Dict[str, Any]) -> None:
         return
     with_db_lock_retry(
         "contact_link_update",
-        lambda: frappe.db.set_value(
+        lambda: safe_ai_set_value(
             "Chat Contact",
             contact.name,
             updates,
@@ -792,7 +813,7 @@ def _set_conversation_fields(convo, updates: Dict[str, Any]) -> None:
         return
     with_db_lock_retry(
         "conversation_link_update",
-        lambda: frappe.db.set_value(
+        lambda: safe_ai_set_value(
             "Chat Conversation",
             convo.name,
             updates,
@@ -811,7 +832,7 @@ def _finalize_crm_lead_after_inbound(
     message_name: Optional[str] = None,
 ) -> None:
     """Ad attribution → CRM Lead meta tab; lead scoring/OCR fields after link exists."""
-    convo = frappe.get_cached_doc("Chat Conversation", conversation)
+    convo = safe_ai_get_doc("Chat Conversation", conversation)
     _sync_crm_lead_pipeline_for_channel(lead_name, getattr(convo, "channel_account", None))
     try:
         from wa_chat_hub.messaging.crm_lead_meta import sync_crm_lead_meta_from_conversation
@@ -830,7 +851,7 @@ def _finalize_crm_lead_after_inbound(
 
 def _sync_crm_lead_pipeline_for_channel(lead_name: str, channel_account: Optional[str]) -> None:
     """Keep inbound CRM Lead pipeline aligned with the Interakt account that received the chat."""
-    if not lead_name or not channel_account or not frappe.db.exists("CRM Lead", lead_name):
+    if not lead_name or not channel_account or not safe_ai_exists("CRM Lead", lead_name):
         return
 
     pipeline_fieldname = _get_lead_pipeline_fieldname("CRM Lead")
@@ -841,13 +862,13 @@ def _sync_crm_lead_pipeline_for_channel(lead_name: str, channel_account: Optiona
     if not pipeline:
         return
 
-    current = frappe.db.get_value("CRM Lead", lead_name, pipeline_fieldname)
+    current = safe_ai_get_value("CRM Lead", lead_name, pipeline_fieldname)
     if current == pipeline:
         return
 
     try:
         with _crm_lead_field_guard_bypass(True):
-            frappe.db.set_value("CRM Lead", lead_name, pipeline_fieldname, pipeline, update_modified=True)
+            safe_ai_set_value("CRM Lead", lead_name, pipeline_fieldname, pipeline, update_modified=True)
     except Exception:
         frappe.log_error(frappe.get_traceback(), "WA Chat Hub CRM Lead Pipeline Sync Failed")
 
@@ -897,20 +918,23 @@ def _default_sr_lead_source_for_channel(channel_account: Optional[str], meta) ->
 
 
 def _default_crm_lead_status() -> Optional[str]:
-    if not frappe.db.exists("DocType", "CRM Lead Status"):
+    try:
+        if not safe_ai_exists("DocType", "CRM Lead Status"):
+            return None
+
+        for status in ("Fresh", "New"):
+            if safe_ai_exists("CRM Lead Status", status):
+                return status
+
+        rows = safe_ai_get_all(
+            "CRM Lead Status",
+            pluck="name",
+            order_by="position asc, modified asc",
+            limit=1,
+        )
+        return rows[0] if rows else None
+    except WAChatHubSecurityError:
         return None
-
-    for status in ("Fresh", "New"):
-        if frappe.db.exists("CRM Lead Status", status):
-            return status
-
-    rows = frappe.get_all(
-        "CRM Lead Status",
-        pluck="name",
-        order_by="position asc, modified asc",
-        limit=1,
-    )
-    return rows[0] if rows else None
 
 
 def _create_lead_for_inbound(
@@ -928,6 +952,7 @@ def _create_lead_for_inbound(
         "source_event": "Inbound WhatsApp",
     }
     try:
+        assert_ai_doctype_permission(doctype, "read")
         meta = frappe.get_meta(doctype)
         lead_title = display_name or phone_number
         first_name = _inbound_lead_first_name(display_name, phone_number)
@@ -981,7 +1006,7 @@ def _create_lead_for_inbound(
 
         doc = frappe.get_doc(payload)
         with _crm_lead_field_guard_bypass(doctype == "CRM Lead"):
-            doc.insert(ignore_permissions=True)
+            safe_ai_insert(doc)
         return doc.name
     except Exception:
         frappe.log_error(
@@ -992,55 +1017,70 @@ def _create_lead_for_inbound(
 
 
 def _find_by_phone(doctype: str, phone_fields: list[str], phone_number: str) -> Optional[str]:
-    if not frappe.db.exists("DocType", doctype):
-        return None
+    try:
+        if not safe_ai_exists("DocType", doctype):
+            return None
 
-    meta = frappe.get_meta(doctype)
-    for fieldname in phone_fields:
-        if not meta.has_field(fieldname):
-            continue
-        exact = frappe.db.get_value(doctype, {fieldname: phone_number}, "name")
-        if exact:
-            return exact
-
-        last10 = phone_number[-10:] if len(phone_number) >= 10 else phone_number
-        candidates = frappe.get_all(
-            doctype,
-            filters={fieldname: ["like", f"%{last10}%"]},
-            fields=["name", fieldname],
-            limit_page_length=20,
-        )
-        for row in candidates:
-            value = normalize_phone(row.get(fieldname))
-            if not value:
+        assert_ai_doctype_permission(doctype, "read")
+        meta = frappe.get_meta(doctype)
+        for fieldname in phone_fields:
+            if not meta.has_field(fieldname):
                 continue
-            if value == phone_number or value.endswith(last10):
-                return row.name
+            exact = safe_ai_get_value(doctype, {fieldname: phone_number}, "name")
+            if exact:
+                return exact
+
+            last10 = phone_number[-10:] if len(phone_number) >= 10 else phone_number
+            candidates = safe_ai_get_all(
+                doctype,
+                filters={fieldname: ["like", f"%{last10}%"]},
+                fields=["name", fieldname],
+                limit_page_length=20,
+            )
+            for row in candidates:
+                value = normalize_phone(row.get(fieldname))
+                if not value:
+                    continue
+                if value == phone_number or value.endswith(last10):
+                    return row.name
+    except WAChatHubSecurityError:
+        return None
     return None
 
 
 def _get_lead_pipeline_fieldname(lead_doctype: str) -> Optional[str]:
     """Auto-detect first Link field on Lead/CRM Lead targeting SR Lead Pipeline."""
-    if not frappe.db.exists("DocType", "SR Lead Pipeline"):
+    try:
+        if not safe_ai_exists("DocType", "SR Lead Pipeline"):
+            return None
+        assert_ai_doctype_permission(lead_doctype, "read")
+        meta = frappe.get_meta(lead_doctype)
+        for field in meta.fields:
+            if field.fieldtype == "Link" and field.options == "SR Lead Pipeline":
+                return field.fieldname
+    except WAChatHubSecurityError:
         return None
-    meta = frappe.get_meta(lead_doctype)
-    for field in meta.fields:
-        if field.fieldtype == "Link" and field.options == "SR Lead Pipeline":
-            return field.fieldname
     return None
 
 
 def _preferred_lead_doctype() -> Optional[str]:
-    if frappe.db.exists("DocType", "CRM Lead"):
-        return "CRM Lead"
-    if frappe.db.exists("DocType", "Lead"):
-        return "Lead"
+    try:
+        if safe_ai_exists("DocType", "CRM Lead"):
+            return "CRM Lead"
+        if safe_ai_exists("DocType", "Lead"):
+            return "Lead"
+    except WAChatHubSecurityError:
+        return None
     return None
 
 
 def _find_existing_lead_by_phone(phone_number: str) -> Optional[tuple[str, str]]:
     for doctype in ("CRM Lead", "Lead"):
-        if not frappe.db.exists("DocType", doctype):
+        try:
+            exists = safe_ai_exists("DocType", doctype)
+        except WAChatHubSecurityError:
+            continue
+        if not exists:
             continue
         if doctype == "CRM Lead":
             found = _find_primary_crm_lead_by_phone(phone_number)
@@ -1063,16 +1103,23 @@ def _find_primary_crm_lead_by_phone(phone_number: str) -> Optional[str]:
         return get_primary_lead_name_for_lead(found) if found else None
     except Exception:
         found = _find_by_phone("CRM Lead", ["mobile_no", "phone", "custom_whatsapp_number"], phone_number)
-        if found and frappe.db.has_column("CRM Lead", "sr_duplicate_of_name"):
-            primary = frappe.db.get_value("CRM Lead", found, "sr_duplicate_of_name")
-            if primary and frappe.db.exists("CRM Lead", primary):
-                return primary
+        try:
+            assert_ai_doctype_permission("CRM Lead", "read")
+            if found and frappe.db.has_column("CRM Lead", "sr_duplicate_of_name"):
+                primary = safe_ai_get_value("CRM Lead", found, "sr_duplicate_of_name")
+                if primary and safe_ai_exists("CRM Lead", primary):
+                    return primary
+        except WAChatHubSecurityError:
+            return found
         return found
 
 
 def _normalize_existing_lead_link(convo) -> None:
     """If record points to Lead but name exists in CRM Lead, relink to CRM Lead route."""
-    if not frappe.db.exists("DocType", "CRM Lead"):
+    try:
+        if not safe_ai_exists("DocType", "CRM Lead"):
+            return
+    except WAChatHubSecurityError:
         return
     lead_name = get_conversation_crm_lead(convo)
     if lead_name:
@@ -1081,18 +1128,24 @@ def _normalize_existing_lead_link(convo) -> None:
             "linked_reference_doctype": convo.linked_reference_doctype,
             "linked_reference_name": convo.linked_reference_name,
         }
+        assert_ai_doctype_permission("Chat Conversation", "read")
         if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
             updates["linked_crm_lead"] = getattr(convo, "linked_crm_lead", None)
         _set_conversation_fields(convo, updates)
         return
     if convo.linked_reference_doctype != "Lead" or not convo.linked_reference_name:
         return
-    if frappe.db.exists("CRM Lead", convo.linked_reference_name):
+    try:
+        crm_lead_exists = safe_ai_exists("CRM Lead", convo.linked_reference_name)
+    except WAChatHubSecurityError:
+        return
+    if crm_lead_exists:
         set_conversation_crm_lead(convo, convo.linked_reference_name)
         updates = {
             "linked_reference_doctype": convo.linked_reference_doctype,
             "linked_reference_name": convo.linked_reference_name,
         }
+        assert_ai_doctype_permission("Chat Conversation", "read")
         if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
             updates["linked_crm_lead"] = getattr(convo, "linked_crm_lead", None)
         _set_conversation_fields(convo, updates)
@@ -1103,15 +1156,23 @@ def _sanitize_contact_links(contact) -> None:
 
     linked_lead = getattr(contact, "linked_lead", None)
     if linked_lead:
-        lead_exists = frappe.db.exists("DocType", "Lead") and frappe.db.exists("Lead", linked_lead)
+        try:
+            lead_exists = safe_ai_exists("DocType", "Lead") and safe_ai_exists("Lead", linked_lead)
+        except WAChatHubSecurityError:
+            lead_exists = True
         if not lead_exists:
             contact.linked_lead = None
             changed = True
 
     linked_patient = getattr(contact, "linked_patient", None)
-    if linked_patient and frappe.db.exists("DocType", "Patient") and not frappe.db.exists("Patient", linked_patient):
-        contact.linked_patient = None
-        changed = True
+    if linked_patient:
+        try:
+            patient_exists = not safe_ai_exists("DocType", "Patient") or safe_ai_exists("Patient", linked_patient)
+        except WAChatHubSecurityError:
+            patient_exists = True
+        if not patient_exists:
+            contact.linked_patient = None
+            changed = True
 
     if changed:
         _set_contact_fields(
@@ -1125,22 +1186,31 @@ def _sanitize_contact_links(contact) -> None:
 
 def _sanitize_conversation_links(convo) -> None:
     crm_lead = getattr(convo, "linked_crm_lead", None)
-    if crm_lead and not frappe.db.exists("CRM Lead", crm_lead):
-        _set_conversation_fields(
-            convo,
-            {
-                "linked_crm_lead": None,
-                "linked_reference_doctype": None,
-                "linked_reference_name": None,
-            },
-        )
-        return
+    if crm_lead:
+        try:
+            crm_lead_exists = safe_ai_exists("CRM Lead", crm_lead)
+        except WAChatHubSecurityError:
+            crm_lead_exists = True
+        if not crm_lead_exists:
+            _set_conversation_fields(
+                convo,
+                {
+                    "linked_crm_lead": None,
+                    "linked_reference_doctype": None,
+                    "linked_reference_name": None,
+                },
+            )
+            return
 
     ref_doctype = getattr(convo, "linked_reference_doctype", None)
     ref_name = getattr(convo, "linked_reference_name", None)
     if not ref_doctype or not ref_name:
         return
-    if not frappe.db.exists("DocType", ref_doctype):
+    try:
+        ref_doctype_exists = safe_ai_exists("DocType", ref_doctype)
+    except WAChatHubSecurityError:
+        return
+    if not ref_doctype_exists:
         _set_conversation_fields(
             convo,
             {
@@ -1149,7 +1219,11 @@ def _sanitize_conversation_links(convo) -> None:
             },
         )
         return
-    if not frappe.db.exists(ref_doctype, ref_name):
+    try:
+        ref_exists = safe_ai_exists(ref_doctype, ref_name)
+    except WAChatHubSecurityError:
+        return
+    if not ref_exists:
         _set_conversation_fields(
             convo,
             {
@@ -1167,8 +1241,11 @@ def _resolve_whatsapp_source_value(meta) -> Optional[str]:
 
     # For Link fields, ensure the linked master row exists.
     if source_df.fieldtype == "Link" and source_df.options:
-        if frappe.db.exists(source_df.options, "WhatsApp"):
-            return "WhatsApp"
+        try:
+            if safe_ai_exists(source_df.options, "WhatsApp"):
+                return "WhatsApp"
+        except WAChatHubSecurityError:
+            return None
         # If WhatsApp option is absent, don't set source and avoid LinkValidationError.
         return None
 
@@ -1202,13 +1279,14 @@ def _resolve_whatsapp_platform_value(meta) -> Optional[str]:
 def _resolve_or_create_link_value(doctype: str, value: str) -> Optional[str]:
     """Resolve/create a Link option by docname or title field, returning the real docname."""
     try:
+        assert_ai_doctype_permission(doctype, "read")
         meta = frappe.get_meta(doctype)
-        if frappe.db.exists(doctype, value):
+        if safe_ai_exists(doctype, value):
             return value
 
         title_field = _link_title_field(meta)
         if title_field:
-            existing = frappe.db.get_value(doctype, {title_field: value}, "name")
+            existing = safe_ai_get_value(doctype, {title_field: value}, "name")
             if existing:
                 return existing
 
@@ -1226,7 +1304,7 @@ def _resolve_or_create_link_value(doctype: str, value: str) -> Optional[str]:
             payload["is_active"] = 1
 
         doc = frappe.get_doc(payload)
-        doc.insert(ignore_permissions=True)
+        safe_ai_insert(doc)
         return doc.name
     except Exception:
         frappe.log_error(frappe.get_traceback(), f"WA Chat Hub Create {doctype} Failed")
@@ -1257,7 +1335,7 @@ def _persist_inbound_attachment(message_doc, payload: Dict[str, Any]) -> Optiona
         return None
 
     filename = build_attachment_filename(payload, media_url)
-    existing = frappe.db.get_value(
+    existing = safe_ai_get_value(
         "File",
         {
             "attached_to_doctype": "Chat Message",
@@ -1267,8 +1345,9 @@ def _persist_inbound_attachment(message_doc, payload: Dict[str, Any]) -> Optiona
         "name",
     )
     if existing:
+        assert_ai_doctype_permission("Chat Message", "read")
         if frappe.get_meta("Chat Message").has_field("attachment_file"):
-            frappe.db.set_value("Chat Message", message_doc.name, "attachment_file", existing, update_modified=False)
+            safe_ai_set_value("Chat Message", message_doc.name, "attachment_file", existing, update_modified=False)
         return existing
 
     file_doc = frappe.get_doc(
@@ -1281,25 +1360,27 @@ def _persist_inbound_attachment(message_doc, payload: Dict[str, Any]) -> Optiona
             "attached_to_name": message_doc.name,
         }
     )
-    file_doc.insert(ignore_permissions=True)
+    safe_ai_insert(file_doc)
     _repair_remote_attachment_comment_url(message_doc.doctype, message_doc.name, file_doc.file_name, file_doc.file_url)
+    assert_ai_doctype_permission("Chat Message", "read")
     if frappe.get_meta("Chat Message").has_field("attachment_file"):
-        frappe.db.set_value("Chat Message", message_doc.name, "attachment_file", file_doc.name, update_modified=False)
+        safe_ai_set_value("Chat Message", message_doc.name, "attachment_file", file_doc.name, update_modified=False)
     return file_doc.name
 
 
 def _attach_outbound_file_to_message(message_doc, file_name: str) -> None:
     """Move the uploaded local file from conversation-level staging onto the Chat Message."""
-    if not file_name or not frappe.db.exists("File", file_name):
+    if not file_name or not safe_ai_exists("File", file_name):
         return
 
     updates = {
         "attached_to_doctype": "Chat Message",
         "attached_to_name": message_doc.name,
     }
-    frappe.db.set_value("File", file_name, updates, update_modified=False)
+    safe_ai_set_value("File", file_name, updates, update_modified=False)
+    assert_ai_doctype_permission("Chat Message", "read")
     if frappe.get_meta("Chat Message").has_field("attachment_file"):
-        frappe.db.set_value("Chat Message", message_doc.name, "attachment_file", file_name, update_modified=False)
+        safe_ai_set_value("Chat Message", message_doc.name, "attachment_file", file_name, update_modified=False)
 
 
 def _sync_inbound_attachment_to_linked_record(
@@ -1309,7 +1390,7 @@ def _sync_inbound_attachment_to_linked_record(
     payload: Dict[str, Any],
 ) -> None:
     """Mirror inbound chat media URL on linked CRM Lead without local/S3 copy."""
-    convo = frappe.get_doc("Chat Conversation", conversation)
+    convo = safe_ai_get_doc("Chat Conversation", conversation)
     crm_lead = get_conversation_crm_lead(convo)
     if not crm_lead:
         return
@@ -1320,10 +1401,10 @@ def _sync_inbound_attachment_to_linked_record(
     if not media_url:
         return
 
-    chat_file = frappe.get_doc("File", chat_file_name)
+    chat_file = safe_ai_get_doc("File", chat_file_name)
     filename = build_attachment_filename(payload, media_url)
     lead_filename = f"WA-{message_name}-{filename}"
-    existing_lead_file = frappe.db.get_value(
+    existing_lead_file = safe_ai_get_value(
         "File",
         {
             "attached_to_doctype": ref_doctype,
@@ -1333,10 +1414,10 @@ def _sync_inbound_attachment_to_linked_record(
         "name",
     )
     if existing_lead_file:
-        lead_file_doc = frappe.get_doc("File", existing_lead_file)
+        lead_file_doc = safe_ai_get_doc("File", existing_lead_file)
         _repair_remote_attachment_comment_url(ref_doctype, ref_name, lead_file_doc.file_name, lead_file_doc.file_url)
         return
-    existing_lead_file = frappe.db.get_value(
+    existing_lead_file = safe_ai_get_value(
         "File",
         {
             "attached_to_doctype": ref_doctype,
@@ -1346,7 +1427,7 @@ def _sync_inbound_attachment_to_linked_record(
         "name",
     )
     if existing_lead_file:
-        lead_file_doc = frappe.get_doc("File", existing_lead_file)
+        lead_file_doc = safe_ai_get_doc("File", existing_lead_file)
         _repair_remote_attachment_comment_url(ref_doctype, ref_name, lead_file_doc.file_name, lead_file_doc.file_url)
         return
     lead_file = frappe.get_doc(
@@ -1359,7 +1440,7 @@ def _sync_inbound_attachment_to_linked_record(
             "attached_to_name": ref_name,
         }
     )
-    lead_file.insert(ignore_permissions=True)
+    safe_ai_insert(lead_file)
     _repair_remote_attachment_comment_url(ref_doctype, ref_name, lead_file.file_name, lead_file.file_url)
 
 
@@ -1370,23 +1451,23 @@ def _sync_outbound_attachment_to_linked_record(
     payload: Dict[str, Any],
 ) -> None:
     """Mirror outbound chat media on linked CRM Lead."""
-    if not chat_file_name or not frappe.db.exists("File", chat_file_name):
+    if not chat_file_name or not safe_ai_exists("File", chat_file_name):
         return
 
-    convo = frappe.get_doc("Chat Conversation", conversation)
+    convo = safe_ai_get_doc("Chat Conversation", conversation)
     crm_lead = get_conversation_crm_lead(convo)
     if not crm_lead:
         return
 
     ref_doctype = "CRM Lead"
     ref_name = crm_lead
-    chat_file = frappe.get_doc("File", chat_file_name)
+    chat_file = safe_ai_get_doc("File", chat_file_name)
     file_url = str(chat_file.file_url or payload.get("media_url") or "").strip()
     if not file_url:
         return
 
     lead_filename = f"WA-{message_name}-{chat_file.file_name or payload.get('file_name') or 'attachment'}"
-    existing_lead_file = frappe.db.get_value(
+    existing_lead_file = safe_ai_get_value(
         "File",
         {
             "attached_to_doctype": ref_doctype,
@@ -1396,7 +1477,7 @@ def _sync_outbound_attachment_to_linked_record(
         "name",
     )
     if existing_lead_file:
-        lead_file_doc = frappe.get_doc("File", existing_lead_file)
+        lead_file_doc = safe_ai_get_doc("File", existing_lead_file)
         _repair_remote_attachment_comment_url(ref_doctype, ref_name, lead_file_doc.file_name, lead_file_doc.file_url)
         return
 
@@ -1410,7 +1491,7 @@ def _sync_outbound_attachment_to_linked_record(
             "attached_to_name": ref_name,
         }
     )
-    lead_file.insert(ignore_permissions=True)
+    safe_ai_insert(lead_file)
     _repair_remote_attachment_comment_url(ref_doctype, ref_name, lead_file.file_name, lead_file.file_url)
 
 
@@ -1430,7 +1511,7 @@ def _repair_remote_attachment_comment_url(
     if not _is_remote_url(file_url):
         return
 
-    comments = frappe.get_all(
+    comments = safe_ai_get_all(
         "Comment",
         filters={
             "reference_doctype": attached_to_doctype,
@@ -1449,7 +1530,7 @@ def _repair_remote_attachment_comment_url(
             continue
         repaired = _replace_first_href(content, _safe_remote_href(file_url))
         if repaired != content:
-            frappe.db.set_value("Comment", comment.name, "content", repaired, update_modified=False)
+            safe_ai_set_value("Comment", comment.name, "content", repaired, update_modified=False)
             return
 
 

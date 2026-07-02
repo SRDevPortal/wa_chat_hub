@@ -18,6 +18,8 @@
     "enable_multilingual_replies",
     "multilingual_reply_policy",
     "section_access",
+    "service_user",
+    "ai_doctype_permissions",
     "allow_mcp_access",
     "allow_erp_read",
     "allow_erp_write",
@@ -86,6 +88,20 @@
       "fieldname": "section_access",
       "fieldtype": "Section Break",
       "label": "ERP / Tool Access"
+    },
+    {
+      "description": "Dedicated user used by WA Chat Hub background jobs and AI runtime. Do not set this to Administrator.",
+      "fieldname": "service_user",
+      "fieldtype": "Link",
+      "label": "WA Chat Hub Service User",
+      "options": "User"
+    },
+    {
+      "description": "Explicit DocType-level access for WA Chat Hub AI/service-worker reads, writes, and deletes. Unlisted DocTypes are denied.",
+      "fieldname": "ai_doctype_permissions",
+      "fieldtype": "Table",
+      "label": "AI DocType Permissions",
+      "options": "WA AI DocType Permission"
     },
     {
       "default": "0",

@@ -31,7 +31,7 @@ def run(live_llm: int = 0, live_send: int = 0):
     results.append(_test_deliver_ai_reply_mocked(conv, channel, phone))
 
     if int(live_llm or 0):
-        results.append(_test_process_message_live(conv))
+        results.append(_test_process_message_live(conv, channel, phone))
 
     _print_results(results)
     ok = all(r[1] for r in results)
@@ -60,9 +60,10 @@ def _check_update_uses_set_value():
     from wa_chat_hub.services import update_conversation_after_message
 
     src = inspect.getsource(update_conversation_after_message)
-    if "frappe.db.set_value" in src and "convo.save" not in src:
-        return ("update_conversation_after_message", True, "uses db.set_value (no convo.save)")
-    return ("update_conversation_after_message", False, "still uses convo.save — redeploy/restart bench")
+    uses_direct_update = "frappe.db.sql" in src or "safe_ai_set_value" in src or "frappe.db.set_value" in src
+    if uses_direct_update and "convo.save" not in src:
+        return ("update_conversation_after_message", True, "uses direct guarded update (no convo.save)")
+    return ("update_conversation_after_message", False, "still uses doc save — redeploy/restart bench")
 
 
 def _pick_test_conversation():
@@ -169,15 +170,24 @@ def _test_deliver_ai_reply_mocked(conv, channel, phone):
         return ("deliver_ai_reply", False, frappe.get_traceback())
 
 
-def _test_process_message_live(conv):
-    inbound = frappe.db.get_value(
-        "Chat Message",
-        {"conversation": conv, "direction": "Inbound"},
-        "name",
-        order_by="creation desc",
+def _test_process_message_live(conv, channel, phone):
+    from wa_chat_hub.services import append_message
+
+    body = f"E2E fresh inbound for process_message {frappe.generate_hash(length=8)}"
+    result = append_message(
+        {
+            "channel_account": channel,
+            "phone_number": phone,
+            "direction": "Inbound",
+            "sender_type": "Customer",
+            "content_type": "Text",
+            "body": body,
+            "channel_message_id": f"e2e-inbound-{frappe.generate_hash(length=8)}",
+        }
     )
+    inbound = result.get("message")
     if not inbound:
-        return ("process_message_live", False, "no inbound message")
+        return ("process_message_live", False, "fresh inbound message not created")
 
     with patch("wa_chat_hub.api.ai_bot.call_provider", return_value="E2E live LLM mock reply"):
         with patch("wa_chat_hub.outbound.send_outbound_message") as mock_send:

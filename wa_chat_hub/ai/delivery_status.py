@@ -8,6 +8,13 @@ from urllib.parse import quote
 import frappe
 import requests
 
+from wa_chat_hub.security import (
+    WAChatHubSecurityError,
+    assert_ai_doctype_permission,
+    safe_ai_exists,
+    safe_ai_get_all,
+    safe_ai_get_value,
+)
 from wa_chat_hub.services import normalize_phone
 from wa_chat_hub.task_logger import task_log
 
@@ -45,6 +52,11 @@ BOT_CHECK_TOKENS = (
     "bot verification",
 )
 
+DELIVERY_VERIFY_REPLY = (
+    "Delivery status verify karne ke liye SRIAAS team aapka record check karegi. "
+    "Kripya registered mobile number, patient ID, order ID ya AWB number share kar dijiye."
+)
+
 
 @dataclass
 class DeliveryStatusResult:
@@ -80,10 +92,20 @@ def _has_explicit_tracking_request(text: str) -> bool:
 
 def build_delivery_status_reply(conversation: str, latest_text: str | None = None) -> DeliveryStatusResult:
     """Resolve the WhatsApp sender to a Patient Encounter and build a shipment-status reply."""
-    phone = _conversation_phone(conversation)
+    try:
+        phone = _conversation_phone(conversation)
+    except WAChatHubSecurityError:
+        task_log("delivery_status", "blocked_conversation_phone", conversation=conversation)
+        return DeliveryStatusResult(found=False, reply=DELIVERY_VERIFY_REPLY)
+
     task_log("delivery_status", "matched_intent", conversation=conversation, phone=phone)
 
-    patient = _find_patient_by_phone(phone)
+    try:
+        patient = _find_patient_by_phone(phone)
+    except WAChatHubSecurityError:
+        task_log("delivery_status", "blocked_patient_lookup", conversation=conversation, phone=phone)
+        return DeliveryStatusResult(found=False, reply=DELIVERY_VERIFY_REPLY)
+
     if not patient:
         task_log("delivery_status", "patient_not_found", conversation=conversation, phone=phone)
         return DeliveryStatusResult(
@@ -94,7 +116,12 @@ def build_delivery_status_reply(conversation: str, latest_text: str | None = Non
             ),
         )
 
-    encounter = _latest_shipment_encounter(patient)
+    try:
+        encounter = _latest_shipment_encounter(patient)
+    except WAChatHubSecurityError:
+        task_log("delivery_status", "blocked_encounter_lookup", conversation=conversation, patient=patient)
+        return DeliveryStatusResult(found=False, patient=patient, reply=DELIVERY_VERIFY_REPLY)
+
     if not encounter:
         task_log("delivery_status", "shipment_not_found", conversation=conversation, patient=patient)
         return DeliveryStatusResult(
@@ -106,7 +133,18 @@ def build_delivery_status_reply(conversation: str, latest_text: str | None = Non
             ),
         )
 
-    awb = _shipment_tracking_id(encounter)
+    try:
+        awb = _shipment_tracking_id(encounter)
+    except WAChatHubSecurityError:
+        task_log(
+            "delivery_status",
+            "blocked_shipment_lookup",
+            conversation=conversation,
+            patient=patient,
+            encounter=encounter.name,
+        )
+        return DeliveryStatusResult(found=False, patient=patient, encounter=encounter.name, reply=DELIVERY_VERIFY_REPLY)
+
     shipment_name = encounter.get("pe_shipkia_shipment")
     if not awb:
         task_log(
@@ -173,25 +211,28 @@ def build_delivery_status_reply(conversation: str, latest_text: str | None = Non
 
 
 def _conversation_phone(conversation: str) -> str:
-    contact = frappe.db.get_value("Chat Conversation", conversation, "contact")
+    contact = safe_ai_get_value("Chat Conversation", conversation, "contact")
     if not contact:
         return ""
-    return normalize_phone(frappe.db.get_value("Chat Contact", contact, "phone_number") or "")
+    return normalize_phone(safe_ai_get_value("Chat Contact", contact, "phone_number") or "")
 
 
 def _find_patient_by_phone(phone: str) -> str | None:
-    if not phone or not frappe.db.exists("DocType", "Patient"):
+    if not phone:
+        return None
+    if not safe_ai_exists("DocType", "Patient"):
         return None
 
     last10 = phone[-10:] if len(phone) >= 10 else phone
+    assert_ai_doctype_permission("Patient", "read")
     meta = frappe.get_meta("Patient")
     for fieldname in ("mobile", "phone", "mobile_no", "custom_whatsapp_number"):
         if not meta.has_field(fieldname):
             continue
-        exact = frappe.db.get_value("Patient", {fieldname: phone}, "name")
+        exact = safe_ai_get_value("Patient", {fieldname: phone}, "name")
         if exact:
             return exact
-        rows = frappe.get_all(
+        rows = safe_ai_get_all(
             "Patient",
             filters={fieldname: ["like", f"%{last10}%"]},
             fields=["name", fieldname],
@@ -205,9 +246,10 @@ def _find_patient_by_phone(phone: str) -> str | None:
 
 
 def _latest_shipment_encounter(patient: str):
-    if not frappe.db.exists("DocType", "Patient Encounter"):
+    if not safe_ai_exists("DocType", "Patient Encounter"):
         return None
 
+    assert_ai_doctype_permission("Patient Encounter", "read")
     meta = frappe.get_meta("Patient Encounter")
     or_filters = []
     fields = [
@@ -223,7 +265,7 @@ def _latest_shipment_encounter(patient: str):
     if not or_filters:
         return None
 
-    rows = frappe.get_all(
+    rows = safe_ai_get_all(
         "Patient Encounter",
         filters={"patient": patient, "docstatus": ["!=", 2]},
         or_filters=or_filters,
@@ -240,9 +282,9 @@ def _shipment_tracking_id(encounter) -> str:
         return awb
 
     shipment = encounter.get("pe_shipkia_shipment")
-    if shipment and frappe.db.exists("Shipment Tracking Shipment", shipment):
+    if shipment and safe_ai_exists("Shipment Tracking Shipment", shipment):
         return str(
-            frappe.db.get_value("Shipment Tracking Shipment", shipment, "shipkia_awb_number") or ""
+            safe_ai_get_value("Shipment Tracking Shipment", shipment, "shipkia_awb_number") or ""
         ).strip()
     return ""
 

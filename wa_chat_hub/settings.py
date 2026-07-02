@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import frappe
 
+from wa_chat_hub.security import safe_ai_get_all, safe_ai_get_doc
+
 
 def get_or_create_settings():
     name = frappe.db.get_single_value("WA Chat Hub Settings", "name")
@@ -23,11 +25,11 @@ def get_active_knowledge_base(
 ):
     fields = _knowledge_base_fields()
     if context:
-        doc = frappe.get_doc("WA Channel Context", context)
+        doc = safe_ai_get_doc("WA Channel Context", context)
         names = [row.knowledge_base for row in doc.get("knowledge_bases") or [] if row.is_active and row.knowledge_base]
         if not names:
             return []
-        rows = frappe.get_all(
+        rows = safe_ai_get_all(
             "WA AI Knowledge Base",
             filters={"name": ["in", names], "is_active": 1},
             fields=fields,
@@ -40,7 +42,7 @@ def get_active_knowledge_base(
         filters["department"] = ["in", ["", department]]
     if channel_account and "chat_channel_account" in fields:
         filters["chat_channel_account"] = ["in", ["", channel_account]]
-    return frappe.get_all(
+    return safe_ai_get_all(
         "WA AI Knowledge Base",
         filters=filters,
         fields=fields,

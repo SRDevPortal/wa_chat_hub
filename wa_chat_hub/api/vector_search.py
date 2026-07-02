@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 import frappe
 
+from wa_chat_hub.security import safe_ai_exists
 from wa_chat_hub.settings import get_active_knowledge_base
 
 
@@ -21,7 +22,7 @@ def search_knowledge_base(
     Uses active WA AI Knowledge Base rows (no embedding dependency).
     """
     query = (query or "").strip()
-    if not query or not frappe.db.exists("DocType", "WA AI Knowledge Base"):
+    if not query or not safe_ai_exists("DocType", "WA AI Knowledge Base"):
         return []
 
     rows = get_active_knowledge_base(department=department, channel_account=channel_account)

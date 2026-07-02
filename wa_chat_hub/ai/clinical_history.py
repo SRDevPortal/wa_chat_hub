@@ -4,8 +4,14 @@ import re
 from dataclasses import dataclass
 
 import frappe
-from frappe.utils import formatdate
 
+from wa_chat_hub.security import (
+    WAChatHubSecurityError,
+    assert_ai_doctype_permission,
+    safe_ai_exists,
+    safe_ai_get_all,
+    safe_ai_get_value,
+)
 from wa_chat_hub.services import normalize_phone
 from wa_chat_hub.task_logger import task_log
 
@@ -77,9 +83,11 @@ REQUEST_HINT_RE = re.compile(
     re.IGNORECASE,
 )
 
-MAX_HISTORY_ROWS = 8
-MAX_REPLY_ROWS = 5
-MAX_NOTE_CHARS = 900
+CLINICAL_HISTORY_PRIVACY_REPLY = (
+    "Privacy ke liye main chat par patient encounter ya past medical history details share nahi kar sakta. "
+    "SRIAAS team identity verify karke record/status confirm kar degi. "
+    "Kripya registered mobile number ya patient ID share kar dijiye."
+)
 
 
 @dataclass
@@ -163,8 +171,13 @@ def build_clinical_history_reply(
     conversation: str,
     latest_text: str | None = None,
 ) -> ClinicalHistoryResult:
-    """Resolve WhatsApp sender to Patient and answer from Patient Encounter history."""
-    phone = _conversation_phone(conversation)
+    """Resolve WhatsApp sender to Patient, but do not expose Patient Encounter history in chat."""
+    try:
+        phone = _conversation_phone(conversation)
+    except WAChatHubSecurityError:
+        task_log("clinical_history", "blocked_conversation_phone", conversation=conversation)
+        phone = ""
+
     normalized_query = _normalize_intent_text(str(latest_text or ""))
     medication_focused = bool(MEDICATION_QUERY_RE.search(normalized_query))
     order_focused = bool(ORDER_QUERY_RE.search(normalized_query))
@@ -179,7 +192,12 @@ def build_clinical_history_reply(
         latest_only=1 if latest_only else 0,
     )
 
-    patient = _find_patient_by_phone(phone)
+    try:
+        patient = _find_patient_by_phone(phone)
+    except WAChatHubSecurityError:
+        task_log("clinical_history", "blocked_patient_lookup", conversation=conversation, phone=phone)
+        patient = None
+
     if not patient:
         task_log("clinical_history", "patient_not_found", conversation=conversation, phone=phone)
         return ClinicalHistoryResult(
@@ -193,37 +211,17 @@ def build_clinical_history_reply(
             ),
         )
 
-    encounters = get_patient_clinical_history(patient, limit=MAX_HISTORY_ROWS)
-    patient_name = frappe.db.get_value("Patient", patient, "patient_name") or patient
-    if not encounters:
-        task_log("clinical_history", "history_not_found", conversation=conversation, patient=patient)
-        return ClinicalHistoryResult(
-            found=False,
-            patient=patient,
-            patient_name=patient_name,
-            medication_focused=medication_focused,
-            order_focused=order_focused,
-            latest_only=latest_only,
-            reply=(
-                f"I found your patient record ({patient_name}), but no clinical history is recorded yet. "
-                "Our team can check with the doctor and update you."
-            ),
-        )
+    try:
+        patient_name = safe_ai_get_value("Patient", patient, "patient_name") or patient
+    except WAChatHubSecurityError:
+        task_log("clinical_history", "blocked_patient_name", conversation=conversation, patient=patient)
+        patient_name = patient
 
-    reply = _format_clinical_history_reply(
-        patient_name=patient_name,
-        encounters=encounters,
-        medication_focused=medication_focused,
-        order_focused=order_focused,
-        latest_only=latest_only,
-    )
-    encounter_names = [row["name"] for row in encounters if row.get("name")]
     task_log(
         "clinical_history",
-        "reply_done",
+        "privacy_guard_reply",
         conversation=conversation,
         patient=patient,
-        encounters=",".join(encounter_names[:MAX_REPLY_ROWS]),
         medication_focused=1 if medication_focused else 0,
         order_focused=1 if order_focused else 0,
         latest_only=1 if latest_only else 0,
@@ -232,107 +230,58 @@ def build_clinical_history_reply(
         found=True,
         patient=patient,
         patient_name=patient_name,
-        encounters=encounter_names,
+        encounters=[],
         medication_focused=medication_focused,
         order_focused=order_focused,
         latest_only=latest_only,
-        reply=reply,
+        reply=CLINICAL_HISTORY_PRIVACY_REPLY,
     )
 
 
 def build_clinical_history_context(
     conversation: str,
     latest_text: str | None = None,
-    limit: int = MAX_HISTORY_ROWS,
+    limit: int = 0,
 ) -> str:
-    """Return compact patient history context for the generic LLM path."""
+    """Return privacy guard context for the generic LLM path."""
     if not is_clinical_history_query(latest_text):
         return ""
 
-    phone = _conversation_phone(conversation)
-    patient = _find_patient_by_phone(phone)
-    if not patient:
-        return ""
-
-    patient_name = frappe.db.get_value("Patient", patient, "patient_name") or patient
-    encounters = get_patient_clinical_history(patient, limit=limit)
-    if not encounters:
-        return ""
-
-    lines = [
-        "Patient clinical history context from ERPNext Patient Encounter records:",
-        f"Patient: {patient_name} ({patient})",
-        "Use only these records when answering past medication/history questions. "
-        "Do not invent medicines, dates, diagnoses, or instructions. "
-        "Do not advise starting/stopping/changing medicines; ask the patient to confirm with the doctor.",
-    ]
-    for row in encounters:
-        lines.append(_format_context_row(row))
-    return "\n".join(line for line in lines if line)
-
-
-def get_patient_clinical_history(patient: str, limit: int = MAX_HISTORY_ROWS) -> list[dict]:
-    if not patient or not frappe.db.exists("DocType", "Patient Encounter"):
-        return []
-
-    meta = frappe.get_meta("Patient Encounter")
-    base_fields = [
-        "name",
-        "encounter_date",
-        "encounter_time",
-        "modified",
-        "status",
-    ]
-    optional_fields = [
-        "sr_complaints",
-        "sr_observations",
-        "sr_investigations",
-        "sr_diagnosis",
-        "sr_notes",
-        "sr_pe_instruction",
-        "encounter_comment",
-    ]
-    fields = base_fields + [field for field in optional_fields if meta.has_field(field)]
-
-    rows = frappe.get_all(
-        "Patient Encounter",
-        filters={"patient": patient, "docstatus": ["!=", 2]},
-        fields=fields,
-        order_by="encounter_date desc, encounter_time desc, modified desc",
-        limit_page_length=limit,
+    return (
+        "Patient history privacy guard: Do not share Patient Encounter records, encounter names, "
+        "clinical notes, medicines, diagnosis, orders, visit history, or past medical history details "
+        "in the customer-facing reply. Ask for registered mobile number or patient ID and say the "
+        "team can verify identity and confirm records/status."
     )
 
-    history = []
-    for row in rows:
-        data = dict(row)
-        data["medications"] = _encounter_medications(row.name)
-        data["tests"] = _encounter_tests(row.name)
-        data["order_items"] = _encounter_order_items(row.name)
-        if _has_history_content(data):
-            history.append(data)
-    return history
+
+def get_patient_clinical_history(patient: str, limit: int = 0) -> list[dict]:
+    return []
 
 
 def _conversation_phone(conversation: str) -> str:
-    contact = frappe.db.get_value("Chat Conversation", conversation, "contact")
+    contact = safe_ai_get_value("Chat Conversation", conversation, "contact")
     if not contact:
         return ""
-    return normalize_phone(frappe.db.get_value("Chat Contact", contact, "phone_number") or "")
+    return normalize_phone(safe_ai_get_value("Chat Contact", contact, "phone_number") or "")
 
 
 def _find_patient_by_phone(phone: str) -> str | None:
-    if not phone or not frappe.db.exists("DocType", "Patient"):
+    if not phone:
+        return None
+    if not safe_ai_exists("DocType", "Patient"):
         return None
 
     last10 = phone[-10:] if len(phone) >= 10 else phone
+    assert_ai_doctype_permission("Patient", "read")
     meta = frappe.get_meta("Patient")
     for fieldname in ("mobile", "phone", "mobile_no", "custom_whatsapp_number"):
         if not meta.has_field(fieldname):
             continue
-        exact = frappe.db.get_value("Patient", {fieldname: phone}, "name")
+        exact = safe_ai_get_value("Patient", {fieldname: phone}, "name")
         if exact:
             return exact
-        rows = frappe.get_all(
+        rows = safe_ai_get_all(
             "Patient",
             filters={fieldname: ["like", f"%{last10}%"]},
             fields=["name", fieldname],
@@ -343,350 +292,3 @@ def _find_patient_by_phone(phone: str) -> str | None:
             if normalized == phone or normalized.endswith(last10):
                 return row.name
     return None
-
-
-def _encounter_medications(encounter: str) -> list[str]:
-    medicines: list[str] = []
-    for table_field in (
-        "drug_prescription",
-        "sr_homeopathy_drug_prescription",
-        "sr_allopathy_drug_prescription",
-    ):
-        medicines.extend(_format_drug_rows(encounter, table_field))
-    return _dedupe(medicines)
-
-
-def _format_drug_rows(encounter: str, parentfield: str) -> list[str]:
-    if not frappe.db.exists("DocType", "Drug Prescription"):
-        return []
-
-    meta = frappe.get_meta("Drug Prescription")
-    field_candidates = [
-        "medication",
-        "sr_medication_name_print",
-        "drug_name",
-        "dosage",
-        "period",
-        "dosage_form",
-        "sr_drug_instruction",
-        "comment",
-    ]
-    fields = [field for field in field_candidates if meta.has_field(field)]
-    if not fields:
-        return []
-
-    rows = frappe.get_all(
-        "Drug Prescription",
-        filters={
-            "parenttype": "Patient Encounter",
-            "parent": encounter,
-            "parentfield": parentfield,
-        },
-        fields=fields,
-        order_by="idx asc",
-        limit_page_length=20,
-    )
-    formatted = []
-    for row in rows:
-        name = _first(row.get("sr_medication_name_print"), row.get("drug_name"), row.get("medication"))
-        if not name:
-            continue
-        details = [
-            value
-            for value in (
-                row.get("dosage"),
-                row.get("period"),
-                row.get("dosage_form"),
-                row.get("sr_drug_instruction"),
-                row.get("comment"),
-            )
-            if value
-        ]
-        formatted.append(f"{name} ({', '.join(details)})" if details else str(name))
-    return formatted
-
-
-def _encounter_tests(encounter: str) -> list[str]:
-    if not frappe.db.exists("DocType", "Lab Prescription"):
-        return []
-    meta = frappe.get_meta("Lab Prescription")
-    field_candidates = ["lab_test_name", "lab_test_code", "lab_test_comment"]
-    fields = [field for field in field_candidates if meta.has_field(field)]
-    if not fields:
-        return []
-    rows = frappe.get_all(
-        "Lab Prescription",
-        filters={
-            "parenttype": "Patient Encounter",
-            "parent": encounter,
-            "parentfield": "lab_test_prescription",
-        },
-        fields=fields,
-        order_by="idx asc",
-        limit_page_length=20,
-    )
-    tests = []
-    for row in rows:
-        name = _first(row.get("lab_test_name"), row.get("lab_test_code"))
-        if not name:
-            continue
-        comment = str(row.get("lab_test_comment") or "").strip()
-        tests.append(f"{name} ({comment})" if comment else str(name))
-    return _dedupe(tests)
-
-
-def _encounter_order_items(encounter: str) -> list[str]:
-    if not frappe.db.exists("DocType", "SR Order Item"):
-        return []
-
-    meta = frappe.get_meta("SR Order Item")
-    field_candidates = [
-        "sr_item_name",
-        "sr_item_code",
-        "sr_item_qty",
-        "sr_item_uom",
-        "sr_item_rate",
-        "sr_item_amount",
-        "sr_item_description",
-    ]
-    fields = [field for field in field_candidates if meta.has_field(field)]
-    if not fields:
-        return []
-
-    rows = frappe.get_all(
-        "SR Order Item",
-        filters={
-            "parenttype": "Patient Encounter",
-            "parent": encounter,
-            "parentfield": "sr_pe_order_items",
-        },
-        fields=fields,
-        order_by="idx asc",
-        limit_page_length=20,
-    )
-    items = []
-    for row in rows:
-        name = _first(row.get("sr_item_name"), row.get("sr_item_code"))
-        if not name:
-            continue
-        details = []
-        qty = row.get("sr_item_qty")
-        uom = row.get("sr_item_uom")
-        if qty:
-            details.append(f"Qty {qty:g}" if isinstance(qty, float) else f"Qty {qty}")
-        if uom:
-            details.append(str(uom))
-        if row.get("sr_item_amount"):
-            details.append(f"Amount {row.get('sr_item_amount')}")
-        if row.get("sr_item_description"):
-            details.append(str(row.get("sr_item_description")))
-        items.append(f"{name} ({', '.join(details)})" if details else str(name))
-    return _dedupe(items)
-
-
-def _has_history_content(row: dict) -> bool:
-    text_fields = (
-        "sr_complaints",
-        "sr_observations",
-        "sr_investigations",
-        "sr_diagnosis",
-        "sr_notes",
-        "sr_pe_instruction",
-        "encounter_comment",
-    )
-    return any(_clean_text(row.get(field)) for field in text_fields) or bool(
-        row.get("medications") or row.get("tests") or row.get("order_items")
-    )
-
-
-def _format_clinical_history_reply(
-    patient_name: str,
-    encounters: list[dict],
-    medication_focused: bool,
-    order_focused: bool,
-    latest_only: bool,
-) -> str:
-    if order_focused:
-        lines = [f"As per {patient_name}'s patient encounter records, the requested order details are:"]
-        reply_rows = _order_relevant_rows(encounters)
-    elif medication_focused:
-        lines = [f"As per {patient_name}'s patient encounter records, recent medication/history details are:"]
-        reply_rows = _medication_relevant_rows(encounters)
-    else:
-        lines = [f"As per {patient_name}'s patient encounter records, the requested clinical details are:"]
-        reply_rows = encounters
-
-    row_limit = 1 if latest_only else MAX_REPLY_ROWS
-    for row in reply_rows[:row_limit]:
-        lines.extend(
-            _format_reply_row(
-                row,
-                medication_focused=medication_focused,
-                order_focused=order_focused,
-            )
-        )
-
-    lines.append(
-        "Please confirm with the doctor before starting, stopping, or changing any medicine."
-    )
-    return "\n".join(lines)
-
-
-def _order_relevant_rows(encounters: list[dict]) -> list[dict]:
-    scored = [(_order_relevance_score(row), idx, row) for idx, row in enumerate(encounters)]
-    strong = [item for item in scored if item[0] >= 2]
-    if strong:
-        scored = strong
-    scored.sort(key=lambda item: (-item[0], item[1]))
-    return [row for _, _, row in scored]
-
-
-def _order_relevance_score(row: dict) -> int:
-    if row.get("order_items"):
-        return 3
-
-    text = " ".join(
-        _clean_text(row.get(field))
-        for field in ("sr_notes", "sr_pe_instruction", "sr_complaints", "sr_diagnosis", "encounter_comment")
-    ).lower()
-    if not text:
-        return 0
-    if re.search(r"\b(order|ordered|items?|products?|delivered|medicines?\s+delivered)\b", text):
-        return 2
-    return 0
-
-
-def _medication_relevant_rows(encounters: list[dict]) -> list[dict]:
-    scored = [(_medication_relevance_score(row), idx, row) for idx, row in enumerate(encounters)]
-    strong = [item for item in scored if item[0] >= 2]
-    if strong:
-        scored = strong
-    scored.sort(key=lambda item: (-item[0], item[1]))
-    return [row for _, _, row in scored]
-
-
-def _medication_relevance_score(row: dict) -> int:
-    if row.get("medications"):
-        return 3
-
-    text = " ".join(
-        _clean_text(row.get(field))
-        for field in ("sr_notes", "sr_pe_instruction", "sr_complaints", "sr_diagnosis")
-    ).lower()
-    if not text:
-        return 0
-
-    if "draft / to be verified" in text or "current regular medications are not confirmed" in text:
-        return 1
-    if re.search(r"\b(medicines?\s+delivered|dosages?\s+explained|starting\s+medicines?)\b", text):
-        return 2
-    if re.search(r"\b(ayurvedic|homeopathy|allopathy|tablet|capsule|dose|dosage|prescribed)\b", text):
-        return 2
-    if MEDICATION_QUERY_RE.search(text):
-        return 1
-    return 0
-
-
-def _format_reply_row(row: dict, medication_focused: bool, order_focused: bool) -> list[str]:
-    date_text = _date_text(row.get("encounter_date"))
-    header = f"\nEncounter: {row.get('name')}"
-    if date_text:
-        header += f" | Date: {date_text}"
-    lines = [header]
-
-    meds = row.get("medications") or []
-    order_items = row.get("order_items") or []
-    if order_items:
-        lines.append("Order Items: " + "; ".join(order_items[:8]))
-    if meds and not order_focused:
-        lines.append("Medicines: " + "; ".join(meds[:8]))
-
-    if not medication_focused and not order_focused:
-        _append_field(lines, "Complaints", row.get("sr_complaints"))
-        _append_field(lines, "Observations", row.get("sr_observations"))
-        _append_field(lines, "Diagnosis", row.get("sr_diagnosis"))
-        _append_field(lines, "Investigations", row.get("sr_investigations"))
-        tests = row.get("tests") or []
-        if tests:
-            lines.append("Lab Tests: " + "; ".join(tests[:8]))
-
-    notes = _clean_text(row.get("sr_notes"))
-    if notes:
-        lines.append(f"Notes: {_clip(notes, MAX_NOTE_CHARS)}")
-
-    instruction = _clean_text(row.get("sr_pe_instruction"))
-    if instruction:
-        lines.append(f"Instruction: {_clip(instruction, 400)}")
-    return lines
-
-
-def _format_context_row(row: dict) -> str:
-    parts = [
-        f"Encounter {row.get('name')}",
-        f"Date {_date_text(row.get('encounter_date'))}" if row.get("encounter_date") else "",
-    ]
-    for label, fieldname in (
-        ("Complaints", "sr_complaints"),
-        ("Observations", "sr_observations"),
-        ("Diagnosis", "sr_diagnosis"),
-        ("Investigations", "sr_investigations"),
-        ("Notes", "sr_notes"),
-        ("Instruction", "sr_pe_instruction"),
-    ):
-        value = _clean_text(row.get(fieldname))
-        if value:
-            parts.append(f"{label}: {_clip(value, 500)}")
-    if row.get("medications"):
-        parts.append("Medicines: " + "; ".join(row["medications"][:8]))
-    if row.get("order_items"):
-        parts.append("Order Items: " + "; ".join(row["order_items"][:8]))
-    if row.get("tests"):
-        parts.append("Lab Tests: " + "; ".join(row["tests"][:8]))
-    return " | ".join(part for part in parts if part)
-
-
-def _append_field(lines: list[str], label: str, value: str | None) -> None:
-    cleaned = _clean_text(value)
-    if cleaned:
-        lines.append(f"{label}: {_clip(cleaned, 500)}")
-
-
-def _date_text(value) -> str:
-    if not value:
-        return ""
-    try:
-        return formatdate(value, "dd-mm-yyyy")
-    except Exception:
-        return str(value)
-
-
-def _clean_text(value: str | None) -> str:
-    text = " ".join(str(value or "").replace("\r", "\n").split())
-    return text.strip()
-
-
-def _clip(value: str, limit: int) -> str:
-    text = str(value or "").strip()
-    if len(text) <= limit:
-        return text
-    return text[: limit - 3].rstrip() + "..."
-
-
-def _first(*values) -> str:
-    for value in values:
-        text = str(value or "").strip()
-        if text:
-            return text
-    return ""
-
-
-def _dedupe(values: list[str]) -> list[str]:
-    seen = set()
-    result = []
-    for value in values:
-        key = value.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append(value)
-    return result
