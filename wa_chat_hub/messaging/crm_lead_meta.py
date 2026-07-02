@@ -29,6 +29,7 @@ def sync_crm_lead_meta_from_conversation(
     *,
     raw_payload: Any = None,
     force: bool = False,
+    lead_name: str | None = None,
 ) -> Dict[str, Any]:
     """
     Copy WhatsApp ad attribution onto linked CRM Lead (sr_w_* Meta Details fields).
@@ -40,7 +41,7 @@ def sync_crm_lead_meta_from_conversation(
         assert_ai_doctype_permission("Chat Conversation", "read")
         convo = conversation
 
-    lead_name = get_conversation_crm_lead(convo)
+    lead_name = lead_name or get_conversation_crm_lead(convo)
     if not lead_name:
         return {"updated": False, "reason": "no_linked_crm_lead"}
 

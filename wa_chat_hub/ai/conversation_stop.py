@@ -69,6 +69,8 @@ def evaluate_stop_rule(conversation: str, message_id: str) -> StopDecision:
 
 
 def mark_conversation_stopped(conversation: str) -> None:
+    _sync_stopped_score_to_linked_lead(conversation)
+
     assert_ai_doctype_permission("Chat Conversation", "read")
     meta = frappe.get_meta("Chat Conversation")
     updates = {}
@@ -80,8 +82,6 @@ def mark_conversation_stopped(conversation: str) -> None:
         updates["lead_temperature"] = "Cold"
     if updates:
         safe_ai_set_value("Chat Conversation", conversation, updates, update_modified=False)
-
-    _sync_stopped_score_to_linked_lead(conversation)
 
 
 def clear_conversation_stopped(conversation: str) -> None:

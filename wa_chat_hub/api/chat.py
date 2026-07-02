@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import time
 from urllib.parse import quote, urlparse
 
 import frappe
@@ -19,6 +20,7 @@ from wa_chat_hub.permissions import filter_accessible_conversation_rows
 from wa_chat_hub.permissions import filter_accessible_reference_names
 from wa_chat_hub.services import append_message, build_erp_actions, conversation_update_lock, mark_conversation_read
 from wa_chat_hub.services import normalize_phone
+from wa_chat_hub.task_logger import elapsed, task_log
 
 CHAT_HUB_SCOPE_DOCTYPES = {"CRM Lead", "Lead", "Patient", "Patient Encounter"}
 MEDIA_PROXY_MAX_BYTES = 20 * 1024 * 1024
@@ -592,8 +594,11 @@ def get_message_media(message):
 
 @frappe.whitelist(methods=["POST"])
 def mark_read(conversation):
+    started = time.monotonic()
+    task_log("chat", "mark_read_start", conversation=conversation)
     ensure_can_read_conversation(conversation)
     mark_conversation_read(conversation)
+    task_log("chat", "mark_read_done", conversation=conversation, duration_sec=elapsed(started))
     return {"success": True}
 
 
@@ -679,6 +684,8 @@ def add_external_outbound_message(conversation, body, delivery_status="Sent", ch
 def get_sidebar_context(conversation):
     from wa_chat_hub.messaging.windows import _ensure_messaging_window_schema
 
+    started = time.monotonic()
+    task_log("chat", "sidebar_start", conversation=conversation)
     ensure_can_read_conversation(conversation)
     _ensure_messaging_window_schema()
     convo = frappe.get_doc("Chat Conversation", conversation)
@@ -698,7 +705,7 @@ def get_sidebar_context(conversation):
             if messaging_window.get(key):
                 attribution[key] = messaging_window[key]
 
-    return {
+    result = {
         "success": True,
         "result": {
             "conversation": convo.as_dict(),
@@ -709,6 +716,8 @@ def get_sidebar_context(conversation):
             "server_time": str(now_datetime()),
         },
     }
+    task_log("chat", "sidebar_done", conversation=conversation, duration_sec=elapsed(started))
+    return result
 
 
 @frappe.whitelist()

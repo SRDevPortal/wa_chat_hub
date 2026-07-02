@@ -355,18 +355,8 @@ def _process_interakt_payload(payload: dict, raw_body: bytes | None = None):
 
 
 def _interakt_webhook_queue(payload: dict) -> str:
-    webhook_type = payload.get("type")
-    message = ((payload.get("data") or {}).get("message") or {}) if isinstance(payload, dict) else {}
-    if not isinstance(message, dict):
-        message = {}
-    content_type = str(
-        message.get("message_content_type")
-        or message.get("content_type")
-        or message.get("type")
-        or ""
-    ).lower()
-    if webhook_type == "message_received" and content_type in {"image", "video", "audio", "document", "sticker"}:
-        return "long"
+    # Keep webhook persistence fast. Heavy media OCR/transcript work is
+    # enqueued separately on the long queue after the Chat Message is saved.
     return "short"
 
 

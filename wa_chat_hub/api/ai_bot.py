@@ -1,12 +1,14 @@
 import json
+import hashlib
 import re
 import time
 from types import SimpleNamespace
 
 import frappe
 import requests
-from frappe.utils import cint
+from frappe.utils import add_to_date, cint, get_datetime
 from frappe.utils.background_jobs import enqueue
+from frappe.utils.synchronization import filelock
 
 from wa_chat_hub.ai.ocr_summary import (
     GENERIC_MEDIA_BODIES,
@@ -44,8 +46,15 @@ from wa_chat_hub.security import (
 )
 from wa_chat_hub.task_logger import elapsed, queue_wait_seconds, task_log
 
-CONVERSATION_HISTORY_LIMIT = 4
+CONVERSATION_HISTORY_LIMIT = 8
 MEDIA_CONTENT_TYPES = frozenset({"Image", "Video", "Audio", "Document", "Sticker"})
+DEFAULT_TEXT_AUTOPILOT_REPLY_DELAY_SECONDS = 3
+DEFAULT_MEDIA_AUTOPILOT_REPLY_DELAY_SECONDS = 15
+AUTOPILOT_BATCH_LOCK_TIMEOUT = 180
+AUTOPILOT_BATCH_LOOKBACK_MINUTES = 15
+AUTOPILOT_MEDIA_BURST_LOOKBACK_MINUTES = 10
+AUTOPILOT_MEDIA_BURST_GAP_SECONDS = 90
+AUTOPILOT_MEDIA_SETTLE_SECONDS = 5
 LOW_CONTEXT_INPUT_CHAR_BUDGET = 6500
 LOW_CONTEXT_SYSTEM_CHAR_BUDGET = 4200
 
@@ -91,6 +100,27 @@ def schedule_autopilot_for_message(message_name: str) -> None:
         return
 
     try:
+        if _autopilot_batching_enabled(settings):
+            enqueue(
+                "wa_chat_hub.api.ai_bot.process_conversation",
+                queue="short",
+                conversation=doc.conversation,
+                trigger_message_id=message_name,
+                enqueue_after_commit=True,
+                now=False,
+                job_id=f"wa_ai_autopilot_conversation_{doc.conversation}",
+                deduplicate=True,
+            )
+            _log_ai_timing(
+                "enqueue",
+                message=message_name,
+                conversation=getattr(doc, "conversation", None),
+                content_type=getattr(doc, "content_type", None) or "Text",
+                queue="short",
+                mode="conversation_batch",
+            )
+            return
+
         enqueue(
             "wa_chat_hub.api.ai_bot.process_message",
             queue="short",
@@ -111,7 +141,74 @@ def schedule_autopilot_for_message(message_name: str) -> None:
         frappe.log_error(frappe.get_traceback(), "WA AI Autopilot Enqueue Failed")
 
 
-def process_message(message_id):
+def process_conversation(conversation: str, trigger_message_id: str | None = None):
+    total_started = time.monotonic()
+    set_service_user_context("ai_autopilot")
+    set_ai_security_context(
+        operation="ai_autopilot_batch",
+        conversation=conversation,
+        message=str(trigger_message_id or ""),
+    )
+
+    if not conversation:
+        return
+
+    if not _conversation_allows_autopilot(conversation):
+        _log_ai_timing(
+            "skip",
+            message=trigger_message_id,
+            conversation=conversation,
+            reason="conversation_not_open",
+            total_sec=elapsed(total_started),
+        )
+        return
+
+    assert_ai_doctype_permission("WA Chat Hub Settings", "read")
+    settings = frappe.get_single("WA Chat Hub Settings")
+    if not settings.enable_ai_autopilot:
+        return
+    if (settings.autopilot_mode or "Suggest Only") == "Disabled":
+        return
+
+    _, total_wait = _wait_for_conversation_batch_window(conversation, settings)
+
+    with filelock(_autopilot_batch_lock_name(conversation), timeout=AUTOPILOT_BATCH_LOCK_TIMEOUT):
+        msg_doc = _latest_autopilot_inbound(conversation)
+        if not msg_doc:
+            _log_ai_timing(
+                "skip",
+                message=trigger_message_id,
+                conversation=conversation,
+                reason="no_inbound_for_batch",
+                total_sec=elapsed(total_started),
+            )
+            return
+
+        if _autopilot_batch_already_answered(conversation, msg_doc):
+            _log_ai_timing(
+                "skip",
+                message=msg_doc.name,
+                trigger_message=trigger_message_id,
+                conversation=conversation,
+                reason="batch_already_answered",
+                waited_sec=total_wait,
+                total_sec=elapsed(total_started),
+            )
+            return
+
+        if trigger_message_id and str(msg_doc.name) != str(trigger_message_id):
+            _log_ai_timing(
+                "batch_selected_latest",
+                message=msg_doc.name,
+                trigger_message=trigger_message_id,
+                conversation=conversation,
+                waited_sec=total_wait,
+            )
+
+        return process_message(msg_doc.name, skip_batch_wait=True)
+
+
+def process_message(message_id, skip_batch_wait: bool = False):
     total_started = time.monotonic()
     set_service_user_context("ai_autopilot")
 
@@ -171,6 +268,22 @@ def process_message(message_id):
 
     assert_ai_doctype_permission("WA Chat Hub Settings", "read")
     settings = frappe.get_single("WA Chat Hub Settings")
+    if not skip_batch_wait:
+        if _autopilot_batching_enabled(settings):
+            return process_conversation(conversation, trigger_message_id=message_id)
+        superseded, delay_seconds = _wait_for_autopilot_batch_window(msg_doc, settings)
+        if superseded:
+            _log_ai_timing(
+                "skip",
+                message=message_id,
+                conversation=conversation,
+                reason="superseded_by_newer_inbound",
+                delay_seconds=delay_seconds,
+                content_type=msg_doc.content_type or "Text",
+                total_sec=elapsed(total_started),
+            )
+            return
+
     body_text = str(msg_doc.body or "").strip()
     content_type = str(msg_doc.content_type or "Text").title()
     media_url = str(msg_doc.media_url or "").strip()
@@ -273,10 +386,12 @@ def process_message(message_id):
     media_fallback_reply = ""
     if media_url and content_type in MEDIA_CONTENT_TYPES:
         try:
-            if content_type in TRANSCRIPT_CONTENT_TYPES:
-                media_context = build_transcript_context_for_chat(media_url, content_type, body_text)
-            else:
-                media_context = build_media_context_for_chat(media_url, content_type, body_text)
+            media_context = _build_recent_media_batch_context(conversation, msg_doc)
+            if not media_context:
+                if content_type in TRANSCRIPT_CONTENT_TYPES:
+                    media_context = build_transcript_context_for_chat(media_url, content_type, body_text)
+                else:
+                    media_context = build_media_context_for_chat(media_url, content_type, body_text)
         except Exception:
             frappe.log_error(frappe.get_traceback(), "WA AI Media Context Failed")
             media_context = f"Customer sent a {content_type} attachment."
@@ -1015,11 +1130,341 @@ def _build_recent_attachment_followup_context(conversation: str, msg_doc) -> str
     )
 
 
-def _inbound_triggers_autopilot(doc) -> bool:
-    content_type = str(getattr(doc, "content_type", None) or "Text").title()
-    if content_type in MEDIA_CONTENT_TYPES and str(getattr(doc, "media_url", None) or "").strip():
+def _build_recent_media_batch_context(conversation: str, msg_doc) -> str:
+    current_creation = getattr(msg_doc, "creation", None)
+    if not conversation or not current_creation:
+        return ""
+
+    if _is_media_message(msg_doc):
+        batch_start = _media_burst_window_start(conversation, current_creation)
+        start_operator = ">="
+    else:
+        batch_start = _autopilot_batch_window_start(conversation, current_creation)
+        start_operator = ">"
+    filters = [
+        ["conversation", "=", conversation],
+        ["direction", "=", "Inbound"],
+        ["content_type", "in", list(MEDIA_CONTENT_TYPES)],
+        ["media_url", "is", "set"],
+        ["creation", "<=", current_creation],
+        ["creation", start_operator, batch_start],
+    ]
+
+    rows = safe_ai_get_all(
+        "Chat Message",
+        filters=filters,
+        fields=["name", "creation", "content_type", "body", "media_url"],
+        order_by="creation asc, name asc",
+        limit=8,
+    )
+    if not rows:
+        return ""
+
+    blocks = []
+    for index, row in enumerate(rows, start=1):
+        row_content_type = str(row.content_type or "Text").title()
+        row_body = str(row.body or "")
+        try:
+            if row_content_type in TRANSCRIPT_CONTENT_TYPES:
+                context = build_transcript_context_for_chat(row.media_url, row_content_type, row_body)
+            else:
+                context = build_media_context_for_chat(row.media_url, row_content_type, row_body)
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "WA AI Media Batch Context Item Failed")
+            context = f"Customer sent a {row_content_type} attachment."
+        if context:
+            blocks.append(
+                f"Attachment {index}: Chat Message {row.name}, type {row_content_type}, sent at {row.creation}\n{context}"
+            )
+
+    if not blocks:
+        return ""
+
+    if len(blocks) == 1:
+        return blocks[0]
+
+    return (
+        f"Customer sent {len(blocks)} recent media attachments before this reply. "
+        "Review them together and respond once for the combined customer action.\n\n"
+        + "\n\n".join(blocks)
+    )
+
+
+def _autopilot_batch_lock_name(conversation: str) -> str:
+    digest = hashlib.sha256(str(conversation or "unknown").encode("utf-8")).hexdigest()[:24]
+    return f"wa_ai_batch_{digest}"
+
+
+def _autopilot_batch_window_start(conversation: str, current_creation):
+    current_dt = get_datetime(current_creation)
+    recent_start = add_to_date(current_dt, minutes=-AUTOPILOT_BATCH_LOOKBACK_MINUTES)
+    last_outbound = safe_ai_get_all(
+        "Chat Message",
+        filters={
+            "conversation": conversation,
+            "direction": "Outbound",
+            "creation": ["<", current_dt],
+        },
+        fields=["creation"],
+        order_by="creation desc, name desc",
+        limit=1,
+    )
+    if not last_outbound:
+        return recent_start
+
+    last_outbound_dt = get_datetime(last_outbound[0].creation)
+    return max(recent_start, last_outbound_dt)
+
+
+def _autopilot_batch_already_answered(conversation: str, msg_doc) -> bool:
+    current_creation = getattr(msg_doc, "creation", None)
+    if not conversation or not current_creation:
+        return False
+
+    if _is_media_message(msg_doc) and _media_burst_already_answered(conversation, msg_doc):
         return True
-    return bool(_meaningful_body(str(getattr(doc, "body", None) or ""), content_type))
+
+    batch_start = _autopilot_batch_window_start(conversation, current_creation)
+    outbound_rows = safe_ai_get_all(
+        "Chat Message",
+        filters=[
+            ["conversation", "=", conversation],
+            ["direction", "=", "Outbound"],
+            ["sender_type", "in", ["AI", "Agent"]],
+            ["creation", ">", batch_start],
+        ],
+        fields=["name", "delivery_status", "sender_type", "creation"],
+        order_by="creation asc, name asc",
+        limit=10,
+    )
+    for row in outbound_rows:
+        if str(row.delivery_status or "") in ("Failed", "Pending"):
+            continue
+        return True
+    return False
+
+
+def _media_burst_already_answered(conversation: str, msg_doc) -> bool:
+    current_creation = getattr(msg_doc, "creation", None)
+    if not conversation or not current_creation:
+        return False
+
+    current_dt = get_datetime(current_creation)
+    burst_start = _media_burst_window_start(conversation, current_creation)
+    prior_media = safe_ai_get_all(
+        "Chat Message",
+        filters=[
+            ["conversation", "=", conversation],
+            ["direction", "=", "Inbound"],
+            ["content_type", "in", list(MEDIA_CONTENT_TYPES)],
+            ["media_url", "is", "set"],
+            ["creation", ">=", burst_start],
+            ["creation", "<", current_dt],
+        ],
+        fields=["name", "creation"],
+        order_by="creation asc, name asc",
+        limit=1,
+    )
+    if not prior_media:
+        return False
+
+    outbound_rows = safe_ai_get_all(
+        "Chat Message",
+        filters=[
+            ["conversation", "=", conversation],
+            ["direction", "=", "Outbound"],
+            ["sender_type", "in", ["AI", "Agent"]],
+            ["creation", ">", prior_media[0].creation],
+            ["creation", "<=", current_dt],
+        ],
+        fields=["name", "delivery_status", "sender_type", "creation"],
+        order_by="creation asc, name asc",
+        limit=10,
+    )
+    for row in outbound_rows:
+        if str(row.delivery_status or "") in ("Failed", "Pending"):
+            continue
+        return True
+    return False
+
+
+def _media_burst_window_start(conversation: str, current_creation):
+    current_dt = get_datetime(current_creation)
+    lookback_start = add_to_date(current_dt, minutes=-AUTOPILOT_MEDIA_BURST_LOOKBACK_MINUTES)
+    rows = safe_ai_get_all(
+        "Chat Message",
+        filters=[
+            ["conversation", "=", conversation],
+            ["direction", "=", "Inbound"],
+            ["content_type", "in", list(MEDIA_CONTENT_TYPES)],
+            ["media_url", "is", "set"],
+            ["creation", ">=", lookback_start],
+            ["creation", "<=", current_dt],
+        ],
+        fields=["name", "creation"],
+        order_by="creation desc, name desc",
+        limit=20,
+    )
+
+    burst_start = current_dt
+    previous_dt = current_dt
+    for row in rows:
+        row_dt = get_datetime(row.creation)
+        if (previous_dt - row_dt).total_seconds() > AUTOPILOT_MEDIA_BURST_GAP_SECONDS:
+            break
+        burst_start = row_dt
+        previous_dt = row_dt
+
+    last_outbound = safe_ai_get_all(
+        "Chat Message",
+        filters={
+            "conversation": conversation,
+            "direction": "Outbound",
+            "creation": ["<", current_dt],
+        },
+        fields=["creation"],
+        order_by="creation desc, name desc",
+        limit=1,
+    )
+    if last_outbound:
+        last_outbound_dt = get_datetime(last_outbound[0].creation)
+        if last_outbound_dt > burst_start:
+            return last_outbound_dt
+
+    return burst_start
+
+
+def _doc_value(doc, fieldname: str, default=None):
+    if isinstance(doc, dict):
+        return doc.get(fieldname, default)
+    return getattr(doc, fieldname, default)
+
+
+def _is_media_message(doc) -> bool:
+    content_type = str(_doc_value(doc, "content_type", "Text") or "Text").title()
+    media_url = str(_doc_value(doc, "media_url", None) or "").strip()
+    return bool(content_type in MEDIA_CONTENT_TYPES and media_url)
+
+
+def _autopilot_batching_enabled(settings) -> bool:
+    return bool(cint(getattr(settings, "enable_autopilot_reply_batching", 1)))
+
+
+def _autopilot_reply_delay_seconds(doc, settings) -> int:
+    if _is_media_message(doc):
+        value = getattr(settings, "media_autopilot_reply_delay_seconds", None)
+        default = DEFAULT_MEDIA_AUTOPILOT_REPLY_DELAY_SECONDS
+    else:
+        value = getattr(settings, "text_autopilot_reply_delay_seconds", None)
+        default = DEFAULT_TEXT_AUTOPILOT_REPLY_DELAY_SECONDS
+
+    if value in (None, ""):
+        return default
+    try:
+        return max(0, cint(value))
+    except Exception:
+        return default
+
+
+def _wait_for_autopilot_batch_window(msg_doc, settings) -> tuple[bool, int]:
+    if not _autopilot_batching_enabled(settings):
+        return False, 0
+
+    delay_seconds = _autopilot_reply_delay_seconds(msg_doc, settings)
+    if delay_seconds and not getattr(frappe.flags, "in_test", False):
+        time.sleep(delay_seconds)
+
+    return _newer_autopilot_message_exists(msg_doc), delay_seconds
+
+
+def _wait_for_conversation_batch_window(conversation: str, settings):
+    latest_doc = _latest_autopilot_inbound(conversation)
+    if not latest_doc:
+        return None, 0
+
+    if not _autopilot_batching_enabled(settings):
+        return latest_doc, 0
+
+    total_wait = 0
+    for _ in range(4):
+        delay_seconds = _autopilot_reply_delay_seconds(latest_doc, settings)
+        if delay_seconds and not getattr(frappe.flags, "in_test", False):
+            time.sleep(delay_seconds)
+            total_wait += delay_seconds
+
+        refreshed_doc = _latest_autopilot_inbound(conversation)
+        if not refreshed_doc:
+            return latest_doc, total_wait
+        if str(refreshed_doc.name) == str(latest_doc.name):
+            if (
+                _is_media_message(refreshed_doc)
+                and AUTOPILOT_MEDIA_SETTLE_SECONDS
+                and not getattr(frappe.flags, "in_test", False)
+            ):
+                time.sleep(AUTOPILOT_MEDIA_SETTLE_SECONDS)
+                total_wait += AUTOPILOT_MEDIA_SETTLE_SECONDS
+                settled_doc = _latest_autopilot_inbound(conversation)
+                if settled_doc and str(settled_doc.name) != str(refreshed_doc.name):
+                    latest_doc = settled_doc
+                    continue
+            return refreshed_doc, total_wait
+        latest_doc = refreshed_doc
+
+    return latest_doc, total_wait
+
+
+def _latest_autopilot_inbound(conversation: str):
+    if not conversation:
+        return None
+
+    rows = safe_ai_get_all(
+        "Chat Message",
+        filters={
+            "conversation": conversation,
+            "direction": "Inbound",
+        },
+        fields=["name", "body", "content_type", "media_url", "sender_type"],
+        order_by="creation desc, name desc",
+        limit=30,
+    )
+    for row in rows:
+        if str(_doc_value(row, "sender_type", "") or "").strip() in ("AI", "System", "Bot"):
+            continue
+        if _inbound_triggers_autopilot(row):
+            return safe_ai_get_doc("Chat Message", row.name)
+    return None
+
+
+def _newer_autopilot_message_exists(msg_doc) -> bool:
+    conversation = _doc_value(msg_doc, "conversation")
+    current_creation = _doc_value(msg_doc, "creation")
+    if not conversation or not current_creation:
+        return False
+
+    rows = safe_ai_get_all(
+        "Chat Message",
+        filters={
+            "conversation": conversation,
+            "direction": "Inbound",
+            "creation": [">", current_creation],
+        },
+        fields=["name", "body", "content_type", "media_url", "sender_type"],
+        order_by="creation desc, name desc",
+        limit=20,
+    )
+    for row in rows:
+        if str(_doc_value(row, "sender_type", "") or "").strip() in ("AI", "System", "Bot"):
+            continue
+        if _inbound_triggers_autopilot(row):
+            return True
+    return False
+
+
+def _inbound_triggers_autopilot(doc) -> bool:
+    content_type = str(_doc_value(doc, "content_type", None) or "Text").title()
+    if _is_media_message(doc):
+        return True
+    return bool(_meaningful_body(str(_doc_value(doc, "body", None) or ""), content_type))
 
 
 def _meaningful_body(body: str, content_type: str = "Text") -> str:

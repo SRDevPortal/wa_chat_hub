@@ -6,12 +6,10 @@ import frappe
 from frappe import _
 
 from wa_chat_hub.messaging.channel_map import get_pipeline_map
-from wa_chat_hub.prompts import set_conversation_crm_lead
 from wa_chat_hub.security import (
     safe_ai_get_doc,
     safe_ai_get_value,
     safe_ai_insert,
-    safe_ai_save,
     safe_ai_set_value,
 )
 from wa_chat_hub.services import DEFAULT_CONVERSATION_STATUS, get_or_create_contact, normalize_phone
@@ -99,8 +97,8 @@ def get_or_create_mapped_lead_conversation(lead) -> dict[str, Any]:
         reference_doctype="CRM Lead",
         reference_name=lead.name,
         department=_conversation_department_for_account(channel_account),
+        defer_reference_link=True,
     )
-    _link_crm_lead_on_conversation(conversation, lead.name)
 
     try:
         from wa_chat_hub.lead_ai import auto_update_lead_from_conversation
@@ -112,9 +110,11 @@ def get_or_create_mapped_lead_conversation(lead) -> dict[str, Any]:
     try:
         from wa_chat_hub.messaging.crm_lead_meta import sync_crm_lead_meta_from_conversation
 
-        sync_crm_lead_meta_from_conversation(conversation)
+        sync_crm_lead_meta_from_conversation(conversation, lead_name=lead.name)
     except Exception:
         frappe.log_error(frappe.get_traceback(), "CRM Lead Meta Sync On Map Failed")
+
+    _link_crm_lead_on_conversation(conversation, lead.name)
 
     return {
         "conversation": conversation,
@@ -204,12 +204,15 @@ def _get_or_create_reference_conversation(
     reference_doctype: str,
     reference_name: str,
     department: str | None = None,
+    defer_reference_link: bool = False,
 ) -> tuple[str, bool]:
     conversation = _find_conversation_for_contact_on_channel(contact, channel_account, open_only=True)
     if not conversation:
         conversation = _find_conversation_for_contact_on_channel(contact, channel_account, open_only=False)
 
     if conversation:
+        if defer_reference_link:
+            return conversation, False
         updates = {}
         existing = safe_ai_get_value(
             "Chat Conversation",
@@ -225,17 +228,21 @@ def _get_or_create_reference_conversation(
             safe_ai_set_value("Chat Conversation", conversation, updates)
         return conversation, False
 
-    doc = frappe.get_doc(
-        {
-            "doctype": "Chat Conversation",
-            "channel_account": channel_account,
-            "contact": contact,
-            "department": department,
-            "status": DEFAULT_CONVERSATION_STATUS,
-            "linked_reference_doctype": reference_doctype,
-            "linked_reference_name": reference_name,
-        }
-    )
+    payload = {
+        "doctype": "Chat Conversation",
+        "channel_account": channel_account,
+        "contact": contact,
+        "department": department,
+        "status": DEFAULT_CONVERSATION_STATUS,
+    }
+    if not defer_reference_link:
+        payload.update(
+            {
+                "linked_reference_doctype": reference_doctype,
+                "linked_reference_name": reference_name,
+            }
+        )
+    doc = frappe.get_doc(payload)
     safe_ai_insert(doc)
     return doc.name, True
 
@@ -247,9 +254,12 @@ def _conversation_department_for_account(channel_account: str) -> str | None:
 def _link_crm_lead_on_conversation(conversation: str, lead_name: str) -> None:
     if not frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
         return
-    convo = safe_ai_get_doc("Chat Conversation", conversation)
-    set_conversation_crm_lead(convo, lead_name)
-    safe_ai_save(convo)
+    updates = {
+        "linked_crm_lead": lead_name,
+        "linked_reference_doctype": "CRM Lead",
+        "linked_reference_name": lead_name,
+    }
+    safe_ai_set_value("Chat Conversation", conversation, updates, update_modified=False)
 
 
 def _find_conversation_for_contact_on_channel(contact: str, channel_account: str, open_only: bool) -> str | None:
@@ -339,4 +349,3 @@ def _build_interakt_traits(contact_doc, reference_doc) -> dict[str, Any]:
                 traits[fieldname] = reference_doc.get(fieldname)
 
     return {key: value for key, value in traits.items() if value not in (None, "")}
-

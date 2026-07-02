@@ -13,6 +13,9 @@
     "enable_ai_reply_draft",
     "enable_ai_autopilot",
     "autopilot_mode",
+    "enable_autopilot_reply_batching",
+    "text_autopilot_reply_delay_seconds",
+    "media_autopilot_reply_delay_seconds",
     "default_model",
     "system_prompt",
     "enable_multilingual_replies",
@@ -59,6 +62,29 @@
       "label": "Autopilot Mode",
       "options": "Disabled\nSuggest Only\nDraft + Approval\nLimited Auto Reply",
       "default": "Suggest Only"
+    },
+    {
+      "default": "1",
+      "description": "Wait briefly before AI replies so multiple customer messages can be answered together. Only the latest inbound in the batch will continue.",
+      "fieldname": "enable_autopilot_reply_batching",
+      "fieldtype": "Check",
+      "label": "Enable Autopilot Reply Batching"
+    },
+    {
+      "default": "3",
+      "depends_on": "eval:doc.enable_autopilot_reply_batching",
+      "description": "Seconds to wait before replying to text messages.",
+      "fieldname": "text_autopilot_reply_delay_seconds",
+      "fieldtype": "Int",
+      "label": "Text Autopilot Reply Delay (Seconds)"
+    },
+    {
+      "default": "15",
+      "depends_on": "eval:doc.enable_autopilot_reply_batching",
+      "description": "Seconds to wait before replying to media messages such as image, audio, video, or document.",
+      "fieldname": "media_autopilot_reply_delay_seconds",
+      "fieldtype": "Int",
+      "label": "Media Autopilot Reply Delay (Seconds)"
     },
     {
       "fieldname": "default_model",

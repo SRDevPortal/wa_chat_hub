@@ -14,6 +14,7 @@ from wa_chat_hub.interakt.templates_api import (
 from wa_chat_hub.outbound import send_interakt_template_message, send_outbound_message
 from wa_chat_hub.permissions import ensure_can_read_conversation
 from wa_chat_hub.services import append_message
+from wa_chat_hub.security import safe_ai_get_doc, safe_ai_set_value, set_ai_security_context, set_service_user_context
 from wa_chat_hub.task_logger import elapsed, task_log
 
 
@@ -156,21 +157,9 @@ def send_reply():
         content_type=content_type,
         has_media=1 if media_url else 0,
     )
-    try:
-        outbound = send_outbound_message(conversation, body, content_type, media_url, file_name=file_name)
-        delivery_status = outbound.get("delivery_status") or "Sent"
-    except Exception as exc:
-        frappe.log_error(frappe.get_traceback(), "WA Chat Hub Sending Failed")
-        outbound = {
-            "conversation": conversation,
-            "body": body,
-            "content_type": content_type,
-            "media_url": media_url,
-            "sent": False,
-            "delivery_status": "Failed",
-            "error": str(exc),
-        }
-        delivery_status = "Failed"
+    from wa_chat_hub.messaging.windows import evaluate_send_permission
+
+    evaluate_send_permission(conversation, content_type).ensure_allowed(content_type)
 
     convo = frappe.get_doc("Chat Conversation", conversation)
     result = append_message({
@@ -181,21 +170,168 @@ def send_reply():
         "content_type": content_type,
         "body": body,
         "media_url": display_media_url,
-        "delivery_status": delivery_status,
-        "channel_message_id": outbound.get("provider_message_id"),
+        "delivery_status": "Pending",
         "attachment_file": attachment_file,
-        "raw_transport_payload": {**outbound, "file_name": file_name, "file_size": file_size, "attachment_file": attachment_file},
+        "raw_transport_payload": {
+            "queued": True,
+            "file_name": file_name,
+            "file_size": file_size,
+            "attachment_file": attachment_file,
+            "provider_media_url": media_url,
+        },
     })
+    _enqueue_pending_reply_send(
+        message_name=result.get("message"),
+        conversation=conversation,
+        body=body,
+        content_type=content_type,
+        media_url=media_url,
+        file_name=file_name,
+    )
     task_log(
         "runtime",
-        "send_reply_done",
+        "send_reply_queued",
         conversation=conversation,
         content_type=content_type,
-        delivery_status=delivery_status,
         message=result.get("message"),
         duration_sec=elapsed(started),
     )
-    return {"success": True, "result": {**outbound, **result}}
+    return {
+        "success": True,
+        "result": {
+            **result,
+            "queued": True,
+            "sent": False,
+            "delivery_status": "Pending",
+        },
+    }
+
+
+def _enqueue_pending_reply_send(
+    *,
+    message_name: str | None,
+    conversation: str,
+    body: str | None,
+    content_type: str,
+    media_url: str | None,
+    file_name: str | None,
+) -> None:
+    if not message_name:
+        frappe.throw(_("Could not queue outbound message: local message was not created"))
+    job_id = f"wa_send_reply_{message_name}"
+    frappe.enqueue(
+        "wa_chat_hub.api.runtime.send_pending_reply_to_provider",
+        queue="short",
+        timeout=60,
+        enqueue_after_commit=True,
+        now=frappe.flags.in_test,
+        job_id=job_id,
+        deduplicate=True,
+        message_name=message_name,
+        conversation=conversation,
+        body=body,
+        content_type=content_type,
+        media_url=media_url,
+        file_name=file_name,
+    )
+    task_log(
+        "runtime",
+        "send_reply_enqueue",
+        conversation=conversation,
+        message=message_name,
+        queue="short",
+    )
+
+
+def send_pending_reply_to_provider(
+    message_name: str,
+    conversation: str,
+    body: str | None = None,
+    content_type: str = "Text",
+    media_url: str | None = None,
+    file_name: str | None = None,
+) -> dict:
+    started = time.monotonic()
+    set_service_user_context("manual_reply_send")
+    set_ai_security_context(operation="manual_reply_send", conversation=conversation, message=message_name)
+    task_log(
+        "runtime",
+        "send_reply_provider_start",
+        conversation=conversation,
+        message=message_name,
+        content_type=content_type,
+    )
+    try:
+        message = safe_ai_get_doc("Chat Message", message_name)
+        if getattr(message, "delivery_status", None) in {"Sent", "Delivered", "Read"}:
+            return {"success": True, "message": message_name, "skipped": "already_sent"}
+
+        outbound = send_outbound_message(conversation, body, content_type, media_url, file_name=file_name)
+        updates = {
+            "delivery_status": outbound.get("delivery_status") or "Sent",
+            "raw_transport_payload": frappe.as_json(
+                {
+                    **outbound,
+                    "file_name": file_name,
+                    "provider_media_url": media_url,
+                }
+            ),
+        }
+        provider_message_id = outbound.get("provider_message_id")
+        meta = frappe.get_meta("Chat Message")
+        if provider_message_id:
+            if meta.has_field("channel_message_id"):
+                updates["channel_message_id"] = provider_message_id
+            if meta.has_field("provider_message_id"):
+                updates["provider_message_id"] = provider_message_id
+        safe_ai_set_value("Chat Message", message_name, updates, update_modified=True)
+        task_log(
+            "runtime",
+            "send_reply_provider_done",
+            conversation=conversation,
+            message=message_name,
+            delivery_status=updates["delivery_status"],
+            duration_sec=elapsed(started),
+        )
+        frappe.publish_realtime(
+            "wa_chat_message_status_updated",
+            {
+                "conversation": conversation,
+                "message": message_name,
+                "delivery_status": updates["delivery_status"],
+            },
+            after_commit=True,
+        )
+        return {"success": True, "message": message_name, "result": outbound}
+    except Exception as exc:
+        error_text = str(exc)
+        try:
+            safe_ai_set_value(
+                "Chat Message",
+                message_name,
+                {
+                    "delivery_status": "Failed",
+                    "raw_transport_payload": frappe.as_json({"error": error_text, "provider_media_url": media_url}),
+                },
+                update_modified=True,
+            )
+            frappe.publish_realtime(
+                "wa_chat_message_status_updated",
+                {"conversation": conversation, "message": message_name, "delivery_status": "Failed"},
+                after_commit=True,
+            )
+        except Exception:
+            pass
+        frappe.log_error(frappe.get_traceback(), "WA Chat Hub Queued Sending Failed")
+        task_log(
+            "runtime",
+            "send_reply_provider_failed",
+            conversation=conversation,
+            message=message_name,
+            duration_sec=elapsed(started),
+            error=error_text[:140],
+        )
+        return {"success": False, "message": message_name, "error": error_text}
 
 
 @frappe.whitelist()

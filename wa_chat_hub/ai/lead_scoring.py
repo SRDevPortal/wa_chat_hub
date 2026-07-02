@@ -32,6 +32,7 @@ class ScoreResult:
 def score_and_sync_conversation(conversation: str) -> Dict[str, str]:
     result = recompute_conversation_metrics(conversation)
     sync_to_linked_lead(conversation, result)
+    sync_to_conversation(conversation, result)
     return {
         "lead_score": f"{result.lead_score:.2f}",
         "lead_temperature": result.lead_temperature,
@@ -43,27 +44,12 @@ def score_and_sync_conversation(conversation: str) -> Dict[str, str]:
 def recompute_conversation_metrics(conversation: str) -> ScoreResult:
     convo = safe_ai_get_doc("Chat Conversation", conversation)
     if is_conversation_stopped(conversation):
-        score_result = ScoreResult(
+        return ScoreResult(
             lead_score=0,
             lead_temperature="Cold",
             lead_lan=convo.lead_lan or "English",
             source="conversation_stopped",
         )
-        with_db_lock_retry(
-            "conversation_stopped_score_update",
-            lambda: safe_ai_set_value(
-                "Chat Conversation",
-                conversation,
-                {
-                    "lead_score": score_result.lead_score,
-                    "lead_temperature": score_result.lead_temperature,
-                    "lead_lan": score_result.lead_lan,
-                },
-                update_modified=False,
-            ),
-        )
-        sync_to_linked_lead(conversation, score_result)
-        return score_result
 
     history = safe_ai_get_all(
         "Chat Message",
@@ -73,21 +59,23 @@ def recompute_conversation_metrics(conversation: str) -> ScoreResult:
         limit_page_length=40,
     )
     score_result = _ai_score(convo, history)
+    return score_result
 
+
+def sync_to_conversation(conversation: str, result: ScoreResult) -> None:
     with_db_lock_retry(
         "conversation_lead_score_update",
         lambda: safe_ai_set_value(
             "Chat Conversation",
             conversation,
             {
-                "lead_score": score_result.lead_score,
-                "lead_temperature": score_result.lead_temperature,
-                "lead_lan": score_result.lead_lan,
+                "lead_score": result.lead_score,
+                "lead_temperature": result.lead_temperature,
+                "lead_lan": result.lead_lan,
             },
             update_modified=False,
         ),
     )
-    return score_result
 
 
 def sync_to_linked_lead(conversation: str, result: ScoreResult | None = None) -> None:

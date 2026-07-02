@@ -38,8 +38,8 @@ from wa_chat_hub.task_logger import elapsed, task_log
 DEFAULT_CONVERSATION_STATUS = "Open"
 WA_LEAD_CONTEXT_MARKER = "WA_CHAT_HUB_CONTEXT_JSON"
 WA_LEAD_PAYLOAD_MARKER = "WA_CHAT_HUB_PAYLOAD_JSON"
-APPEND_MESSAGE_LOCK_TIMEOUT = 30
-CONVERSATION_UPDATE_LOCK_TIMEOUT = 30
+APPEND_MESSAGE_LOCK_TIMEOUT = 8
+CONVERSATION_UPDATE_LOCK_TIMEOUT = 8
 
 
 @contextmanager
@@ -772,7 +772,6 @@ def _link_or_create_master_record(
     assert_ai_doctype_permission("Chat Conversation", "read")
     if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
         conversation_updates["linked_crm_lead"] = getattr(convo, "linked_crm_lead", None)
-    _set_conversation_fields(convo, conversation_updates)
 
     if lead_doctype == "CRM Lead":
         _finalize_crm_lead_after_inbound(
@@ -780,7 +779,10 @@ def _link_or_create_master_record(
             lead_name,
             raw_payload=raw_payload,
             message_name=message_name,
+            convo=convo,
         )
+
+    _set_conversation_fields(convo, conversation_updates)
 
     try:
         from wa_chat_hub.interakt.contact_sync import enqueue_push_for_conversation
@@ -830,14 +832,15 @@ def _finalize_crm_lead_after_inbound(
     *,
     raw_payload: Optional[Dict[str, Any]] = None,
     message_name: Optional[str] = None,
+    convo=None,
 ) -> None:
     """Ad attribution → CRM Lead meta tab; lead scoring/OCR fields after link exists."""
-    convo = safe_ai_get_doc("Chat Conversation", conversation)
+    convo = convo or safe_ai_get_doc("Chat Conversation", conversation)
     _sync_crm_lead_pipeline_for_channel(lead_name, getattr(convo, "channel_account", None))
     try:
         from wa_chat_hub.messaging.crm_lead_meta import sync_crm_lead_meta_from_conversation
 
-        sync_crm_lead_meta_from_conversation(convo, raw_payload=raw_payload, force=True)
+        sync_crm_lead_meta_from_conversation(convo, raw_payload=raw_payload, force=True, lead_name=lead_name)
     except Exception:
         frappe.log_error(frappe.get_traceback(), "CRM Lead Meta Sync On Link Failed")
 
