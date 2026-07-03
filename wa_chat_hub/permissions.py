@@ -30,6 +30,29 @@ def _role_bypass(user: str | None = None) -> bool:
     return bool(roles.intersection({"System Manager", "WA Chat Manager"}))
 
 
+def _is_configured_service_user(user: str | None = None) -> bool:
+    user = _user(user)
+    if not user or user in {"Administrator", "Guest"}:
+        return False
+    try:
+        from wa_chat_hub.security import get_service_user
+
+        return user == get_service_user()
+    except Exception:
+        return False
+
+
+def _service_user_has_ai_read(doctype: str, user: str | None = None) -> bool:
+    if not _is_configured_service_user(user):
+        return False
+    try:
+        from wa_chat_hub.security import has_ai_doctype_permission
+
+        return has_ai_doctype_permission(doctype, "read")
+    except Exception:
+        return False
+
+
 def _qualify_crm_lead_condition(condition: str, alias: str) -> str:
     """Rewrite CRM Lead PQC SQL so it can run inside a joined/subquery alias."""
     if not condition:
@@ -48,7 +71,7 @@ def crm_lead_permission_condition(user: str | None = None, alias: str = "wa_lead
     This intentionally reuses the host app's CRM Lead permission query hook when present.
     """
     user = _user(user)
-    if _role_bypass(user):
+    if _role_bypass(user) or _service_user_has_ai_read("CRM Lead", user):
         return ""
     if not _has_crm_lead_doctype():
         return "1=0"
@@ -96,6 +119,8 @@ def get_conversation_crm_lead(conversation_or_row) -> str | None:
 def can_read_crm_lead(lead_name: str | None, user: str | None = None) -> bool:
     user = _user(user)
     if has_unrestricted_chat_access(user):
+        return True
+    if _service_user_has_ai_read("CRM Lead", user):
         return True
     if not lead_name or not _has_crm_lead_doctype() or not frappe.db.exists("CRM Lead", lead_name):
         return False
