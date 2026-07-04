@@ -2,6 +2,7 @@ import json
 import hashlib
 import re
 import time
+from difflib import SequenceMatcher
 from types import SimpleNamespace
 
 import frappe
@@ -46,7 +47,8 @@ from wa_chat_hub.security import (
 )
 from wa_chat_hub.task_logger import elapsed, queue_wait_seconds, task_log
 
-CONVERSATION_HISTORY_LIMIT = 8
+CONVERSATION_HISTORY_LIMIT = 100
+MAX_HISTORY_MESSAGE_CHARS = 1200
 MEDIA_CONTENT_TYPES = frozenset({"Image", "Video", "Audio", "Document", "Sticker"})
 DEFAULT_TEXT_AUTOPILOT_REPLY_DELAY_SECONDS = 3
 DEFAULT_MEDIA_AUTOPILOT_REPLY_DELAY_SECONDS = 15
@@ -290,13 +292,7 @@ def process_message(message_id, skip_batch_wait: bool = False):
 
     quick_media_reply = _quick_media_only_reply(content_type, body_text, media_url)
     if quick_media_reply:
-        if _should_auto_send(settings):
-            _deliver_ai_reply(conversation, quick_media_reply)
-            mode = "auto_send"
-        else:
-            create_ai_suggestion(conversation, "Reply Draft", quick_media_reply)
-            frappe.db.commit()
-            mode = "draft"
+        mode = _deliver_or_draft_ai_reply(conversation, quick_media_reply, settings, message_id) or "duplicate_skip"
         _log_ai_timing(
             "total_done",
             message=message_id,
@@ -309,13 +305,7 @@ def process_message(message_id, skip_batch_wait: bool = False):
     if is_delivery_status_query(body_text):
         result = build_delivery_status_reply(conversation, body_text)
         response_text = result.reply
-        if _should_auto_send(settings):
-            _deliver_ai_reply(conversation, response_text)
-            mode = "auto_send"
-        else:
-            create_ai_suggestion(conversation, "Reply Draft", response_text)
-            frappe.db.commit()
-            mode = "draft"
+        mode = _deliver_or_draft_ai_reply(conversation, response_text, settings, message_id) or "duplicate_skip"
         task_log(
             "delivery_status",
             "reply_done",
@@ -340,13 +330,7 @@ def process_message(message_id, skip_batch_wait: bool = False):
     if is_clinical_history_query(body_text):
         result = build_clinical_history_reply(conversation, body_text)
         response_text = result.reply
-        if _should_auto_send(settings):
-            _deliver_ai_reply(conversation, response_text)
-            mode = "auto_send"
-        else:
-            create_ai_suggestion(conversation, "Reply Draft", response_text)
-            frappe.db.commit()
-            mode = "draft"
+        mode = _deliver_or_draft_ai_reply(conversation, response_text, settings, message_id) or "duplicate_skip"
         task_log(
             "clinical_history",
             "reply_delivered",
@@ -412,6 +396,10 @@ def process_message(message_id, skip_batch_wait: bool = False):
             "WA AI Autopilot Config",
         )
         return
+
+    known_context = _build_known_conversation_context(conversation)
+    if known_context:
+        system_prompt = f"{system_prompt}\n\n{known_context}"
 
     if media_context:
         system_prompt = f"{system_prompt}\n\n{media_context}"
@@ -493,8 +481,6 @@ def process_message(message_id, skip_batch_wait: bool = False):
         frappe.log_error("No active WA LLM Providers found.", "WA AI Bot Error")
         return
 
-    auto_send = _should_auto_send(settings)
-
     for provider in providers:
         provider_started = time.monotonic()
         _log_ai_timing(
@@ -549,17 +535,22 @@ def process_message(message_id, skip_batch_wait: bool = False):
                 )
                 continue
 
-            if auto_send:
-                _deliver_ai_reply(conversation, response_text)
-            else:
-                create_ai_suggestion(conversation, "Reply Draft", str(response_text).strip())
-                frappe.db.commit()
+            delivered_mode = _deliver_or_draft_ai_reply(conversation, response_text, settings, message_id)
+            if not delivered_mode:
+                _log_ai_timing(
+                    "skip",
+                    message=message_id,
+                    conversation=conversation,
+                    reason="near_duplicate_reply",
+                    total_sec=elapsed(total_started),
+                )
+                return
 
             _log_ai_timing(
                 "total_done",
                 message=message_id,
                 conversation=conversation,
-                mode="auto_send" if auto_send else "draft",
+                mode=delivered_mode,
                 total_sec=elapsed(total_started),
             )
             return
@@ -580,13 +571,8 @@ def process_message(message_id, skip_batch_wait: bool = False):
             continue
 
     if media_fallback_reply:
-        if auto_send:
-            _deliver_ai_reply(conversation, media_fallback_reply)
-            mode = "fallback_auto_send"
-        else:
-            create_ai_suggestion(conversation, "Reply Draft", media_fallback_reply)
-            frappe.db.commit()
-            mode = "fallback_draft"
+        delivered_mode = _deliver_or_draft_ai_reply(conversation, media_fallback_reply, settings, message_id)
+        mode = f"fallback_{delivered_mode}" if delivered_mode else "fallback_duplicate_skip"
         _log_ai_timing(
             "total_done",
             message=message_id,
@@ -598,13 +584,8 @@ def process_message(message_id, skip_batch_wait: bool = False):
 
     text_fallback_reply = _text_provider_fallback_reply(body_text, content_type)
     if text_fallback_reply:
-        if auto_send:
-            _deliver_ai_reply(conversation, text_fallback_reply)
-            mode = "fallback_auto_send"
-        else:
-            create_ai_suggestion(conversation, "Reply Draft", text_fallback_reply)
-            frappe.db.commit()
-            mode = "fallback_draft"
+        delivered_mode = _deliver_or_draft_ai_reply(conversation, text_fallback_reply, settings, message_id)
+        mode = f"fallback_{delivered_mode}" if delivered_mode else "fallback_duplicate_skip"
         _log_ai_timing(
             "total_done",
             message=message_id,
@@ -628,6 +609,134 @@ def process_message(message_id, skip_batch_wait: bool = False):
 
 def _should_auto_send(settings) -> bool:
     return (settings.autopilot_mode or "") == "Limited Auto Reply"
+
+
+def _deliver_or_draft_ai_reply(
+    conversation: str,
+    response_text: str,
+    settings,
+    message_id: str | None = None,
+) -> str:
+    response_text = str(response_text or "").strip()
+    if not response_text:
+        return ""
+    if _looks_like_recent_duplicate_reply(conversation, response_text):
+        _log_ai_timing(
+            "skip",
+            message=message_id,
+            conversation=conversation,
+            reason="near_duplicate_reply",
+        )
+        return ""
+    if _should_auto_send(settings):
+        _deliver_ai_reply(conversation, response_text)
+        return "auto_send"
+    create_ai_suggestion(conversation, "Reply Draft", response_text)
+    frappe.db.commit()
+    return "draft"
+
+
+def _normalize_reply_for_similarity(text: str) -> str:
+    text = re.sub(r"\s+", " ", str(text or "").strip().lower())
+    text = re.sub(r"[^\w\sà¤€-à¥¿]", "", text)
+    return text.strip()
+
+
+def _near_duplicate_text(a: str, b: str) -> bool:
+    left = _normalize_reply_for_similarity(a)
+    right = _normalize_reply_for_similarity(b)
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    if min(len(left), len(right)) < 35:
+        return False
+    if left in right or right in left:
+        return True
+    return SequenceMatcher(None, left, right).ratio() >= 0.92
+
+
+def _looks_like_recent_duplicate_reply(conversation: str, response_text: str) -> bool:
+    rows = safe_ai_get_all(
+        "Chat Message",
+        filters={
+            "conversation": conversation,
+            "direction": "Outbound",
+            "sender_type": ["in", ["AI", "Agent"]],
+            "delivery_status": ["!=", "Failed"],
+        },
+        fields=["name", "body", "sender_type"],
+        order_by="creation desc, name desc",
+        limit=3,
+    )
+    for row in rows:
+        if _near_duplicate_text(response_text, row.get("body") or ""):
+            _log_ai_timing(
+                "duplicate_reply_detected",
+                conversation=conversation,
+                prior_message=row.get("name"),
+                prior_sender=row.get("sender_type"),
+            )
+            return True
+    return False
+
+
+def _build_known_conversation_context(conversation: str) -> str:
+    fields = [
+        "contact",
+        "department",
+        "assigned_to",
+        "linked_crm_lead",
+        "linked_reference_doctype",
+        "linked_reference_name",
+        "lead_score",
+        "lead_lan",
+        "lead_temperature",
+        "ai_summary",
+    ]
+    convo = safe_ai_get_value("Chat Conversation", conversation, fields, as_dict=True) or {}
+    facts = []
+    contact_name = convo.get("contact")
+    if contact_name:
+        contact = safe_ai_get_value(
+            "Chat Contact",
+            contact_name,
+            ["display_name", "phone_number", "linked_lead", "linked_patient"],
+            as_dict=True,
+        ) or {}
+        if contact.get("display_name"):
+            facts.append(f"Contact name: {contact.get('display_name')}")
+        if contact.get("phone_number"):
+            facts.append(f"WhatsApp phone: {contact.get('phone_number')}")
+        if contact.get("linked_lead"):
+            facts.append(f"Linked Lead: {contact.get('linked_lead')}")
+        if contact.get("linked_patient"):
+            facts.append(f"Linked Patient: {contact.get('linked_patient')}")
+
+    for label, fieldname in (
+        ("Department", "department"),
+        ("Assigned to", "assigned_to"),
+        ("CRM Lead", "linked_crm_lead"),
+        ("Linked reference type", "linked_reference_doctype"),
+        ("Linked reference name", "linked_reference_name"),
+        ("Lead score", "lead_score"),
+        ("Lead language", "lead_lan"),
+        ("Lead temperature", "lead_temperature"),
+    ):
+        value = convo.get(fieldname)
+        if value not in (None, ""):
+            facts.append(f"{label}: {value}")
+
+    if convo.get("ai_summary"):
+        facts.append("Existing conversation summary: " + _truncate_history_text(convo.get("ai_summary"), 1000))
+
+    if not facts:
+        return ""
+    return (
+        "Known conversation facts. Use these as already-known details and do not ask for them again unless "
+        "the customer changes or corrects them:\n- "
+        + "\n- ".join(str(fact) for fact in facts if fact)
+    )
 
 
 def _quick_media_only_reply(content_type: str, body: str, media_url: str) -> str:
@@ -1494,10 +1603,23 @@ def _format_history_line(row) -> str:
     content_type = str(row.content_type or "Text").title()
     body = _meaningful_body(str(row.body or ""), content_type)
     if body:
-        return body
+        return _truncate_history_text(body)
     if str(row.media_url or "").strip() and content_type in MEDIA_CONTENT_TYPES:
         return f"[sent {content_type}]"
     return ""
+
+
+def _truncate_history_text(text: str, limit: int = MAX_HISTORY_MESSAGE_CHARS) -> str:
+    text = str(text or "").strip()
+    if len(text) <= limit:
+        return text
+    head = int(limit * 0.7)
+    tail = limit - head
+    return (
+        text[:head].rstrip()
+        + "\n[Earlier part shortened to keep full chat context within model limits.]\n"
+        + text[-tail:].lstrip()
+    )
 
 
 def _safe_log_error(title: str, message: str) -> None:

@@ -65,6 +65,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     let activeConversationFilter = 'all';
     let selectedReferenceDoctype = '';
     let referenceFilterLocked = false;
+    let isSendingComposerMessage = false;
 
     function isWaChatHubCurrentRoute() {
         const route = frappe.get_route ? frappe.get_route() : [];
@@ -1443,8 +1444,9 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     function notifyOutboundSendOutcome(response, successMessage) {
         const result = parseOutboundSendResult(response);
         const status = String(result.delivery_status || '');
+        const queued = !!result.queued && status !== 'Failed';
         const errorText = result.error || result.warning || '';
-        if (status === 'Failed' || result.sent === false) {
+        if (status === 'Failed' || (result.sent === false && !queued)) {
             frappe.msgprint({
                 title: __('Message not sent'),
                 message: errorText || __(
@@ -1457,12 +1459,15 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         if (errorText) {
             frappe.show_alert({message: errorText, indicator: 'orange'});
         } else {
-            frappe.show_alert({message: successMessage, indicator: 'green'});
+            frappe.show_alert({message: queued ? __('Message queued') : successMessage, indicator: 'green'});
         }
         return true;
     }
 
     function sendComposerMessage() {
+        if (isSendingComposerMessage) {
+            return;
+        }
         const body = ($('#wa-composer-body').val() || '').trim();
         if (!currentConversation) {
             return frappe.show_alert({message: __('Select a conversation first'), indicator: 'orange'});
@@ -1477,6 +1482,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
             });
         }
         const $btn = $('#wa-send-btn');
+        isSendingComposerMessage = true;
         $btn.prop('disabled', true);
         api.sendReply(currentConversation, body).then((r) => {
             const sent = notifyOutboundSendOutcome(r, __('Message sent'));
@@ -1493,6 +1499,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
             });
             loadConversation(currentConversation);
         }).always(() => {
+            isSendingComposerMessage = false;
             $btn.prop('disabled', false);
         });
     }
