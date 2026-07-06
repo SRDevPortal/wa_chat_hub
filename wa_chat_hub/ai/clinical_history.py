@@ -85,7 +85,7 @@ REQUEST_HINT_RE = re.compile(
 
 CLINICAL_HISTORY_PRIVACY_REPLY = (
     "Privacy ke liye main chat par patient encounter ya past medical history details share nahi kar sakta. "
-    "SRIAAS team identity verify karke record/status confirm kar degi. "
+    "Hamari team identity karke record/status confirm kar degi. "
     "Kripya registered mobile number ya patient ID share kar dijiye."
 )
 

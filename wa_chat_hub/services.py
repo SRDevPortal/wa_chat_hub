@@ -9,6 +9,7 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 import frappe
 from frappe import _
+from frappe.utils.file_lock import LockTimeoutError
 from frappe.utils.synchronization import filelock
 
 from wa_chat_hub.ai.ocr_summary import build_attachment_filename, process_attachment_for_lead_summary
@@ -40,6 +41,8 @@ WA_LEAD_CONTEXT_MARKER = "WA_CHAT_HUB_CONTEXT_JSON"
 WA_LEAD_PAYLOAD_MARKER = "WA_CHAT_HUB_PAYLOAD_JSON"
 APPEND_MESSAGE_LOCK_TIMEOUT = 8
 CONVERSATION_UPDATE_LOCK_TIMEOUT = 8
+FILE_LOCK_RETRY_ATTEMPTS = 3
+FILE_LOCK_RETRY_DELAY_SECONDS = 0.35
 
 
 @contextmanager
@@ -95,6 +98,33 @@ def conversation_update_lock(conversation: str):
         timeout=CONVERSATION_UPDATE_LOCK_TIMEOUT,
     ):
         yield
+
+
+def _is_file_lock_timeout(exc: Exception) -> bool:
+    return isinstance(exc, LockTimeoutError)
+
+
+def _sleep_before_file_lock_retry(attempt: int) -> None:
+    time.sleep(FILE_LOCK_RETRY_DELAY_SECONDS * attempt)
+
+
+def _run_with_file_lock_retry(label: str, action):
+    for attempt in range(1, FILE_LOCK_RETRY_ATTEMPTS + 1):
+        try:
+            return action()
+        except Exception as exc:
+            if not _is_file_lock_timeout(exc) or attempt >= FILE_LOCK_RETRY_ATTEMPTS:
+                raise
+            task_log(
+                "file_lock",
+                "retry",
+                label=label,
+                attempt=attempt,
+                error=str(exc)[:140],
+            )
+            _sleep_before_file_lock_retry(attempt)
+
+    raise RuntimeError(f"File lock retry exhausted for {label}")
 
 
 def _valid_link(doctype: str, value: Optional[str]) -> Optional[str]:
@@ -271,8 +301,10 @@ def append_message(payload: Dict[str, Any]) -> Dict[str, str]:
     frappe.flags.wa_chat_in_append_message = True
     frappe.local.wa_chat_in_append_message = True
     try:
-        with filelock(_append_message_lock_name(payload), timeout=APPEND_MESSAGE_LOCK_TIMEOUT):
-            result = _append_message_impl(payload)
+        result = _run_with_file_lock_retry(
+            "append_message",
+            lambda: _append_message_with_lock(payload),
+        )
         task_log(
             "message",
             "append_done",
@@ -294,6 +326,11 @@ def append_message(payload: Dict[str, Any]) -> Dict[str, str]:
     finally:
         frappe.flags.wa_chat_in_append_message = False
         frappe.local.wa_chat_in_append_message = False
+
+
+def _append_message_with_lock(payload: Dict[str, Any]) -> Dict[str, str]:
+    with filelock(_append_message_lock_name(payload), timeout=APPEND_MESSAGE_LOCK_TIMEOUT):
+        return _append_message_impl(payload)
 
 
 def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
@@ -403,7 +440,20 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
     except Exception:
         frappe.log_error(frappe.get_traceback(), "Inbound Attachment Persistence Failed")
 
-    update_conversation_after_message(conversation, payload)
+    try:
+        _run_with_file_lock_retry(
+            "conversation_update_after_message",
+            lambda: update_conversation_after_message(conversation, payload),
+        )
+    except LockTimeoutError as exc:
+        task_log(
+            "message",
+            "conversation_update_lock_timeout",
+            conversation=conversation,
+            message=message.name,
+            direction=direction,
+            error=str(exc)[:140],
+        )
     if direction == "Inbound":
         try:
             _enqueue_lead_scoring(conversation)
@@ -603,22 +653,21 @@ def _clean_media_body(content_type: str, body: Optional[str]) -> str:
 
 
 def mark_conversation_read(conversation_name: str) -> None:
-    with conversation_update_lock(conversation_name):
-        assert_ai_doctype_permission("Chat Conversation", "write")
-        with_db_lock_retry(
-            "conversation_mark_read",
-            lambda: frappe.db.sql(
-                """
-                UPDATE `tabChat Conversation`
-                SET unread_count = 0,
-                    modified = NOW(6),
-                    modified_by = %s
-                WHERE name = %s
-                  AND COALESCE(unread_count, 0) != 0
-                """,
-                (frappe.session.user, conversation_name),
-            ),
-        )
+    assert_ai_doctype_permission("Chat Conversation", "write")
+    with_db_lock_retry(
+        "conversation_mark_read",
+        lambda: frappe.db.sql(
+            """
+            UPDATE `tabChat Conversation`
+            SET unread_count = 0,
+                modified = NOW(6),
+                modified_by = %s
+            WHERE name = %s
+              AND COALESCE(unread_count, 0) != 0
+            """,
+            (frappe.session.user, conversation_name),
+        ),
+    )
     frappe.publish_realtime(
         "wa_chat_conversation_updated",
         {"conversation": conversation_name, "unread_count": 0},

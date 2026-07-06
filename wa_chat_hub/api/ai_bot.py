@@ -1624,9 +1624,24 @@ def _truncate_history_text(text: str, limit: int = MAX_HISTORY_MESSAGE_CHARS) ->
 
 def _safe_log_error(title: str, message: str) -> None:
     try:
-        frappe.log_error(title=str(title or "")[:140], message=str(message or "")[:4000])
+        frappe.log_error(
+            title=str(title or "")[:140],
+            message=_sanitize_log_message(message)[:4000],
+        )
     except Exception:
         pass
+
+
+def _sanitize_log_message(message: str) -> str:
+    text = str(message or "")
+    redactions = (
+        (r"sk-[A-Za-z0-9_\-]{12,}", "sk-[redacted]"),
+        (r"sk-proj-[A-Za-z0-9_\-]{12,}", "sk-proj-[redacted]"),
+        (r"(?i)(api[_-]?key|authorization|token|password|secret)\s*[:=]\s*['\"]?[^'\"\s,}]+", r"\1=[redacted]"),
+    )
+    for pattern, replacement in redactions:
+        text = re.sub(pattern, replacement, text)
+    return text
 
 
 def _build_latest_user_turn(msg_doc, media_context: str, skip_text: bool) -> str:
@@ -1740,8 +1755,38 @@ def _load_providers():
     providers = []
     for row in rows:
         doc = safe_ai_get_doc("WA LLM Provider", row.name)
-        api_key = doc.get_password("api_key")
+        try:
+            api_key = doc.get_password("api_key", raise_exception=False)
+        except Exception as exc:
+            _log_ai_timing(
+                "provider_secret_failed",
+                provider=row.name,
+                provider_type=row.provider_type,
+                model=row.model_name,
+                error=str(exc)[:140],
+            )
+            _safe_log_error(
+                "WA AI Provider Config Error",
+                (
+                    f"Provider {row.name} ({row.provider_type}, model {row.model_name}) "
+                    f"has an unreadable API key. Re-save the provider secret. Error: {str(exc)[:300]}"
+                ),
+            )
+            continue
         if not api_key:
+            _log_ai_timing(
+                "provider_secret_missing",
+                provider=row.name,
+                provider_type=row.provider_type,
+                model=row.model_name,
+            )
+            _safe_log_error(
+                "WA AI Provider Config Error",
+                (
+                    f"Provider {row.name} ({row.provider_type}, model {row.model_name}) "
+                    "has no readable API key. Re-save the provider secret."
+                ),
+            )
             continue
         providers.append(
             SimpleNamespace(
@@ -1797,6 +1842,22 @@ def _deliver_ai_reply(conversation: str, response_text: str) -> None:
                     "reply_to_message": reply_to_message,
                 },
             }
+        )
+    except Exception as exc:
+        _log_ai_timing(
+            "send_append_failed",
+            conversation=conversation,
+            delivery_status=delivery_status,
+            provider_message_id=channel_message_id,
+            error=str(exc)[:140],
+        )
+        _safe_log_error(
+            "WA AI Autopilot Append Failed",
+            (
+                f"AI reply send completed with delivery_status={delivery_status}, "
+                f"provider_message_id={channel_message_id or '-'}, but local Chat Message append failed "
+                f"for conversation {conversation}: {str(exc)[:500]}"
+            ),
         )
     finally:
         frappe.flags.wa_ai_outbound_reply = False

@@ -45,7 +45,10 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
 
     let currentConversation = null;
     let conversationLoadInFlightName = null;
+    let conversationReloadPendingName = null;
     let conversationLoadToken = 0;
+    let activeMessagesPollInFlight = false;
+    let lastRenderedMessageSignature = '';
     let sidebarContextCache = null;
     let messagingWindowCache = null;
     const conversationRefreshState = wrapper.wa_chat_hub_refresh_state || {
@@ -56,6 +59,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     };
     wrapper.wa_chat_hub_refresh_state = conversationRefreshState;
     const CONVERSATION_REFRESH_DEBOUNCE_MS = 3000;
+    const ACTIVE_MESSAGES_POLL_MS = 5000;
     let conversationSearchTimer = null;
     let preselectedConversation = null;
     let selectedChannelAccount = '';
@@ -74,6 +78,15 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
 
     function isWaChatHubRouteActive() {
         return isWaChatHubCurrentRoute() && !document.hidden;
+    }
+
+    function sameConversation(left, right) {
+        return String(left || '') === String(right || '');
+    }
+
+    function getMessageRowsSignature(rows) {
+        if (!Array.isArray(rows) || !rows.length) return '0:';
+        return `${rows.length}:${rows.map(row => row.name).join(',')}`;
     }
 
     page.add_inner_button(__('List View'), () => {
@@ -369,7 +382,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
 
     function renderConversations(rows) {
         const html = rows.length ? rows.map(row => `
-            <button class="wa-conversation-item ${row.name === currentConversation ? 'active' : ''}" data-name="${escapeHtml(row.name)}">
+            <button class="wa-conversation-item ${sameConversation(row.name, currentConversation) ? 'active' : ''}" data-name="${escapeHtml(row.name)}">
                 <div class="wa-conversation-avatar">${getAvatarText(row)}</div>
                 <div class="wa-conversation-main">
                     <div class="wa-conversation-top">
@@ -1027,12 +1040,18 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         if (messageList) {
             messageList.scrollTop = messageList.scrollHeight;
         }
+        lastRenderedMessageSignature = `${$('#wa-message-list .wa-message').length}:${
+            $('#wa-message-list .wa-message').map(function() {
+                return $(this).attr('data-message') || '';
+            }).get().join(',')
+        }`;
         return true;
     }
 
     function renderMessages(rows) {
         const html = rows.length ? rows.map(row => renderMessageRow(row)).join('') : '<div class="wa-empty">No messages.</div>';
         $('#wa-message-list').html(html);
+        lastRenderedMessageSignature = getMessageRowsSignature(rows);
         bindMediaViewerLinks();
         bindMessageMediaFallbacks();
         const messageList = document.getElementById('wa-message-list');
@@ -1303,9 +1322,11 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     }
 
     function loadConversation(name) {
-        if (conversationLoadInFlightName === name) {
+        if (sameConversation(conversationLoadInFlightName, name)) {
+            conversationReloadPendingName = name;
             return;
         }
+        conversationReloadPendingName = null;
         const loadToken = ++conversationLoadToken;
         conversationLoadInFlightName = name;
         currentConversation = name;
@@ -1334,6 +1355,11 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         Promise.allSettled([messagesPromise, contextPromise, markReadPromise]).finally(() => {
             if (loadToken === conversationLoadToken) {
                 conversationLoadInFlightName = null;
+                if (sameConversation(conversationReloadPendingName, currentConversation)) {
+                    const pendingName = conversationReloadPendingName;
+                    conversationReloadPendingName = null;
+                    loadConversation(pendingName);
+                }
             }
         });
     }
@@ -1367,6 +1393,22 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         loadConversation(currentConversation);
     }
 
+    function pollCurrentConversationMessages() {
+        if (!isWaChatHubRouteActive() || !currentConversation || activeMessagesPollInFlight) return;
+        const pollConversation = currentConversation;
+        activeMessagesPollInFlight = true;
+        Promise.resolve(api.messages(pollConversation)).then(r => {
+            if (!sameConversation(pollConversation, currentConversation)) return;
+            const rows = r.message.result || [];
+            const signature = getMessageRowsSignature(rows);
+            if (signature !== lastRenderedMessageSignature) {
+                renderMessages(rows);
+            }
+        }).finally(() => {
+            activeMessagesPollInFlight = false;
+        });
+    }
+
     function scheduleConversationRefresh(waitMs) {
         if (!isWaChatHubCurrentRoute()) {
             conversationRefreshState.pending = false;
@@ -1390,7 +1432,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         frappe.realtime.on('wa_chat_new_message', function(data) {
             if (!isWaChatHubCurrentRoute()) return;
             scheduleConversationRefresh();
-            if (isWaChatHubRouteActive() && data && String(data.conversation || '') === String(currentConversation || '')) {
+            if (isWaChatHubRouteActive() && data && sameConversation(data.conversation, currentConversation)) {
                 if (!appendRealtimeMessage(data.message)) {
                     refreshCurrentConversation();
                 }
@@ -1399,7 +1441,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
 
         frappe.realtime.on('wa_chat_message_status_updated', function(data) {
             if (!isWaChatHubRouteActive()) return;
-            if (data && String(data.conversation || '') === String(currentConversation || '')) {
+            if (data && sameConversation(data.conversation, currentConversation)) {
                 if (!updateMessageStatus(data)) {
                     refreshCurrentConversation();
                 }
@@ -1409,14 +1451,14 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         frappe.realtime.on('wa_chat_conversation_updated', function(data) {
             if (!isWaChatHubCurrentRoute()) return;
             scheduleConversationRefresh();
-            if (isWaChatHubRouteActive() && data && data.conversation === currentConversation) {
+            if (isWaChatHubRouteActive() && data && sameConversation(data.conversation, currentConversation)) {
                 refreshCurrentConversation();
             }
         });
 
         frappe.realtime.on('wa_chat_window_updated', function(data) {
             if (!isWaChatHubRouteActive()) return;
-            if (data && data.conversation === currentConversation && data.messaging_window) {
+            if (data && sameConversation(data.conversation, currentConversation) && data.messaging_window) {
                 messagingWindowCache = data.messaging_window;
                 applyMessagingWindowUI(messagingWindowCache);
             }
@@ -2218,9 +2260,13 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
             conversationRefreshState.pending = false;
             scheduleConversationRefresh(250);
         }
+        if (isWaChatHubRouteActive()) {
+            pollCurrentConversationMessages();
+        }
     });
 
     bindRealtime();
+    setInterval(pollCurrentConversationMessages, ACTIVE_MESSAGES_POLL_MS);
     loadChannelAccounts().always(() => {
         Promise.resolve(consumeRouteConversation()).then((consumed) => {
             if (!consumed) {

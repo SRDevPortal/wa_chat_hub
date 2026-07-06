@@ -53,7 +53,7 @@ BOT_CHECK_TOKENS = (
 )
 
 DELIVERY_VERIFY_REPLY = (
-    "Delivery status verify karne ke liye SRIAAS team aapka record check karegi. "
+    "Delivery status verify karne ke liye team aapka record check karegi. "
     "Kripya registered mobile number, patient ID, order ID ya AWB number share kar dijiye."
 )
 

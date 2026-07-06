@@ -1,6 +1,6 @@
 # wa_chat_hub
 
-SRIAAS WhatsApp Operations Hub for ERPNext / Frappe.
+WhatsApp Operations Hub for ERPNext / Frappe.
 
 ## Phase 1 target
 - Multi-number inbox foundation
