@@ -93,6 +93,9 @@ def split_interakt_phone(phone_number: str, default_country_code: str = "+91") -
         return country_code, digits[len(country_digits):]
 
     if len(digits) > 10:
+        inferred_country = digits[:-10]
+        if country_digits == "91" and inferred_country in {"0", "9"}:
+            return country_code, digits[-10:]
         return f"+{digits[:-10]}", digits[-10:]
 
     return country_code, digits

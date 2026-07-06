@@ -638,7 +638,7 @@ def _deliver_or_draft_ai_reply(
 
 def _normalize_reply_for_similarity(text: str) -> str:
     text = re.sub(r"\s+", " ", str(text or "").strip().lower())
-    text = re.sub(r"[^\w\sà¤€-à¥¿]", "", text)
+    text = re.sub(r"[^\w\s\u0900-\u097F]", "", text)
     return text.strip()
 
 
