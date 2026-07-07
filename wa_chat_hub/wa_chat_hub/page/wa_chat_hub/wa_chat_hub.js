@@ -1367,6 +1367,23 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         loadConversation(currentConversation);
     }
 
+    function refreshCurrentConversationMessages() {
+        if (!currentConversation || !isWaChatHubRouteActive()) return Promise.resolve();
+        const conversation = currentConversation;
+        return Promise.allSettled([
+            Promise.resolve(api.messages(conversation)).then(r => {
+                if (String(currentConversation || '') === String(conversation)) {
+                    renderMessages(r.message.result || []);
+                }
+            }),
+            Promise.resolve(api.context(conversation)).then(r => {
+                if (String(currentConversation || '') === String(conversation)) {
+                    renderContext(r.message.result || {});
+                }
+            })
+        ]);
+    }
+
     function scheduleConversationRefresh(waitMs) {
         if (!isWaChatHubCurrentRoute()) {
             conversationRefreshState.pending = false;
@@ -1389,10 +1406,12 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
 
         frappe.realtime.on('wa_chat_new_message', function(data) {
             if (!isWaChatHubCurrentRoute()) return;
-            scheduleConversationRefresh();
+            refreshConversations(true);
             if (isWaChatHubRouteActive() && data && String(data.conversation || '') === String(currentConversation || '')) {
                 if (!appendRealtimeMessage(data.message)) {
-                    refreshCurrentConversation();
+                    refreshCurrentConversationMessages();
+                } else {
+                    refreshCurrentConversationMessages();
                 }
             }
         });
@@ -1408,9 +1427,9 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
 
         frappe.realtime.on('wa_chat_conversation_updated', function(data) {
             if (!isWaChatHubCurrentRoute()) return;
-            scheduleConversationRefresh();
-            if (isWaChatHubRouteActive() && data && data.conversation === currentConversation) {
-                refreshCurrentConversation();
+            refreshConversations(true);
+            if (isWaChatHubRouteActive() && data && String(data.conversation || '') === String(currentConversation || '')) {
+                refreshCurrentConversationMessages();
             }
         });
 

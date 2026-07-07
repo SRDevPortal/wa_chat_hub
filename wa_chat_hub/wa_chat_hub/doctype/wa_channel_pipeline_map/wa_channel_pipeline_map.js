@@ -6,17 +6,8 @@ frappe.ui.form.on("WA Channel Pipeline Map", {
 			},
 		}));
 
-		frm.set_query("sr_lead_pipeline", () => ({
-			filters: {
-				is_active: 1,
-			},
-		}));
-
-		frm.set_query("sr_lead_source", () => ({
-			filters: {
-				is_active: 1,
-			},
-		}));
+		frm.set_query("sr_lead_pipeline", () => ({}));
+		frm.set_query("sr_lead_source", () => ({}));
 	},
 
 	refresh(frm) {

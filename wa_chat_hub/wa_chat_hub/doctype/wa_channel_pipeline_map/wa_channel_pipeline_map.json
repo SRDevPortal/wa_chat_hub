@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "field:chat_channel_account",
+ "autoname": "format:wacpm-{##}",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
@@ -17,9 +17,7 @@
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "Interakt Channel Account",
-   "options": "Chat Channel Account",
-   "reqd": 1,
-   "unique": 1
+   "options": "Chat Channel Account"
   },
   {
    "description": "Default for every new CRM Lead from this Interakt account (not per WhatsApp user).",
@@ -27,8 +25,7 @@
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "Default SR Lead Pipeline",
-   "options": "SR Lead Pipeline",
-   "reqd": 1
+   "options": "SR Lead Pipeline"
   },
   {
    "description": "Optional source for CRM Leads created from this WhatsApp channel.",
@@ -45,8 +42,7 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Medical Department",
-   "options": "Medical Department",
-   "reqd": 1
+   "options": "Medical Department"
   },
   {
    "default": "1",

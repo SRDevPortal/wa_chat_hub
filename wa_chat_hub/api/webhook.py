@@ -95,7 +95,7 @@ def receive():
         if not channel_account:
             return {"success": False, "message": "No active Chat Channel Account configured"}
         set_ai_security_context(channel_account=channel_account)
-        _assert_webhook_message_write_permissions()
+        _assert_webhook_message_write_permissions(include_crm_lead=False)
 
         result = append_message(
             {
@@ -304,7 +304,7 @@ def _process_interakt_payload(payload: dict, raw_body: bytes | None = None):
         event_dict["phone_number"] = normalized_phone
         event_dict["channel_department"] = routing.get("channel_department")
         set_ai_security_context(channel_account=channel_account)
-        _assert_webhook_message_write_permissions()
+        _assert_webhook_message_write_permissions(include_crm_lead=False)
         result = append_message(event_dict)
         task_log(
             "webhook",
@@ -592,7 +592,7 @@ def _create_interakt_outbound_from_webhook(payload, delivery_status):
     media_url = extract_interakt_media_url(message) or extract_interakt_media_url(payload)
 
     set_ai_security_context(channel_account=payload.get("channel_account") or "")
-    _assert_webhook_message_write_permissions()
+    _assert_webhook_message_write_permissions(include_crm_lead=False)
     result = append_message({
         "channel_account": payload["channel_account"],
         "phone_number": phone_number,

@@ -38,8 +38,8 @@ from wa_chat_hub.task_logger import elapsed, task_log
 DEFAULT_CONVERSATION_STATUS = "Open"
 WA_LEAD_CONTEXT_MARKER = "WA_CHAT_HUB_CONTEXT_JSON"
 WA_LEAD_PAYLOAD_MARKER = "WA_CHAT_HUB_PAYLOAD_JSON"
-APPEND_MESSAGE_LOCK_TIMEOUT = 8
-CONVERSATION_UPDATE_LOCK_TIMEOUT = 8
+APPEND_MESSAGE_LOCK_TIMEOUT = 30
+CONVERSATION_UPDATE_LOCK_TIMEOUT = 30
 
 
 @contextmanager
@@ -458,6 +458,15 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
         },
         after_commit=True,
     )
+    frappe.publish_realtime(
+        "wa_chat_conversation_updated",
+        {
+            "conversation": conversation,
+            "last_message_preview": (payload.get("body") or payload.get("content_type") or "")[:500],
+            "direction": message.direction,
+        },
+        after_commit=True,
+    )
     return {"contact": contact, "conversation": conversation, "message": message.name}
 
 
@@ -534,50 +543,49 @@ def cint_safe(value: Any) -> int:
 
 
 def update_conversation_after_message(conversation_name: str, payload: Dict[str, Any]) -> None:
-    """Update preview/unread without full doc save (avoids TimestampMismatch under concurrent updates)."""
-    with conversation_update_lock(conversation_name):
-        body = payload.get("body")
-        content_type = payload.get("content_type") or "Text"
-        media_url = payload.get("media_url")
-        assert_ai_doctype_permission("Chat Conversation", "read")
-        has_last_message_time = frappe.db.has_column("Chat Conversation", "last_message_time")
-        if media_url and content_type != "Text":
-            preview = build_media_preview(content_type, body)
-        else:
-            preview = body or content_type or ""
+    """Update preview/unread with atomic SQL so inbound saves cannot be lost on a stale file lock."""
+    body = payload.get("body")
+    content_type = payload.get("content_type") or "Text"
+    media_url = payload.get("media_url")
+    assert_ai_doctype_permission("Chat Conversation", "read")
+    has_last_message_time = frappe.db.has_column("Chat Conversation", "last_message_time")
+    if media_url and content_type != "Text":
+        preview = build_media_preview(content_type, body)
+    else:
+        preview = body or content_type or ""
 
-        if payload.get("direction", "Inbound") == "Inbound":
-            last_message_sql = "last_message_time = NOW(6)," if has_last_message_time else ""
-            assert_ai_doctype_permission("Chat Conversation", "write")
-            with_db_lock_retry(
-                "conversation_unread_increment",
-                lambda: frappe.db.sql(
-                    f"""
-                    UPDATE `tabChat Conversation`
-                    SET last_message_preview = %s,
-                        {last_message_sql}
-                        unread_count = COALESCE(unread_count, 0) + 1,
-                        modified = NOW(6),
-                        modified_by = %s
-                    WHERE name = %s
-                    """,
-                    ((preview or "")[:500], frappe.session.user, conversation_name),
-                ),
-            )
-            return
-
-        values = {"last_message_preview": (preview or "")[:500]}
-        if has_last_message_time:
-            values["last_message_time"] = frappe.utils.now_datetime()
+    if payload.get("direction", "Inbound") == "Inbound":
+        last_message_sql = "last_message_time = NOW(6)," if has_last_message_time else ""
+        assert_ai_doctype_permission("Chat Conversation", "write")
         with_db_lock_retry(
-            "conversation_preview_update",
-            lambda: safe_ai_set_value(
-                "Chat Conversation",
-                conversation_name,
-                values,
-                update_modified=True,
+            "conversation_unread_increment",
+            lambda: frappe.db.sql(
+                f"""
+                UPDATE `tabChat Conversation`
+                SET last_message_preview = %s,
+                    {last_message_sql}
+                    unread_count = COALESCE(unread_count, 0) + 1,
+                    modified = NOW(6),
+                    modified_by = %s
+                WHERE name = %s
+                """,
+                ((preview or "")[:500], frappe.session.user, conversation_name),
             ),
         )
+        return
+
+    values = {"last_message_preview": (preview or "")[:500]}
+    if has_last_message_time:
+        values["last_message_time"] = frappe.utils.now_datetime()
+    with_db_lock_retry(
+        "conversation_preview_update",
+        lambda: safe_ai_set_value(
+            "Chat Conversation",
+            conversation_name,
+            values,
+            update_modified=True,
+        ),
+    )
 
 
 def build_media_preview(content_type: str, body: Optional[str] = None) -> str:
@@ -1011,6 +1019,8 @@ def _create_lead_for_inbound(
         with _crm_lead_field_guard_bypass(doctype == "CRM Lead"):
             safe_ai_insert(doc)
         return doc.name
+    except WAChatHubSecurityError:
+        return None
     except Exception:
         frappe.log_error(
             _lead_creation_error_details(frappe.get_traceback(), payload, context),
