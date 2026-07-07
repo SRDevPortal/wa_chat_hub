@@ -72,6 +72,40 @@ def _inside_append_message() -> bool:
     )
 
 
+def _conversation_owned_by_order_confirmation(conversation: str | None) -> bool:
+    """Let Confluence own active order-confirmation chats.
+
+    WA Chat Hub remains responsible for receiving/sending messages, but its
+    generic autopilot should not also answer a conversation that an active
+    order-confirmation workflow is handling.
+    """
+    if not conversation:
+        return False
+    try:
+        if not frappe.db.exists("DocType", "Order Confirmation Workflow"):
+            return False
+        return bool(
+            frappe.db.exists(
+                "Order Confirmation Workflow",
+                {
+                    "chat_conversation": conversation,
+                    "status": [
+                        "not in",
+                        [
+                            "Confirmed",
+                            "Issue Created",
+                            "Level 3 Ticket Created",
+                            "Failed",
+                            "Cancelled",
+                        ],
+                    ],
+                },
+            )
+        )
+    except Exception:
+        return False
+
+
 def on_message_received(doc, method):
     """Fallback when Chat Message is inserted outside append_message()."""
     if _inside_append_message():
@@ -92,6 +126,14 @@ def schedule_autopilot_for_message(message_name: str) -> None:
     if doc.direction != "Inbound":
         return
     if not _inbound_triggers_autopilot(doc):
+        return
+    if _conversation_owned_by_order_confirmation(doc.conversation):
+        _log_ai_timing(
+            "skip",
+            message=message_name,
+            conversation=getattr(doc, "conversation", None),
+            reason="order_confirmation_workflow",
+        )
         return
 
     assert_ai_doctype_permission("WA Chat Hub Settings", "read")
@@ -237,6 +279,16 @@ def process_message(message_id, skip_batch_wait: bool = False):
             message=message_id,
             conversation=conversation,
             reason="conversation_not_open",
+            total_sec=elapsed(total_started),
+        )
+        return
+
+    if _conversation_owned_by_order_confirmation(conversation):
+        _log_ai_timing(
+            "skip",
+            message=message_id,
+            conversation=conversation,
+            reason="order_confirmation_workflow",
             total_sec=elapsed(total_started),
         )
         return
