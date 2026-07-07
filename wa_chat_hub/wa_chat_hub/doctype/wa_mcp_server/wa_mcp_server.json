@@ -46,9 +46,8 @@
   {
    "description": "Optional. Leave blank for all departments.",
    "fieldname": "department",
-   "fieldtype": "Link",
-   "label": "Department",
-   "options": "Department"
+   "fieldtype": "Data",
+   "label": "Department"
   }
  ],
  "index_web_pages_for_search": 1,

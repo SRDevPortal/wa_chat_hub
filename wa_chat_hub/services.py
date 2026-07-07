@@ -114,7 +114,7 @@ def _valid_link(doctype: str, value: Optional[str]) -> Optional[str]:
 
 
 def classify_department(channel_department: Optional[str], detected_department: Optional[str] = None) -> Optional[str]:
-    return _valid_link("Department", detected_department or channel_department)
+    return (detected_department or channel_department or "").strip() or None
 
 
 def route_conversation(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -310,14 +310,13 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
     )
 
     # Preserve existing conversations: map defaults apply only when creating a new thread.
-    # Chat Conversation.department → ERPNext "Department", not Medical Department.
-    # sr_medical_department on WA Channel Pipeline Map is only for Patient routing / Interakt traits.
-    channel_department = _valid_link("Department", payload.get("channel_department"))
+    # Department is a plain label here so WA Chat Hub can run without ERPNext's Department DocType.
+    channel_department = (payload.get("channel_department") or "").strip() or None
     if not channel_department and not existing_conversation:
         account_department = safe_ai_get_value(
             "Chat Channel Account", channel_account, "department"
         )
-        channel_department = _valid_link("Department", account_department)
+        channel_department = (account_department or "").strip() or None
 
     routing = route_conversation({
         "channel_department": channel_department,
