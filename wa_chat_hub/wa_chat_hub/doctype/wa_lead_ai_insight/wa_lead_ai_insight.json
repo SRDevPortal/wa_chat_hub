@@ -19,11 +19,10 @@
  "fields": [
   {
    "fieldname": "lead",
-   "fieldtype": "Link",
+   "fieldtype": "Data",
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Lead",
-   "options": "CRM Lead",
    "reqd": 1
   },
   {
@@ -48,10 +47,9 @@
   },
   {
    "fieldname": "pipeline",
-   "fieldtype": "Link",
+   "fieldtype": "Data",
    "in_list_view": 1,
-   "label": "Pipeline",
-   "options": "SR Lead Pipeline"
+   "label": "Pipeline"
   },
   {
    "fieldname": "insight_type",

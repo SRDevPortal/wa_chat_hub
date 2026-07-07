@@ -34,10 +34,9 @@
   },
   {
    "fieldname": "pipeline",
-   "fieldtype": "Link",
+   "fieldtype": "Data",
    "in_list_view": 1,
-   "label": "Pipeline",
-   "options": "SR Lead Pipeline"
+   "label": "Pipeline"
   },
   {
    "default": "0",

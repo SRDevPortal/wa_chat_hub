@@ -47,11 +47,10 @@
   },
   {
    "fieldname": "pipeline",
-   "fieldtype": "Link",
+   "fieldtype": "Data",
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Pipeline",
-   "options": "SR Lead Pipeline",
    "reqd": 1
   },
   {
@@ -65,9 +64,8 @@
   },
   {
    "fieldname": "department",
-   "fieldtype": "Link",
-   "label": "Department",
-   "options": "Medical Department"
+   "fieldtype": "Data",
+   "label": "Department"
   },
   {
    "fieldname": "ai_section",

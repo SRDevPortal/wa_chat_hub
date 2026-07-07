@@ -22,27 +22,24 @@
   {
    "description": "Default for every new CRM Lead from this Interakt account (not per WhatsApp user).",
    "fieldname": "sr_lead_pipeline",
-   "fieldtype": "Link",
+   "fieldtype": "Data",
    "in_list_view": 1,
-   "label": "Default SR Lead Pipeline",
-   "options": "SR Lead Pipeline"
+   "label": "Default SR Lead Pipeline"
   },
   {
    "description": "Optional source for CRM Leads created from this WhatsApp channel.",
    "fieldname": "sr_lead_source",
-   "fieldtype": "Link",
+   "fieldtype": "Data",
    "in_list_view": 1,
-   "label": "SR Lead Source",
-   "options": "SR Lead Source"
+   "label": "SR Lead Source"
   },
   {
    "description": "Must match Patient sr_medical_department for Open Chat from Patient list.",
    "fieldname": "sr_medical_department",
-   "fieldtype": "Link",
+   "fieldtype": "Data",
    "in_list_view": 1,
    "in_standard_filter": 1,
-   "label": "Medical Department",
-   "options": "Medical Department"
+   "label": "Medical Department"
   },
   {
    "default": "1",

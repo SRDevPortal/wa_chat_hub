@@ -24,7 +24,7 @@ class WAChannelPipelineMap(Document):
 
 
 def _validate_active_link(doctype: str, name: str | None, message: str) -> None:
-    if not name or not frappe.db.has_column(doctype, "is_active"):
+    if not name or not frappe.db.exists("DocType", doctype) or not frappe.db.has_column(doctype, "is_active"):
         return
     is_active = frappe.db.get_value(doctype, name, "is_active")
     if not is_active:

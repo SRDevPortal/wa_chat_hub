@@ -38,15 +38,13 @@
   },
   {
    "fieldname": "linked_lead",
-   "fieldtype": "Link",
-   "label": "Linked Lead",
-   "options": "Lead"
+   "fieldtype": "Data",
+   "label": "Linked Lead"
   },
   {
    "fieldname": "linked_patient",
-   "fieldtype": "Link",
-   "label": "Linked Patient",
-   "options": "Patient"
+   "fieldtype": "Data",
+   "label": "Linked Patient"
   }
  ],
  "links": [],

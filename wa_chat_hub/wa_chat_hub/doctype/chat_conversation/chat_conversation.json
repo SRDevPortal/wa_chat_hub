@@ -137,9 +137,8 @@
   },
   {
    "fieldname": "linked_crm_lead",
-   "fieldtype": "Link",
-   "label": "CRM Lead",
-   "options": "CRM Lead"
+   "fieldtype": "Data",
+   "label": "CRM Lead"
   },
   {
    "fieldname": "linked_reference_doctype",
