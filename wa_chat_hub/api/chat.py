@@ -233,7 +233,7 @@ def _conversation_sql_rows(filters: dict, limit) -> list:
     if has_last_message_time:
         select_fields.append("last_message_time")
     fields = ", ".join(f"c.`{fieldname}`" for fieldname in select_fields)
-    order_expression = "coalesce(c.`last_message_time`, c.`modified`)" if has_last_message_time else "c.`modified`"
+    order_expression = "c.`last_message_time`" if has_last_message_time else "c.`modified`"
     return frappe.db.sql(
         f"""
         select {fields}

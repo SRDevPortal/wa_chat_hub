@@ -9,6 +9,7 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 import frappe
 from frappe import _
+from frappe.utils import cint
 from frappe.utils.file_lock import LockTimeoutError
 from frappe.utils.synchronization import filelock
 
@@ -654,6 +655,10 @@ def _clean_media_body(content_type: str, body: Optional[str]) -> str:
 
 def mark_conversation_read(conversation_name: str) -> None:
     assert_ai_doctype_permission("Chat Conversation", "write")
+    unread_count = cint(frappe.db.get_value("Chat Conversation", conversation_name, "unread_count") or 0)
+    if unread_count <= 0:
+        return
+
     with_db_lock_retry(
         "conversation_mark_read",
         lambda: frappe.db.sql(
