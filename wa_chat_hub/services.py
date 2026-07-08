@@ -44,6 +44,8 @@ APPEND_MESSAGE_LOCK_TIMEOUT = 8
 CONVERSATION_UPDATE_LOCK_TIMEOUT = 8
 FILE_LOCK_RETRY_ATTEMPTS = 3
 FILE_LOCK_RETRY_DELAY_SECONDS = 0.35
+CONTACT_DUPLICATE_VISIBILITY_ATTEMPTS = 20
+CONTACT_DUPLICATE_VISIBILITY_DELAY_SECONDS = 0.25
 
 
 @contextmanager
@@ -219,7 +221,9 @@ def get_or_create_contact(phone_number: str, display_name: Optional[str] = None)
     try:
         safe_ai_insert(doc)
     except frappe.DuplicateEntryError:
-        existing = safe_ai_get_value("Chat Contact", {"phone_number": normalized}, "name") or normalized
+        existing = _wait_for_duplicate_contact(normalized)
+        if not existing:
+            raise
         if display_name and safe_ai_exists("Chat Contact", existing):
             with_db_lock_retry(
                 "contact_display_name_update",
@@ -233,6 +237,15 @@ def get_or_create_contact(phone_number: str, display_name: Optional[str] = None)
             )
         return existing
     return doc.name
+
+
+def _wait_for_duplicate_contact(phone_number: str) -> Optional[str]:
+    for attempt in range(CONTACT_DUPLICATE_VISIBILITY_ATTEMPTS):
+        existing = safe_ai_get_value("Chat Contact", {"phone_number": phone_number}, "name")
+        if existing:
+            return existing
+        time.sleep(CONTACT_DUPLICATE_VISIBILITY_DELAY_SECONDS)
+    return None
 
 
 def get_or_create_conversation(
