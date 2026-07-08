@@ -345,7 +345,12 @@ def append_message(payload: Dict[str, Any]) -> Dict[str, str]:
 
 def _append_message_with_lock(payload: Dict[str, Any]) -> Dict[str, str]:
     with filelock(_append_message_lock_name(payload), timeout=APPEND_MESSAGE_LOCK_TIMEOUT):
-        return _append_message_impl(payload)
+        result = _append_message_impl(payload)
+        # Make the core append visible before releasing the per-chat lock.
+        # Follow-up work runs after this lock, and concurrent webhooks for the same
+        # new contact must be able to see the committed Chat Contact/Conversation.
+        frappe.db.commit()
+        return result
 
 
 def _append_message_public_result(result: Dict[str, str]) -> Dict[str, str]:
