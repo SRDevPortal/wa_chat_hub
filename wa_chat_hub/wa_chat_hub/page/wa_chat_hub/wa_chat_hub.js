@@ -1,5 +1,7 @@
 frappe.pages['wa-chat-hub'].on_page_show = function(wrapper) {
     wrapper.wa_chat_hub_active = true;
+    applyWaChatHubShellOverrides(wrapper);
+    scheduleWaChatHubShellOverrideCheck(wrapper);
     if (wrapper && typeof wrapper.wa_chat_hub_handle_route_options === 'function') {
         wrapper.wa_chat_hub_handle_route_options();
     }
@@ -21,7 +23,52 @@ frappe.pages['wa-chat-hub'].on_page_hide = function(wrapper) {
         clearTimeout(wrapper.wa_chat_hub_message_poll_state.timer);
         wrapper.wa_chat_hub_message_poll_state.timer = null;
     }
+    restoreWaChatHubShellOverrides(wrapper);
 };
+
+function applyWaChatHubShellOverrides(wrapper) {
+    const $mainSection = $('.main-section');
+    if ($mainSection.length) {
+        if (wrapper.wa_chat_hub_previous_main_padding_bottom === undefined) {
+            wrapper.wa_chat_hub_previous_main_padding_bottom = $mainSection[0].style.paddingBottom || '';
+        }
+        $mainSection.css('padding-bottom', '0px');
+    }
+
+    const $ravenChat = $('.raven-chat');
+    if ($ravenChat.length) {
+        if (wrapper.wa_chat_hub_previous_raven_display === undefined) {
+            wrapper.wa_chat_hub_previous_raven_display = $ravenChat[0].style.display || '';
+        }
+        $ravenChat.hide();
+    }
+}
+
+function scheduleWaChatHubShellOverrideCheck(wrapper) {
+    clearTimeout(wrapper.wa_chat_hub_shell_override_timer);
+    wrapper.wa_chat_hub_shell_override_timer = setTimeout(() => {
+        if (wrapper.wa_chat_hub_active) {
+            applyWaChatHubShellOverrides(wrapper);
+        }
+    }, 500);
+}
+
+function restoreWaChatHubShellOverrides(wrapper) {
+    clearTimeout(wrapper.wa_chat_hub_shell_override_timer);
+    wrapper.wa_chat_hub_shell_override_timer = null;
+
+    const $mainSection = $('.main-section');
+    if ($mainSection.length && wrapper.wa_chat_hub_previous_main_padding_bottom !== undefined) {
+        $mainSection.css('padding-bottom', wrapper.wa_chat_hub_previous_main_padding_bottom);
+        delete wrapper.wa_chat_hub_previous_main_padding_bottom;
+    }
+
+    const $ravenChat = $('.raven-chat');
+    if ($ravenChat.length && wrapper.wa_chat_hub_previous_raven_display !== undefined) {
+        $ravenChat.css('display', wrapper.wa_chat_hub_previous_raven_display);
+        delete wrapper.wa_chat_hub_previous_raven_display;
+    }
+}
 
 frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     if (wrapper.wa_chat_hub_initialized) {

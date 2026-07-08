@@ -8,7 +8,6 @@ import frappe
 import requests
 
 from wa_chat_hub.ai.providers import CHAT_CAPABILITY, get_active_llm_provider_rows, get_provider_secret
-from wa_chat_hub.ai.conversation_stop import is_conversation_stopped
 from wa_chat_hub.ai.language import resolve_language_from_history
 from wa_chat_hub.db_retry import with_db_lock_retry
 from wa_chat_hub.prompts import get_conversation_crm_lead
@@ -43,7 +42,7 @@ def score_and_sync_conversation(conversation: str) -> Dict[str, str]:
 
 def recompute_conversation_metrics(conversation: str) -> ScoreResult:
     convo = safe_ai_get_doc("Chat Conversation", conversation)
-    if is_conversation_stopped(conversation):
+    if getattr(convo, "conversation_stopped", 0):
         return ScoreResult(
             lead_score=0,
             lead_temperature="Cold",

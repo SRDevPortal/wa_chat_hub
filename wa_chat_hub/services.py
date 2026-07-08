@@ -306,6 +306,7 @@ def append_message(payload: Dict[str, Any]) -> Dict[str, str]:
             "append_message",
             lambda: _append_message_with_lock(payload),
         )
+        _run_append_message_followups(payload, result)
         task_log(
             "message",
             "append_done",
@@ -314,7 +315,7 @@ def append_message(payload: Dict[str, Any]) -> Dict[str, str]:
             message=result.get("message"),
             duration_sec=elapsed(started),
         )
-        return result
+        return _append_message_public_result(result)
     except Exception as exc:
         task_log(
             "message",
@@ -332,6 +333,14 @@ def append_message(payload: Dict[str, Any]) -> Dict[str, str]:
 def _append_message_with_lock(payload: Dict[str, Any]) -> Dict[str, str]:
     with filelock(_append_message_lock_name(payload), timeout=APPEND_MESSAGE_LOCK_TIMEOUT):
         return _append_message_impl(payload)
+
+
+def _append_message_public_result(result: Dict[str, str]) -> Dict[str, str]:
+    return {
+        "contact": result.get("contact"),
+        "conversation": result.get("conversation"),
+        "message": result.get("message"),
+    }
 
 
 def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
@@ -413,34 +422,6 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
 
     safe_ai_insert(message)
 
-    if payload.get("attachment_file"):
-        try:
-            _attach_outbound_file_to_message(message, str(payload.get("attachment_file")))
-        except Exception:
-            frappe.log_error(frappe.get_traceback(), "Outbound Attachment Link Failed")
-
-    if direction == "Inbound":
-        try:
-            _link_or_create_master_record(
-                conversation=conversation,
-                contact_name=contact,
-                phone_number=phone_number,
-                display_name=payload.get("display_name"),
-                raw_payload=_coerce_inbound_raw_payload(payload),
-                message_name=message.name,
-            )
-        except Exception:
-            frappe.log_error(
-                frappe.get_traceback(),
-                "WA Chat Hub Inbound Link Failed",
-            )
-
-    attachment_file = None
-    try:
-        attachment_file = _persist_inbound_attachment(message, payload)
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "Inbound Attachment Persistence Failed")
-
     try:
         _run_with_file_lock_retry(
             "conversation_update_after_message",
@@ -455,6 +436,60 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
             direction=direction,
             error=str(exc)[:140],
         )
+    return {
+        "contact": contact,
+        "conversation": conversation,
+        "message": message.name,
+        "phone_number": phone_number,
+        "direction": direction,
+    }
+
+
+def _run_append_message_followups(payload: Dict[str, Any], result: Dict[str, str]) -> None:
+    conversation = result.get("conversation")
+    contact = result.get("contact")
+    message_name = result.get("message")
+    phone_number = result.get("phone_number") or normalize_phone(
+        payload.get("phone_number") or payload.get("to") or payload.get("from")
+    )
+    direction = result.get("direction") or payload.get("direction", "Inbound")
+
+    message = None
+    if message_name:
+        try:
+            message = safe_ai_get_doc("Chat Message", message_name)
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "WA Chat Hub Message Reload Failed")
+
+    if message and payload.get("attachment_file"):
+        try:
+            _attach_outbound_file_to_message(message, str(payload.get("attachment_file")))
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "Outbound Attachment Link Failed")
+
+    if direction == "Inbound" and conversation and contact:
+        try:
+            _link_or_create_master_record(
+                conversation=conversation,
+                contact_name=contact,
+                phone_number=phone_number,
+                display_name=payload.get("display_name"),
+                raw_payload=_coerce_inbound_raw_payload(payload),
+                message_name=message_name,
+            )
+        except Exception:
+            frappe.log_error(
+                frappe.get_traceback(),
+                "WA Chat Hub Inbound Link Failed",
+            )
+
+    attachment_file = None
+    if message:
+        try:
+            attachment_file = _persist_inbound_attachment(message, payload)
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "Inbound Attachment Persistence Failed")
+
     if direction == "Inbound":
         try:
             _enqueue_lead_scoring(conversation)
@@ -465,7 +500,7 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
             _sync_inbound_attachment_to_linked_record(
                 conversation=conversation,
                 chat_file_name=attachment_file,
-                message_name=message.name,
+                message_name=message_name,
                 payload=payload,
             )
         except Exception:
@@ -474,18 +509,18 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
         try:
             _enqueue_inbound_media_lead_summary(
                 conversation=conversation,
-                message_name=message.name,
+                message_name=message_name,
                 payload=payload,
                 content_type=content_type,
             )
         except Exception:
             frappe.log_error(frappe.get_traceback(), "Media Lead Summary Enqueue Failed")
-    if payload.get("attachment_file") and direction == "Outbound":
+    if payload.get("attachment_file") and direction == "Outbound" and message_name:
         try:
             _sync_outbound_attachment_to_linked_record(
                 conversation=conversation,
                 chat_file_name=str(payload.get("attachment_file")),
-                message_name=message.name,
+                message_name=message_name,
                 payload=payload,
             )
         except Exception:
@@ -497,19 +532,19 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
         try:
             from wa_chat_hub.api.ai_bot import schedule_autopilot_for_message
 
-            schedule_autopilot_for_message(message.name)
+            schedule_autopilot_for_message(message_name)
         except Exception:
             frappe.log_error(frappe.get_traceback(), "WA AI Autopilot Schedule Failed")
-    frappe.publish_realtime(
-        "wa_chat_new_message",
-        {
-            "conversation": conversation,
-            "message": message.as_dict(),
-            "direction": message.direction,
-        },
-        after_commit=True,
-    )
-    return {"contact": contact, "conversation": conversation, "message": message.name}
+    if message:
+        frappe.publish_realtime(
+            "wa_chat_new_message",
+            {
+                "conversation": conversation,
+                "message": message.as_dict(),
+                "direction": message.direction,
+            },
+            after_commit=True,
+        )
 
 
 def _enqueue_lead_scoring(conversation: str) -> None:
