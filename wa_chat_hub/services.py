@@ -774,6 +774,178 @@ def _coerce_inbound_raw_payload(payload: Dict[str, Any]) -> Optional[Dict[str, A
     return None
 
 
+def _apply_vobiz_patient_routing(
+    conversation: str,
+    patient: str,
+    channel_account: Optional[str] = None,
+) -> None:
+    if not conversation or not patient:
+        return
+
+    if not frappe.db.exists("DocType", "Vobiz AI Settings"):
+        return
+
+    did_number = _channel_account_phone_number(channel_account)
+    try:
+        from vobiz_ai.api.patient_routing import resolve_patient_routing_for_chat
+
+        routing = resolve_patient_routing_for_chat(patient=patient, did_number=did_number)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "WA Chat Hub Vobiz Patient Routing Failed")
+        return
+
+    user = _vobiz_patient_routing_user(routing)
+    status = routing.get("status") or ""
+    if not user:
+        _log_vobiz_patient_routing(
+            conversation,
+            channel_account,
+            patient,
+            routing,
+            status="Skipped",
+            details=f"Vobiz patient routing returned no assignable user. Status: {status or '-'}",
+        )
+        return
+
+    with conversation_update_lock(conversation):
+        existing_assignee = safe_ai_get_value("Chat Conversation", conversation, "assigned_to")
+        if existing_assignee:
+            _log_vobiz_patient_routing(
+                conversation,
+                channel_account,
+                patient,
+                routing,
+                status="Skipped",
+                details=(
+                    "Preserved existing conversation assignment "
+                    f"{existing_assignee}; Vobiz routed user was {user}."
+                ),
+            )
+            return
+
+        with_db_lock_retry(
+            "vobiz_patient_routing_assignment",
+            lambda: safe_ai_set_value(
+                "Chat Conversation",
+                conversation,
+                "assigned_to",
+                user,
+                update_modified=False,
+            ),
+        )
+
+    _log_vobiz_patient_routing(
+        conversation,
+        channel_account,
+        patient,
+        routing,
+        status="Success",
+        details=f"Assigned Patient conversation to {user} using Vobiz patient routing.",
+    )
+    task_log(
+        "patient_routing",
+        "assigned",
+        conversation=conversation,
+        patient=patient,
+        assigned_to=user,
+        routing_status=status,
+        routing_group=routing.get("routing_group"),
+    )
+
+
+def _channel_account_phone_number(channel_account: Optional[str]) -> str:
+    if not channel_account:
+        return ""
+    try:
+        return safe_ai_get_value("Chat Channel Account", channel_account, "phone_number") or ""
+    except Exception:
+        return ""
+
+
+def _vobiz_patient_routing_user(routing: Dict[str, Any]) -> Optional[str]:
+    if not routing:
+        return None
+
+    status = routing.get("status")
+    candidate = ""
+    if status == "selected":
+        candidate = routing.get("agent_user") or ""
+    elif status in {"fallback", "no_available_agent"}:
+        candidate = routing.get("fallback_user") or routing.get("agent_user") or ""
+    else:
+        return None
+
+    return _valid_link("User", candidate)
+
+
+def _skip_vobiz_patient_routing_for_ambiguous_match(
+    conversation: str,
+    patient: str,
+    channel_account: Optional[str],
+    phone_number: str,
+) -> bool:
+    fields = ["mobile", "mobile_no", "phone", "custom_whatsapp_number"]
+    matches = _find_phone_match_names("Patient", fields, phone_number)
+    if len(matches) <= 1:
+        return False
+
+    _log_vobiz_patient_routing(
+        conversation,
+        channel_account,
+        patient,
+        {
+            "success": True,
+            "enabled": True,
+            "matched": False,
+            "patient": patient,
+            "status": "ambiguous_patient_match",
+            "matched_patients": sorted(matches),
+        },
+        status="Skipped",
+        details=(
+            "Skipped Vobiz patient routing because the inbound phone matched "
+            f"multiple Patient records: {', '.join(sorted(matches))}."
+        ),
+    )
+    return True
+
+
+def _log_vobiz_patient_routing(
+    conversation: str,
+    channel_account: Optional[str],
+    patient: str,
+    routing: Dict[str, Any],
+    *,
+    status: str,
+    details: str,
+) -> None:
+    try:
+        from wa_chat_hub.wa_chat_hub.doctype.chat_action_log.chat_action_log import log_chat_action
+
+        log_chat_action(
+            "Assignment",
+            "Vobiz Patient Routing",
+            status=status,
+            conversation=conversation,
+            channel_account=channel_account,
+            action_source="System",
+            reference_doctype="Patient",
+            reference_name=patient,
+            details=details,
+            request_json=json.dumps(
+                {
+                    "patient": patient,
+                    "did_number": _channel_account_phone_number(channel_account),
+                },
+                ensure_ascii=True,
+                default=str,
+            ),
+            response_json=json.dumps(routing or {}, ensure_ascii=True, default=str),
+        )
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "WA Chat Hub Vobiz Patient Routing Log Failed")
+
+
 def _link_or_create_master_record(
     conversation: str,
     contact_name: str,
@@ -802,6 +974,9 @@ def _link_or_create_master_record(
         )
         return
     ref_dt, ref_name = get_conversation_linked_reference(convo)
+    if ref_dt == "Patient" and ref_name:
+        _apply_vobiz_patient_routing(conversation, ref_name, getattr(convo, "channel_account", None))
+        return
     if ref_dt and ref_name and ref_dt not in {"CRM Lead", "Lead"}:
         return
 
@@ -822,6 +997,13 @@ def _link_or_create_master_record(
                 "linked_reference_name": patient_name,
             },
         )
+        if not _skip_vobiz_patient_routing_for_ambiguous_match(
+            conversation,
+            patient_name,
+            getattr(convo, "channel_account", None),
+            phone_number,
+        ):
+            _apply_vobiz_patient_routing(conversation, patient_name, getattr(convo, "channel_account", None))
         try:
             from wa_chat_hub.interakt.contact_sync import enqueue_push_for_conversation
 
@@ -1162,6 +1344,42 @@ def _find_by_phone(doctype: str, phone_fields: list[str], phone_number: str) -> 
     except WAChatHubSecurityError:
         return None
     return None
+
+
+def _find_phone_match_names(doctype: str, phone_fields: list[str], phone_number: str) -> set[str]:
+    matches: set[str] = set()
+    try:
+        if not safe_ai_exists("DocType", doctype):
+            return matches
+
+        assert_ai_doctype_permission(doctype, "read")
+        meta = frappe.get_meta(doctype)
+        last10 = phone_number[-10:] if len(phone_number) >= 10 else phone_number
+        for fieldname in phone_fields:
+            if not meta.has_field(fieldname):
+                continue
+
+            exact_rows = safe_ai_get_all(
+                doctype,
+                filters={fieldname: phone_number},
+                fields=["name"],
+                limit_page_length=50,
+            )
+            matches.update(row.name for row in exact_rows if row.get("name"))
+
+            candidates = safe_ai_get_all(
+                doctype,
+                filters={fieldname: ["like", f"%{last10}%"]},
+                fields=["name", fieldname],
+                limit_page_length=50,
+            )
+            for row in candidates:
+                value = normalize_phone(row.get(fieldname))
+                if value and (value == phone_number or value.endswith(last10)):
+                    matches.add(row.name)
+    except WAChatHubSecurityError:
+        return set()
+    return matches
 
 
 def _get_lead_pipeline_fieldname(lead_doctype: str) -> Optional[str]:
