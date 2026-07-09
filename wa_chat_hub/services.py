@@ -107,6 +107,10 @@ def _is_file_lock_timeout(exc: Exception) -> bool:
     return isinstance(exc, LockTimeoutError)
 
 
+def _is_duplicate_entry(exc: Exception) -> bool:
+    return isinstance(exc, frappe.DuplicateEntryError) or exc.__class__.__name__ == "DuplicateEntryError"
+
+
 def _sleep_before_file_lock_retry(attempt: int) -> None:
     time.sleep(FILE_LOCK_RETRY_DELAY_SECONDS * attempt)
 
@@ -220,7 +224,9 @@ def get_or_create_contact(phone_number: str, display_name: Optional[str] = None)
     })
     try:
         safe_ai_insert(doc)
-    except frappe.DuplicateEntryError:
+    except Exception as exc:
+        if not _is_duplicate_entry(exc):
+            raise
         existing = _wait_for_duplicate_contact(normalized)
         if not existing:
             raise
