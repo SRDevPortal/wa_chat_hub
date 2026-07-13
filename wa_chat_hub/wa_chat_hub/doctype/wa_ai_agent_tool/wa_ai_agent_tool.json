@@ -1,0 +1,19 @@
+{
+ "actions": [],
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": ["mcp_tool", "is_active"],
+ "fields": [
+  {"fieldname":"mcp_tool","fieldtype":"Link","in_list_view":1,"label":"MCP Tool","options":"WA MCP Tool Endpoint","reqd":1},
+  {"default":"1","fieldname":"is_active","fieldtype":"Check","in_list_view":1,"label":"Is Active"}
+ ],
+ "istable": 1,
+ "links": [],
+ "module": "WA Chat Hub",
+ "name": "WA AI Agent Tool",
+ "permissions": [],
+ "sort_field": "idx",
+ "sort_order": "ASC",
+ "states": []
+}

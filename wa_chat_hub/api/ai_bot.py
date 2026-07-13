@@ -23,6 +23,7 @@ from wa_chat_hub.ai.media_transcription import (
 from wa_chat_hub.ai.delivery_status import build_delivery_status_reply, is_delivery_status_query
 from wa_chat_hub.ai.service import create_ai_suggestion
 from wa_chat_hub.api.vector_search import search_knowledge_base
+from wa_chat_hub.agent_router import build_agent_prompt, persist_agent_route, resolve_agent_route
 from wa_chat_hub.outbound import send_outbound_message
 from wa_chat_hub.prompts import (
     build_system_prompt_from_config,
@@ -323,6 +324,10 @@ def process_message(message_id, skip_batch_wait: bool = False):
     department = conversation_context.get("department")
     set_ai_security_context(channel_account=channel_account)
     prompt_config = get_effective_prompt_config(channel_account)
+    route = resolve_agent_route(conversation)
+    persist_agent_route(conversation, route)
+    if route.auto_reply_mode:
+        settings.autopilot_mode = route.auto_reply_mode
 
     media_context = ""
     use_vision_for_image = False
@@ -346,7 +351,18 @@ def process_message(message_id, skip_batch_wait: bool = False):
 
     last_user_query = _meaningful_body(body_text, content_type) or media_context[:500]
 
-    system_prompt = build_system_prompt_from_config(prompt_config)
+    agent_prompt = build_agent_prompt(route)
+    if route.agent_profile and agent_prompt:
+        agent_prompt_config = SimpleNamespace(
+            system_prompt=route.system_prompt,
+            medical_guardrail_policy=route.medical_guardrail_policy,
+            escalation_policy=route.escalation_policy,
+        )
+        system_prompt = build_system_prompt_from_config(agent_prompt_config)
+        if route.prompt_overlay:
+            system_prompt = f"{system_prompt}\n\n{route.prompt_overlay}"
+    else:
+        system_prompt = build_system_prompt_from_config(prompt_config)
     if not system_prompt.strip():
         frappe.log_error(
             "Autopilot skipped: System Prompt is empty in WA Chat Hub Settings "
@@ -368,8 +384,9 @@ def process_message(message_id, skip_batch_wait: bool = False):
             kb_results = search_knowledge_base(
                 last_user_query,
                 top_k=3,
-                department=department,
+                department=route.department,
                 channel_account=channel_account,
+                allowed_names=route.allowed_knowledge_bases or None,
             )
         except Exception:
             frappe.log_error(frappe.get_traceback(), "WA AI Knowledge Search Failed")
@@ -408,7 +425,7 @@ def process_message(message_id, skip_batch_wait: bool = False):
         vision=1 if use_vision_for_image else 0,
     )
 
-    providers = _load_providers()
+    providers = _load_providers(route.llm_provider)
     if not providers:
         _log_ai_timing(
             "skip",
@@ -437,6 +454,15 @@ def process_message(message_id, skip_batch_wait: bool = False):
                 history_before_current,
                 latest_user_text=latest_user_text,
                 current_inbound=current_inbound,
+                allowed_tool_names=route.allowed_tool_names,
+                max_tool_calls=route.max_tool_calls,
+                tool_context={
+                    "conversation": conversation,
+                    "patient": route.patient,
+                    "agent_profile": route.agent_profile,
+                    "department": route.department,
+                    "identity_status": route.identity_status,
+                },
             )
             if not response_text or not str(response_text).strip():
                 _log_ai_timing(
@@ -1239,8 +1265,10 @@ def _already_replied_to_inbound(conversation: str, inbound_message_id: str) -> b
     return False
 
 
-def _load_providers():
+def _load_providers(preferred_provider: str | None = None):
     rows = get_active_llm_provider_rows(CHAT_CAPABILITY)
+    if preferred_provider:
+        rows = sorted(rows, key=lambda row: 0 if row.name == preferred_provider else 1)
     providers = []
     for row in rows:
         doc = safe_ai_get_doc("WA LLM Provider", row.name)
@@ -1360,7 +1388,16 @@ def _deliver_ai_reply(conversation: str, response_text: str) -> None:
     )
 
 
-def call_provider(provider, system_prompt, history, latest_user_text=None, current_inbound=None):
+def call_provider(
+    provider,
+    system_prompt,
+    history,
+    latest_user_text=None,
+    current_inbound=None,
+    allowed_tool_names=None,
+    max_tool_calls=0,
+    tool_context=None,
+):
     messages = [{"role": "system", "content": system_prompt}]
     for h in history:
         role = "user" if h.direction == "Inbound" else "assistant"
@@ -1379,13 +1416,27 @@ def call_provider(provider, system_prompt, history, latest_user_text=None, curre
 
     is_buopso_vllm = "vllm.buopso.net" in str(provider.base_url or "").lower()
     if provider.provider_type in ("OpenAI", "Custom"):
-        return call_openai_format(provider, messages, timeout=15 if is_buopso_vllm else 45)
+        return call_openai_format(
+            provider,
+            messages,
+            timeout=15 if is_buopso_vllm else 45,
+            allowed_tool_names=allowed_tool_names,
+            max_tool_calls=max_tool_calls,
+            tool_context=tool_context,
+        )
     if provider.provider_type == "Gemini":
         if not provider.base_url:
             provider.base_url = (
                 "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
             )
-        return call_openai_format(provider, messages, timeout=45)
+        return call_openai_format(
+            provider,
+            messages,
+            timeout=45,
+            allowed_tool_names=allowed_tool_names,
+            max_tool_calls=max_tool_calls,
+            tool_context=tool_context,
+        )
     if provider.provider_type == "Anthropic":
         raise Exception(
             "Anthropic specific MCP format requires SDK. Please use OpenAI/Gemini/Custom."
@@ -1394,7 +1445,7 @@ def call_provider(provider, system_prompt, history, latest_user_text=None, curre
     raise Exception(f"Unsupported provider type {provider.provider_type}")
 
 
-def fetch_mcp_tools():
+def fetch_mcp_tools(allowed_tool_names=None):
     assert_ai_doctype_permission("WA Chat Hub Settings", "read")
     settings = frappe.get_single("WA Chat Hub Settings")
     if not getattr(settings, "allow_mcp_access", 0):
@@ -1402,9 +1453,12 @@ def fetch_mcp_tools():
     if not safe_ai_exists("DocType", "WA MCP Tool Endpoint"):
         return []
 
+    allowed_tool_names = {str(name).strip() for name in (allowed_tool_names or []) if name}
+    if not allowed_tool_names:
+        return []
     tools_docs = safe_ai_get_all(
         "WA MCP Tool Endpoint",
-        filters={"is_active": 1},
+        filters={"is_active": 1, "tool_name": ["in", sorted(allowed_tool_names)]},
         fields=["tool_name", "description", "parameters_schema", "endpoint_url", "http_method"],
     )
     tools = []
@@ -1435,20 +1489,28 @@ def fetch_mcp_tools():
     return tools
 
 
-def execute_mcp_tool(tool_name, arguments_dict):
-    tools = fetch_mcp_tools()
+def execute_mcp_tool(tool_name, arguments_dict, allowed_tool_names=None, tool_context=None):
+    tools = fetch_mcp_tools(allowed_tool_names)
     tool_meta = next((t["_meta"] for t in tools if t["function"]["name"] == tool_name), None)
     if not tool_meta:
         return f"Error: Tool {tool_name} not found."
 
     try:
         url = tool_meta["url"]
+        arguments_dict = dict(arguments_dict or {})
+        tool_context = tool_context or {}
+        if tool_context.get("patient"):
+            arguments_dict["patient"] = tool_context["patient"]
+        arguments_dict.pop("patient_id", None)
 
         if url.startswith("http"):
             if tool_meta["method"] == "POST":
                 resp = requests.post(url, json=arguments_dict, timeout=10)
             else:
                 resp = requests.get(url, params=arguments_dict, timeout=10)
+            resp.raise_for_status()
+            if "application/json" in (resp.headers.get("Content-Type") or ""):
+                return json.dumps(resp.json())
             return resp.text
 
         fn = frappe.get_attr(url)
@@ -1536,7 +1598,14 @@ def _fit_messages_for_provider(provider, messages: list[dict]) -> list[dict]:
     return kept
 
 
-def call_openai_format(provider, messages, timeout=20):
+def call_openai_format(
+    provider,
+    messages,
+    timeout=20,
+    allowed_tool_names=None,
+    max_tool_calls=0,
+    tool_context=None,
+):
     request_started = time.monotonic()
     url = provider.base_url or "https://api.openai.com/v1/chat/completions"
     headers = {
@@ -1548,7 +1617,7 @@ def call_openai_format(provider, messages, timeout=20):
         url += "chat/completions"
     messages = _fit_messages_for_provider(provider, messages)
 
-    tools = fetch_mcp_tools()
+    tools = fetch_mcp_tools(allowed_tool_names)
     api_tools = [{"type": t["type"], "function": t["function"]} for t in tools] if tools else None
     token_limit_key = _max_tokens_payload_key(provider.model_name)
     is_vllm_provider = "vllm.buopso.net" in str(url).lower()
@@ -1613,13 +1682,21 @@ def call_openai_format(provider, messages, timeout=20):
     if message.get("tool_calls"):
         messages.append(message)
 
-        for tc in message["tool_calls"]:
+        tool_calls = message["tool_calls"][: max(0, int(max_tool_calls or 0))]
+        if not tool_calls:
+            return "I’m unable to access the required record safely right now. I’ll connect you with our care team."
+        for tc in tool_calls:
             tool_started = time.monotonic()
             try:
                 args = json.loads(tc["function"]["arguments"])
             except Exception:
                 args = {}
-            tool_res = execute_mcp_tool(tc["function"]["name"], args)
+            tool_res = execute_mcp_tool(
+                tc["function"]["name"],
+                args,
+                allowed_tool_names=allowed_tool_names,
+                tool_context=tool_context,
+            )
             _log_ai_timing(
                 "tool_done",
                 provider=provider.name,

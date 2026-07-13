@@ -69,6 +69,18 @@ def after_migrate() -> None:
     ensure_lead_scoring_fields()
     ensure_chat_message_indexes()
     migrate_conversation_crm_lead_links()
+    try:
+        from wa_chat_hub.security import ensure_default_ai_doctype_permissions
+        from wa_chat_hub.setup_agents import (
+            backfill_conversation_identities,
+            ensure_default_agent_profiles,
+        )
+
+        ensure_default_ai_doctype_permissions()
+        ensure_default_agent_profiles()
+        backfill_conversation_identities()
+    except Exception:
+        _safe_log_error("WA Chat Hub Agent Setup Failed")
     backfill_messaging_windows()
 
 

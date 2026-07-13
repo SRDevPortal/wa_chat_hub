@@ -8,6 +8,7 @@
   "channel_account",
   "contact",
   "department",
+  "medical_department",
   "assigned_to",
   "status",
   "priority",
@@ -20,6 +21,15 @@
   "unread_count",
   "ai_summary",
   "linked_crm_lead",
+  "linked_patient",
+  "party_type",
+  "identity_status",
+  "agent_profile",
+  "department_source",
+  "department_confidence",
+  "routing_reason",
+  "routing_version",
+  "last_identity_sync_at",
   "linked_reference_doctype",
   "linked_reference_name",
   "sb_messaging_window",
@@ -58,6 +68,14 @@
    "fieldtype": "Link",
    "label": "Department",
    "options": "Department"
+  },
+  {
+   "fieldname": "medical_department",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Medical Department",
+   "options": "Medical Department",
+   "read_only": 1
   },
   {
    "fieldname": "assigned_to",
@@ -141,6 +159,71 @@
    "fieldtype": "Link",
    "label": "CRM Lead",
    "options": "CRM Lead"
+  },
+  {
+   "fieldname": "linked_patient",
+   "fieldtype": "Link",
+   "label": "Patient",
+   "options": "Patient",
+   "read_only": 1
+  },
+  {
+   "default": "Unknown",
+   "fieldname": "party_type",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Party Type",
+   "options": "Unknown\nLead\nPatient\nCustomer",
+   "read_only": 1
+  },
+  {
+   "default": "Unverified",
+   "fieldname": "identity_status",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Identity Status",
+   "options": "Unverified\nMatched\nVerified\nAmbiguous",
+   "read_only": 1
+  },
+  {
+   "fieldname": "agent_profile",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "AI Agent Profile",
+   "options": "WA AI Agent Profile",
+   "read_only": 1
+  },
+  {
+   "fieldname": "department_source",
+   "fieldtype": "Data",
+   "label": "Department Source",
+   "read_only": 1
+  },
+  {
+   "fieldname": "department_confidence",
+   "fieldtype": "Float",
+   "label": "Department Confidence",
+   "precision": "2",
+   "read_only": 1
+  },
+  {
+   "fieldname": "routing_reason",
+   "fieldtype": "Small Text",
+   "label": "AI Routing Reason",
+   "read_only": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "routing_version",
+   "fieldtype": "Int",
+   "label": "Routing Version",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_identity_sync_at",
+   "fieldtype": "Datetime",
+   "label": "Last Identity Sync At",
+   "read_only": 1
   },
   {
    "fieldname": "linked_reference_doctype",

@@ -8,6 +8,7 @@
   "kb_type",
   "chat_channel_account",
   "department",
+  "medical_department",
   "source_path",
   "source_url",
   "content",
@@ -40,6 +41,14 @@
    "fieldtype": "Link",
    "label": "Department",
    "options": "Department"
+  },
+  {
+   "description": "Clinical department used by the Patient Agent. The legacy Department field remains available for non-clinical routing.",
+   "fieldname": "medical_department",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Medical Department",
+   "options": "Medical Department"
   },
   {
    "fieldname": "source_path",

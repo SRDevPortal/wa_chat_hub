@@ -964,6 +964,18 @@ def _link_or_create_master_record(
     _sanitize_contact_links(contact)
     _sanitize_conversation_links(convo)
     _normalize_existing_lead_link(convo)
+    try:
+        from wa_chat_hub.identity import reconcile_conversation_identity
+
+        reconcile_conversation_identity(conversation, source="inbound")
+        convo.reload()
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "WA Chat Hub Identity Reconciliation Failed")
+
+    ref_dt, ref_name = get_conversation_linked_reference(convo)
+    if ref_dt == "Patient" and ref_name:
+        _apply_vobiz_patient_routing(conversation, ref_name, getattr(convo, "channel_account", None))
+        return
     existing_crm_lead = get_conversation_crm_lead(convo)
     if existing_crm_lead and safe_ai_exists("CRM Lead", existing_crm_lead):
         _finalize_crm_lead_after_inbound(
@@ -972,10 +984,6 @@ def _link_or_create_master_record(
             raw_payload=raw_payload,
             message_name=message_name,
         )
-        return
-    ref_dt, ref_name = get_conversation_linked_reference(convo)
-    if ref_dt == "Patient" and ref_name:
-        _apply_vobiz_patient_routing(conversation, ref_name, getattr(convo, "channel_account", None))
         return
     if ref_dt and ref_name and ref_dt not in {"CRM Lead", "Lead"}:
         return

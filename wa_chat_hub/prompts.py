@@ -96,12 +96,19 @@ def set_conversation_crm_lead(convo, lead_name: str) -> None:
 
 def get_conversation_linked_reference(convo) -> tuple[Optional[str], Optional[str]]:
     """Return (doctype, name) for Patient, Customer, CRM Lead, or other legacy links."""
+    linked_patient = getattr(convo, "linked_patient", None)
+    if linked_patient and safe_ai_exists("Patient", linked_patient):
+        return "Patient", linked_patient
+
+    ref_dt = getattr(convo, "linked_reference_doctype", None)
+    ref_name = getattr(convo, "linked_reference_name", None)
+    if ref_dt == "Patient" and ref_name:
+        return ref_dt, ref_name
+
     crm_lead = get_conversation_crm_lead(convo)
     if crm_lead:
         return "CRM Lead", crm_lead
 
-    ref_dt = getattr(convo, "linked_reference_doctype", None)
-    ref_name = getattr(convo, "linked_reference_name", None)
     if ref_dt and ref_name:
         return ref_dt, ref_name
     return None, None

@@ -59,6 +59,8 @@ def _get_admin_link_cards():
             "Automation and AI",
             [
                 _shortcut("WA AI Knowledge Base", "WA AI Knowledge Base", icon="book"),
+                _shortcut("WA AI Agent Profile", "WA AI Agent Profile", icon="cpu"),
+                _shortcut("WA AI Department Profile", "WA AI Department Profile", icon="branch"),
                 _shortcut("WA LLM Provider", "WA LLM Provider", icon="cpu"),
                 _shortcut("WA MCP Server", "WA MCP Server", icon="server"),
                 _shortcut("WA MCP Tool Endpoint", "WA MCP Tool Endpoint", icon="tool"),

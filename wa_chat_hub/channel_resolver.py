@@ -164,6 +164,16 @@ def get_or_create_mapped_patient_conversation(patient) -> dict[str, Any]:
         reference_name=patient.name,
         department=_conversation_department_for_account(channel_account),
     )
+    try:
+        from wa_chat_hub.identity import reconcile_conversation_identity
+
+        reconcile_conversation_identity(
+            conversation,
+            patient=patient.name,
+            source="patient_conversation",
+        )
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "WA Chat Hub Patient Identity Sync Failed")
 
     return {
         "conversation": conversation,
@@ -220,9 +230,17 @@ def _get_or_create_reference_conversation(
             ["linked_reference_doctype", "linked_reference_name"],
             as_dict=True,
         )
-        if not existing.linked_reference_doctype:
+        if reference_doctype == "Patient":
+            updates["linked_reference_doctype"] = "Patient"
+            updates["linked_reference_name"] = reference_name
+            if frappe.get_meta("Chat Conversation").has_field("linked_patient"):
+                updates["linked_patient"] = reference_name
+            if frappe.get_meta("Chat Conversation").has_field("party_type"):
+                updates["party_type"] = "Patient"
+                updates["identity_status"] = "Matched"
+        elif not existing.linked_reference_doctype:
             updates["linked_reference_doctype"] = reference_doctype
-        if not existing.linked_reference_name:
+        if reference_doctype != "Patient" and not existing.linked_reference_name:
             updates["linked_reference_name"] = reference_name
         if updates:
             safe_ai_set_value("Chat Conversation", conversation, updates)

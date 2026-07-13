@@ -1,0 +1,38 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "field:agent_name",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "agent_name", "agent_type", "is_active", "is_default", "auto_reply_mode",
+  "prompt_section", "system_prompt", "medical_guardrail_policy", "escalation_policy",
+  "runtime_section", "llm_provider", "max_tool_calls", "require_verified_identity",
+  "allowed_tools"
+ ],
+ "fields": [
+  {"fieldname":"agent_name","fieldtype":"Data","in_list_view":1,"label":"Agent Name","reqd":1,"unique":1},
+  {"fieldname":"agent_type","fieldtype":"Select","in_list_view":1,"in_standard_filter":1,"label":"Agent Type","options":"Lead\nPatient\nPatient Verification\nBilling\nPharmacy\nGeneral","reqd":1},
+  {"default":"1","fieldname":"is_active","fieldtype":"Check","in_list_view":1,"label":"Is Active"},
+  {"default":"0","fieldname":"is_default","fieldtype":"Check","in_list_view":1,"label":"Default For Agent Type"},
+  {"default":"Draft + Approval","fieldname":"auto_reply_mode","fieldtype":"Select","label":"Auto Reply Mode","options":"Suggest Only\nDraft + Approval\nLimited Auto Reply"},
+  {"fieldname":"prompt_section","fieldtype":"Section Break","label":"Shared Prompt and Safety"},
+  {"fieldname":"system_prompt","fieldtype":"Long Text","label":"System Prompt"},
+  {"fieldname":"medical_guardrail_policy","fieldtype":"Long Text","label":"Medical Guardrail Policy"},
+  {"fieldname":"escalation_policy","fieldtype":"Long Text","label":"Escalation Policy"},
+  {"fieldname":"runtime_section","fieldtype":"Section Break","label":"Runtime"},
+  {"fieldname":"llm_provider","fieldtype":"Link","label":"LLM Provider","options":"WA LLM Provider"},
+  {"default":"2","fieldname":"max_tool_calls","fieldtype":"Int","label":"Maximum Tool Calls"},
+  {"default":"0","description":"Required before any tools assigned to this profile are exposed.","fieldname":"require_verified_identity","fieldtype":"Check","label":"Require Verified Identity For Tools"},
+  {"fieldname":"allowed_tools","fieldtype":"Table","label":"Allowed MCP Tools","options":"WA AI Agent Tool"}
+ ],
+ "links": [],
+ "module": "WA Chat Hub",
+ "name": "WA AI Agent Profile",
+ "permissions": [{"create":1,"delete":1,"read":1,"role":"System Manager","write":1}],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "agent_name",
+ "track_changes": 1
+}

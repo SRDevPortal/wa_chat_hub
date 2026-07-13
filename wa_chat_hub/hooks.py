@@ -48,4 +48,12 @@ doc_events = {
             "wa_chat_hub.lead_ai.on_chat_message_after_insert",
         ],
     },
+    "Patient": {
+        "after_insert": "wa_chat_hub.identity.reconcile_patient_conversations",
+        "on_update": "wa_chat_hub.identity.reconcile_patient_conversations",
+    },
+    "Patient Encounter": {
+        "after_insert": "wa_chat_hub.identity.reconcile_patient_encounter",
+        "on_update": "wa_chat_hub.identity.reconcile_patient_encounter",
+    },
 }
