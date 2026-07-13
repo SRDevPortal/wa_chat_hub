@@ -19,6 +19,12 @@ from wa_chat_hub.ai.media_transcription import (
     process_transcript_for_lead_summary,
 )
 from wa_chat_hub.db_retry import is_db_lock_conflict, with_db_lock_retry
+from wa_chat_hub.messaging.idempotency import (
+    build_message_dedupe_key,
+    webhook_idempotency_enabled,
+)
+from wa_chat_hub.phone_normalization import canonical_phone as _canonical_phone
+from wa_chat_hub.phone_normalization import normalize_phone
 from wa_chat_hub.prompts import (
     get_conversation_crm_lead,
     get_conversation_linked_reference,
@@ -46,6 +52,24 @@ FILE_LOCK_RETRY_ATTEMPTS = 3
 FILE_LOCK_RETRY_DELAY_SECONDS = 0.35
 CONTACT_DUPLICATE_VISIBILITY_ATTEMPTS = 20
 CONTACT_DUPLICATE_VISIBILITY_DELAY_SECONDS = 0.25
+PHONE_INDEX_FIELD_BY_SOURCE = {
+    "mobile": "vobiz_mobile_last10",
+    "mobile_no": "vobiz_mobile_last10",
+    "phone": "vobiz_phone_last10",
+    "custom_whatsapp_number": "vobiz_whatsapp_last10",
+}
+PHONE_CANONICAL_INDEX_FIELDS = ("vobiz_normalized_phone", "sr_mobile_norm")
+
+
+def _indexed_phone_lookup_enabled() -> bool:
+    """Keep legacy lookup available until normalized-key coverage is validated."""
+    try:
+        settings = frappe.get_cached_doc("WA Chat Hub Settings")
+        if not settings.meta.has_field("enable_indexed_phone_lookup"):
+            return False
+        return bool(cint(settings.enable_indexed_phone_lookup))
+    except Exception:
+        return False
 
 
 @contextmanager
@@ -74,12 +98,6 @@ def _lead_creation_error_details(traceback: str, payload: Dict[str, Any], contex
         + _json_block(WA_LEAD_CONTEXT_MARKER, context)
         + _json_block(WA_LEAD_PAYLOAD_MARKER, payload)
     )
-
-
-def normalize_phone(phone: Optional[str]) -> str:
-    if not phone:
-        return ""
-    return "".join(ch for ch in str(phone) if ch.isdigit())
 
 
 def _record_lock_name(prefix: str, token: str) -> str:
@@ -325,7 +343,8 @@ def append_message(payload: Dict[str, Any]) -> Dict[str, str]:
             "append_message",
             lambda: _append_message_with_lock(payload),
         )
-        _run_append_message_followups(payload, result)
+        if not result.get("duplicate"):
+            _run_append_message_followups(payload, result)
         task_log(
             "message",
             "append_done",
@@ -364,6 +383,7 @@ def _append_message_public_result(result: Dict[str, str]) -> Dict[str, str]:
         "contact": result.get("contact"),
         "conversation": result.get("conversation"),
         "message": result.get("message"),
+        "duplicate": bool(result.get("duplicate")),
     }
 
 
@@ -406,6 +426,39 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
     )
 
     direction = payload.get("direction", "Inbound")
+    provider_name = str(
+        payload.get("provider_name") or payload.get("provider") or payload.get("channel_type") or "unknown"
+    ).strip()
+    provider_message_id = payload.get("provider_message_id")
+    channel_message_id = payload.get("channel_message_id")
+    provider_event_id = payload.get("provider_event_id")
+    dedupe_key = None
+    if webhook_idempotency_enabled():
+        dedupe_key = build_message_dedupe_key(
+            conversation=conversation,
+            provider_name=provider_name,
+            provider_message_id=provider_message_id,
+            channel_message_id=channel_message_id,
+            provider_event_id=provider_event_id,
+        )
+    if dedupe_key:
+        existing_message = safe_ai_get_value("Chat Message", {"dedupe_key": dedupe_key}, "name")
+        if existing_message:
+            task_log(
+                "message",
+                "append_duplicate",
+                conversation=conversation,
+                message=existing_message,
+                provider=provider_name,
+            )
+            return {
+                "contact": contact,
+                "conversation": conversation,
+                "message": existing_message,
+                "phone_number": phone_number,
+                "direction": direction,
+                "duplicate": True,
+            }
 
     delivery_status = payload.get("delivery_status")
     if not delivery_status:
@@ -420,31 +473,61 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
         "body": payload.get("body"),
         "media_url": payload.get("media_url"),
         "attachment_file": payload.get("attachment_file"),
-        "channel_message_id": payload.get("channel_message_id"),
+        "channel_message_id": channel_message_id,
+        "provider_message_id": provider_message_id,
+        "provider_name": provider_name,
+        "provider_event_id": provider_event_id,
+        "dedupe_key": dedupe_key,
         "delivery_status": delivery_status,
         "raw_payload": frappe.as_json(payload),
         "raw_transport_payload": frappe.as_json(payload.get("raw_transport_payload") or {}),
     })
 
-    # Open 24h window before insert so AI autopilot (after_insert hook) sees an active window.
-    if direction == "Inbound":
-        try:
-            from frappe.utils import now_datetime
-            from wa_chat_hub.messaging.windows import update_windows_on_message
+    savepoint = "wa_chat_message_insert"
+    frappe.db.savepoint(savepoint)
+    try:
+        # Open the window before insert so after_insert automation observes active state.
+        if direction == "Inbound":
+            try:
+                from frappe.utils import now_datetime
+                from wa_chat_hub.messaging.windows import update_windows_on_message
 
-            update_windows_on_message(
-                conversation,
-                direction=direction,
-                sender_type=payload.get("sender_type", "Customer"),
-                content_type=payload.get("content_type", "Text"),
-                raw_payload=payload.get("raw_payload") or payload,
-                message_time=str(now_datetime()),
-                template_category=payload.get("template_category"),
-            )
-        except Exception:
-            frappe.log_error(frappe.get_traceback(), "Messaging Window Update Failed")
+                update_windows_on_message(
+                    conversation,
+                    direction=direction,
+                    sender_type=payload.get("sender_type", "Customer"),
+                    content_type=payload.get("content_type", "Text"),
+                    raw_payload=payload.get("raw_payload") or payload,
+                    message_time=str(now_datetime()),
+                    template_category=payload.get("template_category"),
+                )
+            except Exception:
+                frappe.log_error(frappe.get_traceback(), "Messaging Window Update Failed")
 
-    safe_ai_insert(message)
+        safe_ai_insert(message)
+        frappe.db.release_savepoint(savepoint)
+    except Exception as exc:
+        if not dedupe_key or not _is_duplicate_entry(exc):
+            raise
+        frappe.db.rollback(save_point=savepoint)
+        existing_message = safe_ai_get_value("Chat Message", {"dedupe_key": dedupe_key}, "name")
+        if not existing_message:
+            raise
+        task_log(
+            "message",
+            "append_duplicate_race",
+            conversation=conversation,
+            message=existing_message,
+            provider=provider_name,
+        )
+        return {
+            "contact": contact,
+            "conversation": conversation,
+            "message": existing_message,
+            "phone_number": phone_number,
+            "direction": direction,
+            "duplicate": True,
+        }
 
     try:
         _run_with_file_lock_retry(
@@ -1322,6 +1405,58 @@ def _create_lead_for_inbound(
         return None
 
 
+def _available_phone_index_filters(meta, phone_fields: list[str], phone_number: str) -> list[tuple[str, str]]:
+    """Return exact, index-friendly phone predicates in deterministic priority order."""
+    normalized = normalize_phone(phone_number)
+    canonical = _canonical_phone(phone_number)
+    if not normalized:
+        return []
+
+    last10 = normalized[-10:] if len(normalized) >= 10 else normalized
+    filters: list[tuple[str, str]] = []
+    seen = set()
+
+    for fieldname in PHONE_CANONICAL_INDEX_FIELDS:
+        if meta.has_field(fieldname) and fieldname not in seen:
+            filters.append((fieldname, canonical if fieldname == "vobiz_normalized_phone" else last10))
+            seen.add(fieldname)
+
+    for source_field in phone_fields:
+        fieldname = PHONE_INDEX_FIELD_BY_SOURCE.get(source_field)
+        if fieldname and meta.has_field(fieldname) and fieldname not in seen:
+            filters.append((fieldname, last10))
+            seen.add(fieldname)
+
+    return filters
+
+
+def _phone_rows(doctype: str, fieldname: str, value: str, *, limit: int):
+    return safe_ai_get_all(
+        doctype,
+        filters={fieldname: value},
+        fields=["name"],
+        order_by="modified desc",
+        limit_page_length=limit,
+    )
+
+
+def _legacy_phone_rows(doctype: str, fieldname: str, normalized: str, *, limit: int):
+    """Temporary compatibility path used only until indexed keys are backfilled."""
+    last10 = normalized[-10:] if len(normalized) >= 10 else normalized
+    candidates = safe_ai_get_all(
+        doctype,
+        filters={fieldname: ["like", f"%{last10}%"]},
+        fields=["name", fieldname],
+        limit_page_length=limit,
+    )
+    return [
+        row
+        for row in candidates
+        if (value := normalize_phone(row.get(fieldname)))
+        and (value == normalized or value.endswith(last10))
+    ]
+
+
 def _find_by_phone(doctype: str, phone_fields: list[str], phone_number: str) -> Optional[str]:
     try:
         if not safe_ai_exists("DocType", doctype):
@@ -1329,26 +1464,30 @@ def _find_by_phone(doctype: str, phone_fields: list[str], phone_number: str) -> 
 
         assert_ai_doctype_permission(doctype, "read")
         meta = frappe.get_meta(doctype)
+        normalized = normalize_phone(phone_number)
+        if not normalized:
+            return None
+
+        # Exact checks are cheap and preserve matches for already-normalized source fields.
         for fieldname in phone_fields:
             if not meta.has_field(fieldname):
                 continue
-            exact = safe_ai_get_value(doctype, {fieldname: phone_number}, "name")
-            if exact:
-                return exact
+            rows = _phone_rows(doctype, fieldname, normalized, limit=1)
+            if rows:
+                return rows[0].name
 
-            last10 = phone_number[-10:] if len(phone_number) >= 10 else phone_number
-            candidates = safe_ai_get_all(
-                doctype,
-                filters={fieldname: ["like", f"%{last10}%"]},
-                fields=["name", fieldname],
-                limit_page_length=20,
-            )
-            for row in candidates:
-                value = normalize_phone(row.get(fieldname))
-                if not value:
+        if _indexed_phone_lookup_enabled():
+            for fieldname, value in _available_phone_index_filters(meta, phone_fields, normalized):
+                rows = _phone_rows(doctype, fieldname, value, limit=1)
+                if rows:
+                    return rows[0].name
+        else:
+            for fieldname in phone_fields:
+                if not meta.has_field(fieldname):
                     continue
-                if value == phone_number or value.endswith(last10):
-                    return row.name
+                rows = _legacy_phone_rows(doctype, fieldname, normalized, limit=20)
+                if rows:
+                    return rows[0].name
     except WAChatHubSecurityError:
         return None
     return None
@@ -1362,29 +1501,26 @@ def _find_phone_match_names(doctype: str, phone_fields: list[str], phone_number:
 
         assert_ai_doctype_permission(doctype, "read")
         meta = frappe.get_meta(doctype)
-        last10 = phone_number[-10:] if len(phone_number) >= 10 else phone_number
+        normalized = normalize_phone(phone_number)
+        if not normalized:
+            return matches
+
         for fieldname in phone_fields:
             if not meta.has_field(fieldname):
                 continue
-
-            exact_rows = safe_ai_get_all(
-                doctype,
-                filters={fieldname: phone_number},
-                fields=["name"],
-                limit_page_length=50,
-            )
+            exact_rows = _phone_rows(doctype, fieldname, normalized, limit=50)
             matches.update(row.name for row in exact_rows if row.get("name"))
 
-            candidates = safe_ai_get_all(
-                doctype,
-                filters={fieldname: ["like", f"%{last10}%"]},
-                fields=["name", fieldname],
-                limit_page_length=50,
-            )
-            for row in candidates:
-                value = normalize_phone(row.get(fieldname))
-                if value and (value == phone_number or value.endswith(last10)):
-                    matches.add(row.name)
+        if _indexed_phone_lookup_enabled():
+            for fieldname, value in _available_phone_index_filters(meta, phone_fields, normalized):
+                rows = _phone_rows(doctype, fieldname, value, limit=50)
+                matches.update(row.name for row in rows if row.get("name"))
+        else:
+            for fieldname in phone_fields:
+                if not meta.has_field(fieldname):
+                    continue
+                rows = _legacy_phone_rows(doctype, fieldname, normalized, limit=50)
+                matches.update(row.name for row in rows if row.get("name"))
     except WAChatHubSecurityError:
         return set()
     return matches

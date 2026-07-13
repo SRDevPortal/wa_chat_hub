@@ -11,7 +11,6 @@ from frappe import _
 from frappe.utils import add_to_date, get_datetime, now_datetime
 from pymysql.err import InterfaceError, OperationalError
 
-from wa_chat_hub.db_retry import with_db_lock_retry
 from wa_chat_hub.messaging.attribution import extract_attribution, json_loads_payload
 from wa_chat_hub.security import (
     assert_ai_doctype_permission,
@@ -290,7 +289,7 @@ def update_windows_on_message(
     """Update conversation window fields after a message is stored."""
     _ensure_messaging_window_schema()
     if not _messaging_window_fields_ready():
-        return get_messaging_window_state(conversation, message_time=message_time)
+        return get_messaging_window_state(conversation, now=message_time)
 
     convo = safe_ai_get_doc("Chat Conversation", conversation)
     now = get_datetime(message_time) if message_time else now_datetime()
@@ -403,14 +402,11 @@ def get_messaging_window_state(
 
     if convo is None:
         convo = safe_ai_get_doc("Chat Conversation", conversation)
-    else:
-        try:
-            convo.reload()
-        except Exception:
-            convo = safe_ai_get_doc("Chat Conversation", conversation)
 
-    # 24h window: always derived from latest customer inbound message (source of truth).
-    last_at = _last_customer_inbound_at(conversation)
+    # Runtime window checks use the state maintained when messages are accepted.
+    # Scanning Chat Message history is reserved for the explicit repair/backfill path.
+    last_raw = _convo_field(convo, "last_customer_message_at")
+    last_at = get_datetime(last_raw) if last_raw else None
     cs_expires = (
         add_to_date(last_at, hours=CUSTOMER_SERVICE_HOURS, as_datetime=True) if last_at else None
     )
@@ -424,15 +420,6 @@ def get_messaging_window_state(
         if ctwa_raw:
             ctwa_expires = get_datetime(ctwa_raw)
             ctwa_active = bool(ctwa_expires and now < ctwa_expires)
-
-    _sync_persisted_window_fields(
-        conversation,
-        convo,
-        last_at=last_at,
-        cs_expires=cs_expires,
-        cs_active=cs_active,
-        ctwa_active=ctwa_active,
-    )
 
     return _build_window_state_payload(
         now=now,
@@ -481,46 +468,6 @@ def repair_messaging_windows():
     repair_ctwa_false_positives()
     backfill_messaging_windows_from_history(force=True)
     return {"success": True, "message": "Messaging windows repaired"}
-
-
-def _sync_persisted_window_fields(
-    conversation: str,
-    convo: Any,
-    *,
-    last_at,
-    cs_expires,
-    cs_active: bool,
-    ctwa_active: bool,
-) -> None:
-    """Keep DB columns aligned with live-computed customer service window."""
-    if not _messaging_window_fields_ready():
-        return
-    mode = "free_form" if (cs_active or ctwa_active) else "template_only"
-    updates: Dict[str, Any] = {
-        "messaging_window_mode": mode,
-        "last_customer_message_at": last_at,
-        "customer_service_window_expires_at": cs_expires,
-    }
-    stored_last = _convo_field(convo, "last_customer_message_at")
-    stored_cs = _convo_field(convo, "customer_service_window_expires_at")
-    stored_mode = _convo_field(convo, "messaging_window_mode")
-    needs_save = (
-        str(stored_last or "") != str(last_at or "")
-        or str(stored_cs or "") != str(cs_expires or "")
-        or stored_mode != mode
-    )
-    if needs_save:
-        with_db_lock_retry(
-            "conversation_window_sync",
-            lambda: safe_ai_set_value(
-                "Chat Conversation",
-                conversation,
-                updates,
-                update_modified=False,
-            ),
-        )
-        for key, value in updates.items():
-            _set_convo_field(convo, key, value)
 
 
 def backfill_messaging_windows_from_history(force: bool = False) -> None:

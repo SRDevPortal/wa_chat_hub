@@ -49,8 +49,18 @@ doc_events = {
         ],
     },
     "Patient": {
+        "validate": "wa_chat_hub.maintenance.phone_backfill.sync_phone_keys",
         "after_insert": "wa_chat_hub.identity.reconcile_patient_conversations",
         "on_update": "wa_chat_hub.identity.reconcile_patient_conversations",
+    },
+    "CRM Lead": {
+        "validate": "wa_chat_hub.maintenance.phone_backfill.sync_phone_keys",
+    },
+    "Lead": {
+        "validate": "wa_chat_hub.maintenance.phone_backfill.sync_phone_keys",
+    },
+    "Customer": {
+        "validate": "wa_chat_hub.maintenance.phone_backfill.sync_phone_keys",
     },
     "Patient Encounter": {
         "after_insert": "wa_chat_hub.identity.reconcile_patient_encounter",

@@ -62,17 +62,32 @@ def recompute_conversation_metrics(conversation: str) -> ScoreResult:
 
 
 def sync_to_conversation(conversation: str, result: ScoreResult) -> None:
+    """Persist scoring only when at least one derived value changed."""
+    assert_ai_doctype_permission("Chat Conversation", "write")
     with_db_lock_retry(
         "conversation_lead_score_update",
-        lambda: safe_ai_set_value(
-            "Chat Conversation",
-            conversation,
-            {
-                "lead_score": result.lead_score,
-                "lead_temperature": result.lead_temperature,
-                "lead_lan": result.lead_lan,
-            },
-            update_modified=False,
+        lambda: frappe.db.sql(
+            """
+            UPDATE `tabChat Conversation`
+            SET lead_score = %s,
+                lead_temperature = %s,
+                lead_lan = %s
+            WHERE name = %s
+              AND (
+                  NOT (lead_score <=> %s)
+                  OR NOT (lead_temperature <=> %s)
+                  OR NOT (lead_lan <=> %s)
+              )
+            """,
+            (
+                result.lead_score,
+                result.lead_temperature,
+                result.lead_lan,
+                conversation,
+                result.lead_score,
+                result.lead_temperature,
+                result.lead_lan,
+            ),
         ),
     )
 

@@ -30,6 +30,18 @@
     "section_guardrails",
     "medical_guardrail_policy",
     "escalation_policy",
+    "section_performance",
+    "enable_indexed_phone_lookup",
+    "enable_webhook_idempotency",
+    "enable_conversation_job_deduplication",
+    "enable_conditional_conversation_updates",
+    "phone_backfill_batch_size",
+    "raw_payload_retention_days",
+    "raw_payload_archive_batch_size",
+    "enable_raw_payload_archival",
+    "version_retention_days",
+    "version_archive_batch_size",
+    "enable_version_archival",
     "section_account_prompts",
     "account_prompt_maps"
   ],
@@ -166,6 +178,80 @@
       "fieldname": "escalation_policy",
       "fieldtype": "Long Text",
       "label": "Escalation Policy"
+    },
+    {
+      "collapsible": 1,
+      "fieldname": "section_performance",
+      "fieldtype": "Section Break",
+      "label": "Performance and Retention"
+    },
+    {
+      "default": "0",
+      "description": "Use exact normalized phone keys instead of leading-wildcard telephone searches.",
+      "fieldname": "enable_indexed_phone_lookup",
+      "fieldtype": "Check",
+      "label": "Enable Indexed Phone Lookup"
+    },
+    {
+      "default": "1",
+      "description": "Prevent repeated provider webhooks from inserting the same Chat Message twice.",
+      "fieldname": "enable_webhook_idempotency",
+      "fieldtype": "Check",
+      "label": "Enable Webhook Idempotency"
+    },
+    {
+      "default": "0",
+      "fieldname": "enable_conversation_job_deduplication",
+      "fieldtype": "Check",
+      "label": "Enable Conversation Job Deduplication"
+    },
+    {
+      "default": "1",
+      "fieldname": "enable_conditional_conversation_updates",
+      "fieldtype": "Check",
+      "label": "Enable Conditional Conversation Updates"
+    },
+    {
+      "default": "2000",
+      "fieldname": "phone_backfill_batch_size",
+      "fieldtype": "Int",
+      "label": "Phone Backfill Batch Size"
+    },
+    {
+      "default": "30",
+      "fieldname": "raw_payload_retention_days",
+      "fieldtype": "Int",
+      "label": "Raw Payload Retention (Days)"
+    },
+    {
+      "default": "500",
+      "fieldname": "raw_payload_archive_batch_size",
+      "fieldtype": "Int",
+      "label": "Raw Payload Archive Batch Size"
+    },
+    {
+      "default": "0",
+      "fieldname": "enable_raw_payload_archival",
+      "fieldtype": "Check",
+      "label": "Enable Raw Payload Archival"
+    },
+    {
+      "default": "180",
+      "fieldname": "version_retention_days",
+      "fieldtype": "Int",
+      "label": "Chat Version Retention (Days)"
+    },
+    {
+      "default": "2000",
+      "fieldname": "version_archive_batch_size",
+      "fieldtype": "Int",
+      "label": "Version Archive Batch Size"
+    },
+    {
+      "default": "0",
+      "fieldname": "enable_version_archival",
+      "fieldtype": "Check",
+      "label": "Enable Chat Version Archival"
     },
     {
       "collapsible": 1,

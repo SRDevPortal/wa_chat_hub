@@ -11,6 +11,7 @@ from frappe import _
 from frappe.desk.form import assign_to
 from frappe.utils import cint, now_datetime
 
+from wa_chat_hub.audit import record_conversation_change
 from wa_chat_hub.messaging.attribution import get_conversation_attribution
 from wa_chat_hub.messaging.windows import get_messaging_window_state
 from wa_chat_hub.permissions import can_read_crm_lead
@@ -608,9 +609,13 @@ def bulk_assign(conversations, user=None):
     if not names:
         frappe.throw(_("Select at least one conversation"))
 
+    updated = 0
     for name in names:
         _ensure_conversation_write(name)
         with conversation_update_lock(name):
+            previous = frappe.db.get_value("Chat Conversation", name, "assigned_to")
+            if (previous or None) == (user or None):
+                continue
             frappe.db.set_value("Chat Conversation", name, "assigned_to", user or None)
             assign_to.clear("Chat Conversation", name)
             if user:
@@ -624,9 +629,18 @@ def bulk_assign(conversations, user=None):
                     },
                     ignore_permissions=True,
                 )
+            record_conversation_change(
+                name,
+                "Assignment",
+                fieldname="assigned_to",
+                old_value=previous,
+                new_value=user,
+                source="wa_chat_hub.bulk_assign",
+            )
+            updated += 1
 
     frappe.db.commit()
-    return {"success": True, "updated": len(names)}
+    return {"success": True, "updated": updated}
 
 
 @frappe.whitelist(methods=["POST"])
@@ -645,13 +659,26 @@ def bulk_update(conversations, fieldname, value):
     if not names:
         frappe.throw(_("Select at least one conversation"))
 
+    updated = 0
     for name in names:
         _ensure_conversation_write(name)
         with conversation_update_lock(name):
+            previous = frappe.db.get_value("Chat Conversation", name, fieldname)
+            if previous == value:
+                continue
             frappe.db.set_value("Chat Conversation", name, fieldname, value)
+            record_conversation_change(
+                name,
+                "Status" if fieldname == "status" else "Priority",
+                fieldname=fieldname,
+                old_value=previous,
+                new_value=value,
+                source="wa_chat_hub.bulk_update",
+            )
+            updated += 1
 
     frappe.db.commit()
-    return {"success": True, "updated": len(names)}
+    return {"success": True, "updated": updated}
 
 
 @frappe.whitelist(methods=["POST"])

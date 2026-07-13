@@ -12,9 +12,13 @@
   "body",
   "media_url",
   "attachment_file",
-  "channel_message_id",
-  "provider_message_id",
-  "delivery_status",
+        "channel_message_id",
+        "provider_message_id",
+        "provider_name",
+        "provider_event_id",
+        "dedupe_key",
+        "received_at",
+        "delivery_status",
   "raw_payload",
   "raw_transport_payload"
  ],
@@ -75,6 +79,32 @@
    "label": "Provider Message ID"
   },
   {
+   "fieldname": "provider_name",
+   "fieldtype": "Data",
+   "label": "Provider",
+   "read_only": 1
+  },
+  {
+   "fieldname": "provider_event_id",
+   "fieldtype": "Data",
+   "label": "Provider Event ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "dedupe_key",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Dedupe Key",
+   "read_only": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "received_at",
+   "fieldtype": "Datetime",
+   "label": "Received At",
+   "read_only": 1
+  },
+  {
    "default": "Pending",
    "fieldname": "delivery_status",
    "fieldtype": "Select",
@@ -119,5 +149,5 @@
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
- "track_changes": 1
+ "track_changes": 0
 }
