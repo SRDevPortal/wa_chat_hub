@@ -9,6 +9,8 @@ import frappe
 
 from wa_chat_hub.ai.lead_scoring import ScoreResult, sync_to_conversation
 from wa_chat_hub.api.chat import (
+    CONVERSATION_SEARCH_CANDIDATE_LIMIT,
+    _bounded_conversation_search_names,
     _indexed_reference_phone_names,
     _matching_contact_names,
     _phone_search_value,
@@ -82,6 +84,14 @@ class TestConversationSearchPerformance(TestCase):
         self.assertEqual(kwargs["filters"], {"phone_number": "919876543210"})
         self.assertNotIn("like", str(kwargs).lower())
 
+    @patch("wa_chat_hub.api.chat.normalize_phone", return_value="919876543210")
+    @patch("wa_chat_hub.api.chat.frappe.get_all", return_value=[])
+    def test_missing_contact_phone_does_not_fall_back_to_full_scan(self, get_all, _normalize):
+        self.assertEqual(_matching_contact_names("+91 98765-43210"), [])
+
+        get_all.assert_called_once()
+        self.assertNotIn("like", str(get_all.call_args.kwargs).lower())
+
     @patch("wa_chat_hub.api.chat.frappe.get_meta")
     @patch("wa_chat_hub.api.chat.frappe.get_all", return_value=["LEAD-1"])
     def test_reference_phone_search_uses_normalized_index_fields(self, get_all, get_meta):
@@ -118,6 +128,65 @@ class TestConversationSearchPerformance(TestCase):
 
         self.assertEqual(result["result"], [{"name": "CONV-1"}])
         get_all.assert_not_called()
+
+    @patch("wa_chat_hub.api.chat._short_cache_set")
+    @patch("wa_chat_hub.api.chat._bounded_conversation_search_names", return_value=set())
+    @patch("wa_chat_hub.api.chat._conversation_list_filters", return_value={})
+    @patch("wa_chat_hub.api.chat._short_cache_get", return_value=None)
+    @patch("wa_chat_hub.api.chat._force_scoped_reference_doctype", return_value=None)
+    def test_text_search_uses_bounded_candidate_query(
+        self,
+        _scope,
+        _cache_get,
+        _filters,
+        bounded_search,
+        cache_set,
+    ):
+        self.assertEqual(search_conversations("Alice"), {"success": True, "result": []})
+
+        bounded_search.assert_called_once_with("Alice", {}, 100)
+        cache_set.assert_called_once()
+
+    @patch("wa_chat_hub.api.chat.conversation_access_sql_condition", return_value="1=1")
+    @patch("wa_chat_hub.api.chat._has_conversation_last_message_time", return_value=True)
+    @patch("wa_chat_hub.api.chat.frappe.get_meta")
+    @patch("wa_chat_hub.api.chat.frappe.db.exists", return_value=True)
+    @patch("wa_chat_hub.api.chat.frappe.db.sql", return_value=["CONV-1"])
+    def test_candidate_query_limits_rows_before_wildcard_joins(
+        self,
+        sql,
+        _exists,
+        get_meta,
+        _last_message_time,
+        _access,
+    ):
+        get_meta.side_effect = lambda doctype: _Meta(
+            {
+                "linked_crm_lead",
+                "lead_name",
+                "email",
+                "mobile_no",
+                "patient_name",
+                "sr_patient_id",
+                "mobile",
+            }
+        )
+
+        names = _bounded_conversation_search_names("Alice", {"status": "Open"}, 100)
+
+        self.assertEqual(names, {"CONV-1"})
+        query = sql.call_args.args[0]
+        values = sql.call_args.args[1]
+        self.assertLess(query.index("limit %(candidate_limit)s"), query.index("left join `tabChat Contact`"))
+        self.assertEqual(values["candidate_limit"], CONVERSATION_SEARCH_CANDIDATE_LIMIT)
+        self.assertEqual(values["query"], "%Alice%")
+        self.assertNotIn("%Alice%", query)
+        self.assertTrue(sql.call_args.kwargs["pluck"])
+
+    def test_candidate_query_executes_against_database(self):
+        names = _bounded_conversation_search_names("codex-search-probe-91e7", {}, 5)
+
+        self.assertIsInstance(names, set)
 
 
 class TestPhoneNormalizationBackfill(TestCase):
