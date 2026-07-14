@@ -119,6 +119,13 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     const CONVERSATION_REFRESH_DEBOUNCE_MS = 3000;
     const ACTIVE_MESSAGES_POLL_MS = 30000;
     let conversationSearchTimer = null;
+    const conversationSearchState = {
+        activeQuery: '',
+        inFlight: false,
+        pending: false,
+        promise: null,
+        requestId: 0,
+    };
     let preselectedConversation = null;
     let selectedChannelAccount = '';
     let channelAccounts = [];
@@ -585,11 +592,35 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
 
     function applyConversationListView() {
         if (conversationSearchQuery) {
-            return api.searchConversations(conversationSearchQuery).then((r) => {
+            const query = conversationSearchQuery;
+            if (conversationSearchState.inFlight) {
+                conversationSearchState.pending = conversationSearchState.activeQuery !== query;
+                return conversationSearchState.promise || Promise.resolve();
+            }
+
+            const requestId = ++conversationSearchState.requestId;
+            conversationSearchState.activeQuery = query;
+            conversationSearchState.inFlight = true;
+            conversationSearchState.pending = false;
+            conversationSearchState.promise = Promise.resolve(api.searchConversations(query)).then((r) => {
+                if (requestId !== conversationSearchState.requestId || query !== conversationSearchQuery) {
+                    return;
+                }
                 const rows = applyClientConversationFilters((r.message || {}).result || []);
                 renderConversations(rows);
+            }).finally(() => {
+                conversationSearchState.inFlight = false;
+                conversationSearchState.promise = null;
+                if (conversationSearchState.pending && conversationSearchQuery !== query) {
+                    conversationSearchState.pending = false;
+                    return applyConversationListView();
+                }
             });
+            return conversationSearchState.promise;
         }
+        conversationSearchState.requestId += 1;
+        conversationSearchState.activeQuery = '';
+        conversationSearchState.pending = false;
         const rows = applyClientConversationFilters(conversationRowsCache);
         renderConversations(rows);
         return Promise.resolve();

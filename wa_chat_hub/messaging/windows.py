@@ -137,17 +137,6 @@ def _messaging_window_fields_ready() -> bool:
     return meta.has_field("customer_service_window_expires_at")
 
 
-def _ensure_messaging_window_schema() -> None:
-    """Reload DocType after code deploy so new columns are visible to the ORM."""
-    if _messaging_window_fields_ready():
-        return
-    try:
-        frappe.reload_doc("wa_chat_hub", "doctype", "Chat Conversation", force=True)
-        frappe.clear_cache(doctype="Chat Conversation")
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "Chat Conversation DocType Reload Failed")
-
-
 def _convo_field(convo: Any, fieldname: str, default=None):
     return getattr(convo, fieldname, default)
 
@@ -287,7 +276,6 @@ def update_windows_on_message(
     template_category: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Update conversation window fields after a message is stored."""
-    _ensure_messaging_window_schema()
     if not _messaging_window_fields_ready():
         return get_messaging_window_state(conversation, now=message_time)
 
@@ -395,7 +383,6 @@ def get_messaging_window_state(
     convo: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Serializable window state for API and UI."""
-    _ensure_messaging_window_schema()
     now = get_datetime(now) if now else now_datetime()
     if not _messaging_window_fields_ready():
         return _fallback_window_state_from_messages(conversation, now)

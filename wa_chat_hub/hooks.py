@@ -10,6 +10,7 @@ app_include_js = ["/assets/wa_chat_hub/js/remote_attachment_links.js"]
 
 after_install = "wa_chat_hub.setup_workspace.run"
 after_migrate = "wa_chat_hub.migrate.after_migrate"
+before_tests = "wa_chat_hub.tests.utils.before_tests"
 
 fixtures = [
     {"dt": "DocType", "filters": [["module", "=", "WA Chat Hub"]]},

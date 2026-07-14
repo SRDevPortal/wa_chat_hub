@@ -8,6 +8,12 @@ from unittest.mock import patch
 import frappe
 
 from wa_chat_hub.ai.lead_scoring import ScoreResult, sync_to_conversation
+from wa_chat_hub.api.chat import (
+    _indexed_reference_phone_names,
+    _matching_contact_names,
+    _phone_search_value,
+    search_conversations,
+)
 from wa_chat_hub.maintenance.phone_backfill import normalized_values
 from wa_chat_hub.messaging.idempotency import (
     build_message_dedupe_key,
@@ -60,6 +66,58 @@ class TestPhoneLookupPerformance(TestCase):
         self.assertEqual(kwargs["filters"], {"vobiz_mobile_last10": "9876543210"})
         self.assertNotIn("like", str(kwargs["filters"]).lower())
         self.assertEqual(kwargs["order_by"], "modified desc")
+
+
+class TestConversationSearchPerformance(TestCase):
+    def test_alphanumeric_text_is_not_misclassified_as_phone(self):
+        self.assertEqual(_phone_search_value("Lead 2"), "")
+
+    @patch("wa_chat_hub.api.chat.normalize_phone", return_value="919876543210")
+    @patch("wa_chat_hub.api.chat.frappe.get_all", return_value=["CONTACT-1"])
+    def test_contact_phone_search_uses_exact_lookup_first(self, get_all, _normalize):
+        names = _matching_contact_names("+91 98765-43210")
+
+        self.assertEqual(names, ["CONTACT-1"])
+        _, kwargs = get_all.call_args
+        self.assertEqual(kwargs["filters"], {"phone_number": "919876543210"})
+        self.assertNotIn("like", str(kwargs).lower())
+
+    @patch("wa_chat_hub.api.chat.frappe.get_meta")
+    @patch("wa_chat_hub.api.chat.frappe.get_all", return_value=["LEAD-1"])
+    def test_reference_phone_search_uses_normalized_index_fields(self, get_all, get_meta):
+        get_meta.return_value = _Meta({"vobiz_normalized_phone", "vobiz_mobile_last10"})
+
+        names = _indexed_reference_phone_names(
+            "CRM Lead",
+            ["mobile_no", "phone"],
+            "+91 98765-43210",
+        )
+
+        self.assertEqual(names, ["LEAD-1"])
+        self.assertTrue(get_all.called)
+        for call in get_all.call_args_list:
+            self.assertNotIn("like", str(call.kwargs.get("filters")).lower())
+
+    @patch("wa_chat_hub.api.chat._force_scoped_reference_doctype", return_value=None)
+    @patch("wa_chat_hub.api.chat.frappe.get_all")
+    def test_single_character_text_search_is_rejected_before_querying(self, get_all, _scope):
+        self.assertEqual(search_conversations("a"), {"success": True, "result": []})
+        get_all.assert_not_called()
+
+    @patch("wa_chat_hub.api.chat._force_scoped_reference_doctype", return_value=None)
+    @patch("wa_chat_hub.api.chat.frappe.get_all")
+    def test_short_phone_search_is_rejected_before_querying(self, get_all, _scope):
+        self.assertEqual(search_conversations("123"), {"success": True, "result": []})
+        get_all.assert_not_called()
+
+    @patch("wa_chat_hub.api.chat._force_scoped_reference_doctype", return_value=None)
+    @patch("wa_chat_hub.api.chat._short_cache_get", return_value=[{"name": "CONV-1"}])
+    @patch("wa_chat_hub.api.chat.frappe.get_all")
+    def test_repeated_search_uses_user_scoped_short_cache(self, get_all, _cache_get, _scope):
+        result = search_conversations("Alice")
+
+        self.assertEqual(result["result"], [{"name": "CONV-1"}])
+        get_all.assert_not_called()
 
 
 class TestPhoneNormalizationBackfill(TestCase):
@@ -134,9 +192,8 @@ class TestMessageIdempotency(TestCase):
 
 class TestMessagingWindowPerformance(TestCase):
     @patch("wa_chat_hub.messaging.windows._messaging_window_fields_ready", return_value=True)
-    @patch("wa_chat_hub.messaging.windows._ensure_messaging_window_schema")
     @patch("wa_chat_hub.messaging.windows._last_customer_inbound_at")
-    def test_runtime_state_does_not_scan_message_history(self, history_lookup, _ensure, _ready):
+    def test_runtime_state_does_not_scan_message_history(self, history_lookup, _ready):
         last_at = datetime(2026, 7, 13, 10, 0, 0)
         convo = SimpleNamespace(
             last_customer_message_at=last_at,
@@ -155,6 +212,29 @@ class TestMessagingWindowPerformance(TestCase):
         history_lookup.assert_not_called()
         self.assertTrue(state["customer_service_active"])
         self.assertEqual(state["mode"], "free_form")
+
+    @patch("wa_chat_hub.messaging.windows.frappe.clear_cache")
+    @patch("wa_chat_hub.messaging.windows.frappe.reload_doc")
+    @patch(
+        "wa_chat_hub.messaging.windows._fallback_window_state_from_messages",
+        return_value={"schema_pending": True},
+    )
+    @patch("wa_chat_hub.messaging.windows._messaging_window_fields_ready", return_value=False)
+    def test_schema_pending_uses_fallback_without_schema_mutation(
+        self,
+        _ready,
+        fallback,
+        reload_doc,
+        clear_cache,
+    ):
+        now = datetime(2026, 7, 14, 10, 30, 0)
+
+        state = get_messaging_window_state("CONV-1", now=now)
+
+        self.assertEqual(state, {"schema_pending": True})
+        fallback.assert_called_once_with("CONV-1", now)
+        reload_doc.assert_not_called()
+        clear_cache.assert_not_called()
 
 
 class TestLeadScoringWrites(TestCase):

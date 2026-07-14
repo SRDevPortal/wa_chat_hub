@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import frappe
 from pymysql.err import InterfaceError, OperationalError
 from redis.exceptions import ConnectionError as RedisConnectionError
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
 
-MODULE = "wa_chat_hub"
 DB_CONNECTION_ERROR_CODES = {2006, 2013}
 MESSAGING_WINDOW_BACKFILL_JOB_ID = "wa_chat_hub_messaging_window_backfill"
 
@@ -57,9 +54,7 @@ def _background_queue_available(queue: str) -> bool:
 
 
 def after_migrate() -> None:
-    """Keep WA Chat Hub standard doctypes and workspace synced after migrate."""
-    sync_standard_doctypes()
-    _sync_chat_conversation_schema()
+    """Run WA Chat Hub data and workspace migrations after schema synchronization."""
     try:
         from wa_chat_hub.setup_workspace import run as setup_workspace
 
@@ -82,15 +77,6 @@ def after_migrate() -> None:
     except Exception:
         _safe_log_error("WA Chat Hub Agent Setup Failed")
     backfill_messaging_windows()
-
-
-def _sync_chat_conversation_schema() -> None:
-    """Ensure messaging window columns exist on tabChat Conversation."""
-    try:
-        frappe.reload_doc("wa_chat_hub", "doctype", "Chat Conversation", force=True)
-        frappe.clear_cache(doctype="Chat Conversation")
-    except Exception:
-        _safe_log_error("Chat Conversation Schema Sync Failed")
 
 
 def backfill_messaging_windows() -> None:
@@ -117,19 +103,6 @@ def backfill_messaging_windows() -> None:
         _safe_log_error("Messaging Window Backfill Enqueue Failed")
         if _is_db_connection_error(exc) and frappe.db:
             _recover_db_connection()
-
-
-def sync_standard_doctypes() -> None:
-    doctype_dir = Path(__file__).parent / "wa_chat_hub" / "doctype"
-    if not doctype_dir.exists():
-        return
-
-    for json_file in sorted(doctype_dir.glob("*/*.json")):
-        doctype_name = json_file.parent.name
-        try:
-            frappe.reload_doc(MODULE, "doctype", doctype_name, force=True)
-        except Exception:
-            _safe_log_error(f"WA Chat Hub DocType Sync Failed: {doctype_name}")
 
 
 def ensure_lead_scoring_fields() -> None:
