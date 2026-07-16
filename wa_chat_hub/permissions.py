@@ -70,6 +70,36 @@ def _tenant_sql(doctype: str, alias: str, user: str | None = None) -> str:
     return f"(`{alias}`.`company` = {frappe.db.escape(company)} or ifnull(`{alias}`.`company`, '') = '')"
 
 
+def _current_company(user: str | None = None) -> str:
+    try:
+        from confluence_ai.tenant import get_current_company
+
+        return get_current_company(user) or ""
+    except Exception:
+        return ""
+
+
+def _matches_current_company(doctype: str, doc_or_name, user: str | None = None) -> bool:
+    company = _current_company(user)
+    if not company:
+        return True
+    try:
+        if not frappe.db.has_column(doctype, "company"):
+            return True
+    except Exception:
+        return True
+
+    doc_company = None
+    if isinstance(doc_or_name, dict):
+        doc_company = doc_or_name.get("company")
+    elif callable(getattr(doc_or_name, "as_dict", None)):
+        doc_company = doc_or_name.get("company")
+    elif isinstance(doc_or_name, str):
+        doc_company = frappe.db.get_value(doctype, doc_or_name, "company")
+
+    return not doc_company or doc_company == company
+
+
 def _and_tenant(condition: str, doctype: str, alias: str, user: str | None = None) -> str:
     tenant_condition = _tenant_sql(doctype, alias, user=user)
     if not condition:
@@ -159,6 +189,8 @@ def can_read_crm_lead(lead_name: str | None, user: str | None = None) -> bool:
 
 def can_read_conversation(conversation_or_row, user: str | None = None) -> bool:
     user = _user(user)
+    if not _matches_current_company("Chat Conversation", conversation_or_row, user=user):
+        return False
     if has_unrestricted_chat_access(user):
         return True
     lead_name = get_conversation_crm_lead(conversation_or_row)
@@ -306,6 +338,8 @@ def chat_contact_pqc(user: str | None = None) -> str:
 
 def can_read_contact(contact_or_doc, user: str | None = None) -> bool:
     user = _user(user)
+    if not _matches_current_company("Chat Contact", contact_or_doc, user=user):
+        return False
     if has_unrestricted_chat_access(user):
         return True
 

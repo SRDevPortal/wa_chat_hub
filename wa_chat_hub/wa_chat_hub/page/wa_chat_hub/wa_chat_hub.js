@@ -582,6 +582,15 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         });
     }
 
+    document.addEventListener('confluence-ai-company-changed', function() {
+        selectedChannelAccount = '';
+        conversationRowsCache = [];
+        conversationSearchQuery = '';
+        $('#wa-search').val('');
+        closeCurrentConversation();
+        loadChannelAccounts().always(() => refreshConversations(true));
+    });
+
     function consumeRouteConversation() {
         const queryOptions = getWaRouteQueryOptions();
         const routeOptions = {

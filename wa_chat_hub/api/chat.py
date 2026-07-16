@@ -27,6 +27,39 @@ MEDIA_PROXY_MAX_BYTES = 20 * 1024 * 1024
 MEDIA_PROXY_CONTENT_TYPES = {"Image", "Video", "Audio", "Document", "Sticker"}
 
 
+def _current_company() -> str:
+    try:
+        from confluence_ai.tenant import get_current_company
+
+        return get_current_company() or ""
+    except Exception:
+        return ""
+
+
+def _company_filter(doctype: str) -> dict:
+    company = _current_company()
+    if not company:
+        return {}
+    try:
+        if not frappe.db.has_column(doctype, "company"):
+            return {}
+    except Exception:
+        return {}
+    return {"company": company}
+
+
+def _company_sql(doctype: str, alias: str) -> str:
+    company = _current_company()
+    if not company:
+        return "1=1"
+    try:
+        if not frappe.db.has_column(doctype, "company"):
+            return "1=1"
+    except Exception:
+        return "1=1"
+    return f"`{alias}`.`company` = {frappe.db.escape(company)}"
+
+
 def _chat_hub_scope_key(user: str | None = None) -> str:
     return f"wa_chat_hub:scope:{user or frappe.session.user}"
 
@@ -104,7 +137,7 @@ def ingest_message():
 def get_channel_accounts():
     rows = frappe.get_all(
         "Chat Channel Account",
-        filters={"is_active": 1},
+        filters={"is_active": 1, **_company_filter("Chat Channel Account")},
         fields=["name", "account_name", "channel_type", "phone_number", "connector_status"],
         order_by="account_name asc",
     )
@@ -160,6 +193,7 @@ def _short_cache_set(key: str, value, ttl: int) -> None:
 def _api_cache_key(prefix: str, payload: dict) -> str:
     data = {
         "user": frappe.session.user,
+        "company": _current_company(),
         **payload,
     }
     return "wa_chat_hub:" + prefix + ":" + json.dumps(data, sort_keys=True, default=str)
@@ -195,6 +229,7 @@ def _conversation_list_filters(
         temperature = str(lead_temperature).strip().title()
         if temperature in {"Hot", "Warm", "Cold"}:
             filters["lead_temperature"] = temperature
+    filters.update(_company_filter("Chat Conversation"))
     return filters
 
 
@@ -212,7 +247,7 @@ def _conversation_fetch_limit(limit) -> int:
 
 
 def _conversation_sql_rows(filters: dict, limit) -> list:
-    conditions = [conversation_access_sql_condition("c")]
+    conditions = [conversation_access_sql_condition("c"), _company_sql("Chat Conversation", "c")]
     values = {"limit": _conversation_fetch_limit(limit)}
 
     for index, (fieldname, value) in enumerate((filters or {}).items()):
@@ -293,7 +328,13 @@ def _matching_contact_names(query: str) -> list[str]:
     if phone and len(phone) >= 4:
         last10 = phone[-10:]
         or_filters.append(["phone_number", "like", f"%{last10}%"])
-    return frappe.get_all("Chat Contact", or_filters=or_filters, pluck="name", limit_page_length=200)
+    return frappe.get_all(
+        "Chat Contact",
+        filters=_company_filter("Chat Contact"),
+        or_filters=or_filters,
+        pluck="name",
+        limit_page_length=200,
+    )
 
 
 def _matching_reference_conversation_names(query: str, base_filters: dict) -> set[str]:
