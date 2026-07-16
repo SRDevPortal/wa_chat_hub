@@ -14,6 +14,7 @@
   "connector_status",
   "default_team",
   "is_active",
+  "company",
   "interakt_config",
   "interakt_api_key",
   "interakt_base_url",
@@ -32,6 +33,14 @@
   "x_user_id"
  ],
  "fields": [
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Company",
+   "options": "AI Company"
+  },
   {
    "fieldname": "account_name",
    "fieldtype": "Data",
@@ -199,7 +208,7 @@
   }
  ],
  "links": [],
- "modified": "2026-04-09 12:53:06.496849",
+ "modified": "2026-07-16 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "WA Chat Hub",
  "name": "Chat Channel Account",

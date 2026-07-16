@@ -53,6 +53,32 @@ def _service_user_has_ai_read(doctype: str, user: str | None = None) -> bool:
         return False
 
 
+def _tenant_sql(doctype: str, alias: str, user: str | None = None) -> str:
+    try:
+        from confluence_ai.tenant import get_current_company
+
+        company = get_current_company(user)
+    except Exception:
+        company = ""
+    if not company:
+        return "1=1"
+    try:
+        if not frappe.db.has_column(doctype, "company"):
+            return "1=1"
+    except Exception:
+        return "1=1"
+    return f"(`{alias}`.`company` = {frappe.db.escape(company)} or ifnull(`{alias}`.`company`, '') = '')"
+
+
+def _and_tenant(condition: str, doctype: str, alias: str, user: str | None = None) -> str:
+    tenant_condition = _tenant_sql(doctype, alias, user=user)
+    if not condition:
+        return tenant_condition
+    if tenant_condition == "1=1":
+        return condition
+    return f"(({condition}) AND ({tenant_condition}))"
+
+
 def _qualify_crm_lead_condition(condition: str, alias: str) -> str:
     """Rewrite CRM Lead PQC SQL so it can run inside a joined/subquery alias."""
     if not condition:
@@ -215,7 +241,8 @@ def conversation_access_sql_condition(conversation_alias: str = "c", user: str |
 
 
 def chat_conversation_pqc(user: str | None = None) -> str:
-    return conversation_access_sql_condition("tabChat Conversation", user=user)
+    condition = conversation_access_sql_condition("tabChat Conversation", user=user)
+    return _and_tenant(condition, "Chat Conversation", "tabChat Conversation", user=user)
 
 
 def chat_conversation_has_permission(doc, user: str | None = None, ptype: str | None = None) -> bool:
@@ -273,7 +300,8 @@ def contact_access_sql_condition(contact_alias: str = "tabChat Contact", user: s
 
 
 def chat_contact_pqc(user: str | None = None) -> str:
-    return contact_access_sql_condition("tabChat Contact", user=user)
+    condition = contact_access_sql_condition("tabChat Contact", user=user)
+    return _and_tenant(condition, "Chat Contact", "tabChat Contact", user=user)
 
 
 def can_read_contact(contact_or_doc, user: str | None = None) -> bool:
@@ -307,7 +335,7 @@ def chat_contact_has_permission(doc, user: str | None = None, ptype: str | None 
 
 def chat_message_pqc(user: str | None = None) -> str:
     condition = conversation_access_sql_condition("wa_conversation", user=user)
-    return f"""
+    exists_condition = f"""
         EXISTS (
             SELECT 1
             FROM `tabChat Conversation` `wa_conversation`
@@ -315,6 +343,7 @@ def chat_message_pqc(user: str | None = None) -> str:
               AND ({condition})
         )
     """
+    return _and_tenant(exists_condition, "Chat Message", "tabChat Message", user=user)
 
 
 def chat_message_has_permission(doc, user: str | None = None, ptype: str | None = None) -> bool:

@@ -9,9 +9,18 @@
   "sr_lead_pipeline",
   "sr_lead_source",
   "sr_medical_department",
-  "is_active"
+  "is_active",
+  "company"
  ],
  "fields": [
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Company",
+   "options": "AI Company"
+  },
   {
    "fieldname": "chat_channel_account",
    "fieldtype": "Link",
@@ -64,5 +73,6 @@
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
- "track_changes": 1
+ "track_changes": 1,
+ "modified": "2026-07-16 00:00:00.000000"
 }

@@ -5,6 +5,7 @@
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
+  "company",
   "conversation",
   "direction",
   "sender_type",
@@ -19,6 +20,14 @@
   "raw_transport_payload"
  ],
  "fields": [
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Company",
+   "options": "AI Company"
+  },
   {
    "fieldname": "conversation",
    "fieldtype": "Link",
@@ -95,7 +104,7 @@
   }
  ],
  "links": [],
- "modified": "2026-04-09 10:53:50.557034",
+ "modified": "2026-07-16 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "WA Chat Hub",
  "name": "Chat Message",

@@ -8,6 +8,7 @@
  "field_order": [
   "tool_name",
   "is_active",
+  "company",
   "description",
   "server",
   "endpoint_url",
@@ -15,6 +16,14 @@
   "parameters_schema"
  ],
  "fields": [
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Company",
+   "options": "AI Company"
+  },
   {
    "description": "Unique tool id exposed to the AI (OpenAI function name).",
    "fieldname": "tool_name",
@@ -67,7 +76,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-05-21 00:00:00.000000",
+ "modified": "2026-07-16 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "WA Chat Hub",
  "name": "WA MCP Tool Endpoint",
