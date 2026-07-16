@@ -5,7 +5,7 @@ from typing import Any
 import frappe
 from frappe import _
 
-from wa_chat_hub.messaging.channel_map import get_pipeline_map
+from wa_chat_hub.messaging.channel_map import get_pipeline_map, get_pipeline_map_for_lead, get_pipeline_map_for_patient
 from wa_chat_hub.security import (
     safe_ai_get_doc,
     safe_ai_get_value,
@@ -17,10 +17,7 @@ from wa_chat_hub.services import DEFAULT_CONVERSATION_STATUS, get_or_create_cont
 
 def get_channel_context_for_lead(lead):
     """Legacy name: returns pipeline map row as a simple namespace for callers."""
-    pipeline = lead.get("sr_lead_pipeline")
-    if not pipeline:
-        frappe.throw(_("CRM Lead {0} does not have a pipeline.").format(lead.name))
-    row = get_pipeline_map(pipeline=pipeline)
+    row = get_pipeline_map_for_lead(lead)
     return frappe._dict(
         name=row["name"],
         channel_account=row["chat_channel_account"],
@@ -81,7 +78,7 @@ def ensure_interakt_contact_for_lead(channel_account: str, contact: str, lead) -
 
 
 def get_or_create_mapped_lead_conversation(lead) -> dict[str, Any]:
-    pipeline_row = get_pipeline_map(pipeline=lead.get("sr_lead_pipeline"))
+    pipeline_row = get_pipeline_map_for_lead(lead)
     channel_account = pipeline_row["chat_channel_account"]
     contact = get_or_create_lead_contact(lead)
     ensure_interakt_contact_for_reference(
@@ -147,7 +144,7 @@ def get_or_create_patient_contact(patient) -> str:
 
 
 def get_or_create_mapped_patient_conversation(patient) -> dict[str, Any]:
-    pipeline_row = get_pipeline_map(medical_department=patient.get("sr_medical_department"))
+    pipeline_row = get_pipeline_map_for_patient(patient)
     channel_account = pipeline_row["chat_channel_account"]
     contact = get_or_create_patient_contact(patient)
     ensure_interakt_contact_for_reference(

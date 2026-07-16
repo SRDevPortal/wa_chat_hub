@@ -14,7 +14,7 @@ from wa_chat_hub.channel_resolver import (
     _split_interakt_phone,
 )
 from wa_chat_hub.interakt.contacts_api import extract_interakt_user_id, track_user
-from wa_chat_hub.messaging.channel_map import get_pipeline_map
+from wa_chat_hub.messaging.channel_map import get_pipeline_map, get_pipeline_map_for_lead, get_pipeline_map_for_patient
 from wa_chat_hub.security import (
     safe_ai_exists,
     safe_ai_get_all,
@@ -122,10 +122,10 @@ def push_reference_to_interakt(reference_doc, channel_account: Optional[str] = N
     if channel_account:
         pipeline_map_row = get_pipeline_map(channel_account=channel_account)
     elif doctype == "Patient":
-        pipeline_map_row = get_pipeline_map(medical_department=reference_doc.get("sr_medical_department"))
+        pipeline_map_row = get_pipeline_map_for_patient(reference_doc)
         channel_account = pipeline_map_row["chat_channel_account"]
     elif doctype == "CRM Lead":
-        pipeline_map_row = get_pipeline_map(pipeline=reference_doc.get("sr_lead_pipeline"))
+        pipeline_map_row = get_pipeline_map_for_lead(reference_doc)
         channel_account = pipeline_map_row["chat_channel_account"]
     else:
         frappe.throw(_("Unsupported doctype for Interakt push: {0}").format(doctype))

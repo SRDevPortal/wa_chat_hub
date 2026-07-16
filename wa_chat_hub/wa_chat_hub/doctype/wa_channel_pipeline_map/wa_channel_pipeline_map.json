@@ -6,6 +6,7 @@
  "engine": "InnoDB",
  "field_order": [
   "chat_channel_account",
+  "is_default",
   "sr_lead_pipeline",
   "sr_lead_source",
   "sr_medical_department",
@@ -20,6 +21,14 @@
    "options": "Chat Channel Account",
    "reqd": 1,
    "unique": 1
+  },
+  {
+   "default": "0",
+   "description": "Use this row when a CRM Lead has no valid pipeline, or a Patient has no valid medical department.",
+   "fieldname": "is_default",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Default Route"
   },
   {
    "description": "Default for every new CRM Lead from this Interakt account (not per WhatsApp user).",
