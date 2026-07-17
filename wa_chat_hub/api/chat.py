@@ -1195,17 +1195,6 @@ def _find_existing_conversation_by_phone(phone_number: str) -> str | None:
         pluck="name",
         limit_page_length=20,
     )
-    last10 = normalized[-10:] if len(normalized) >= 10 else normalized
-    for row in frappe.get_all(
-        "Chat Contact",
-        filters={"phone_number": ["like", f"%{last10}%"]},
-        fields=["name", "phone_number"],
-        limit_page_length=50,
-    ):
-        value = normalize_phone(row.get("phone_number"))
-        if value and (value == normalized or value.endswith(last10)):
-            if row.name not in contact_names:
-                contact_names.append(row.name)
 
     if not contact_names:
         return None

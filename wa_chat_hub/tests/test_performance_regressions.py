@@ -12,6 +12,7 @@ from wa_chat_hub.api.chat import (
     CONVERSATION_SEARCH_CANDIDATE_LIMIT,
     _bounded_conversation_search_names,
     _indexed_reference_phone_names,
+    _find_existing_conversation_by_phone,
     _matching_contact_names,
     _phone_search_value,
     search_conversations,
@@ -90,6 +91,15 @@ class TestConversationSearchPerformance(TestCase):
         self.assertEqual(_matching_contact_names("+91 98765-43210"), [])
 
         get_all.assert_called_once()
+        self.assertNotIn("like", str(get_all.call_args.kwargs).lower())
+
+    @patch("wa_chat_hub.api.chat.frappe.db.get_value", return_value="CONV-1")
+    @patch("wa_chat_hub.api.chat.frappe.get_all", return_value=["CONTACT-1"])
+    def test_existing_conversation_phone_lookup_is_exact(self, get_all, _get_value):
+        self.assertEqual(_find_existing_conversation_by_phone("+91 98765-43210"), "CONV-1")
+
+        get_all.assert_called_once()
+        self.assertEqual(get_all.call_args.kwargs["filters"], {"phone_number": "919876543210"})
         self.assertNotIn("like", str(get_all.call_args.kwargs).lower())
 
     @patch("wa_chat_hub.api.chat.frappe.get_meta")

@@ -9,6 +9,8 @@ import frappe
 from frappe import _
 from frappe.utils import add_to_date, now_datetime
 
+from wa_chat_hub.phone_normalization import normalize_phone
+
 
 ERROR_CATEGORIES = {
     "webhook": {
@@ -267,7 +269,10 @@ def _related_records(event: Dict[str, Any]) -> Dict[str, Any]:
 
     phone = event.get("phone")
     if phone and not related.get("contact"):
-        contact = frappe.db.get_value("Chat Contact", {"phone_number": ["like", f"%{phone[-10:]}"]}, "name")
+        normalized = normalize_phone(phone)
+        contact = (
+            frappe.db.get_value("Chat Contact", {"phone_number": normalized}, "name") if normalized else None
+        )
         if contact:
             related["contact"] = contact
 
