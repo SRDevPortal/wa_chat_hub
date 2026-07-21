@@ -9,4 +9,5 @@ wa_chat_hub.patches.v1_0.add_ai_insight_and_reference_indexes
 wa_chat_hub.patches.v1_0.add_ai_doctype_permissions
 wa_chat_hub.patches.v1_0.add_chat_message_window_index
 wa_chat_hub.patches.v1_0.add_indexed_phone_lookup_indexes
+wa_chat_hub.patches.v1_0.add_customer_indexed_phone_lookup
 wa_chat_hub.patches.v1_0.add_conversation_audit_indexes
