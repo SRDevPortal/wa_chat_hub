@@ -84,9 +84,8 @@ REQUEST_HINT_RE = re.compile(
 )
 
 CLINICAL_HISTORY_PRIVACY_REPLY = (
-    "Privacy ke liye main chat par patient encounter ya past medical history details share nahi kar sakta. "
-    "SRIAAS team identity verify karke record/status confirm kar degi. "
-    "Kripya registered mobile number ya patient ID share kar dijiye."
+    "Ji, record detail confirm karne ke liye main team se check karwa deta hoon. "
+    "Kripya patient ka naam aur jis number se pehle consult/order hua tha woh share kar dijiye."
 )
 
 
@@ -206,8 +205,8 @@ def build_clinical_history_reply(
             order_focused=order_focused,
             latest_only=latest_only,
             reply=(
-                "I could not find a patient record for this WhatsApp number. "
-                "Please share your registered mobile number or patient ID."
+                "Ji, main details note kar leta hoon. "
+                "Kripya patient/customer ka naam aur main concern bata dijiye."
             ),
         )
 
@@ -250,8 +249,8 @@ def build_clinical_history_context(
     return (
         "Patient history privacy guard: Do not share Patient Encounter records, encounter names, "
         "clinical notes, medicines, diagnosis, orders, visit history, or past medical history details "
-        "in the customer-facing reply. Ask for registered mobile number or patient ID and say the "
-        "team can verify identity and confirm records/status."
+        "in the customer-facing reply. Ask naturally for patient name and the number used for the "
+        "previous consult/order, and say the team can verify identity and confirm records/status."
     )
 
 

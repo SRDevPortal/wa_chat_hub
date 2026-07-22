@@ -10,6 +10,7 @@
   "is_active",
   "company",
   "server_url",
+  "authorization_header",
   "transport_type",
   "department"
  ],
@@ -44,6 +45,12 @@
    "in_list_view": 1,
    "label": "Server URL",
    "reqd": 1
+  },
+  {
+   "description": "Optional HTTP Authorization header used for MCP HTTP tools. Example: token key:secret",
+   "fieldname": "authorization_header",
+   "fieldtype": "Password",
+   "label": "Authorization Header"
   },
   {
    "default": "HTTP",

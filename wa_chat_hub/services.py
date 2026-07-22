@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from contextlib import contextmanager
 from typing import Any, Dict, Optional
@@ -74,6 +75,20 @@ def normalize_phone(phone: Optional[str]) -> str:
     if not phone:
         return ""
     return "".join(ch for ch in str(phone) if ch.isdigit())
+
+
+def _doctype_has_field(doctype: str, fieldname: str) -> bool:
+    try:
+        return bool(frappe.get_meta(doctype).has_field(fieldname))
+    except Exception:
+        return False
+
+
+def _channel_account_company(channel_account: Optional[str]) -> Optional[str]:
+    if not channel_account or not _doctype_has_field("Chat Channel Account", "company"):
+        return None
+    company = safe_ai_get_value("Chat Channel Account", channel_account, "company")
+    return str(company).strip() if company else None
 
 
 def _record_lock_name(prefix: str, token: str) -> str:
@@ -212,6 +227,8 @@ def get_or_create_conversation(
     status: str = DEFAULT_CONVERSATION_STATUS,
 ) -> str:
     filters = {"channel_account": channel_account, "contact": contact, "status": ["!=", "Closed"]}
+    company = _channel_account_company(channel_account)
+    has_company_field = _doctype_has_field("Chat Conversation", "company")
 
     existing = with_db_lock_retry(
         "conversation_lookup",
@@ -219,6 +236,8 @@ def get_or_create_conversation(
     )
     if existing:
         updates = {}
+        if has_company_field and company and not safe_ai_get_value("Chat Conversation", existing, "company"):
+            updates["company"] = company
         if department:
             updates["department"] = department
         if assigned_to:
@@ -236,14 +255,17 @@ def get_or_create_conversation(
         return existing
 
     def _insert_conversation() -> str:
-        doc = frappe.get_doc({
+        values = {
             "doctype": "Chat Conversation",
             "channel_account": channel_account,
             "contact": contact,
             "department": department,
             "assigned_to": assigned_to,
             "status": status,
-        })
+        }
+        if has_company_field and company:
+            values["company"] = company
+        doc = frappe.get_doc(values)
         try:
             safe_ai_insert(doc)
             return doc.name
@@ -303,6 +325,7 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
     contact = get_or_create_contact(phone_number=phone_number, display_name=payload.get("display_name"))
 
     channel_account = payload["channel_account"]
+    company = _channel_account_company(channel_account)
     existing_conversation = safe_ai_get_value(
         "Chat Conversation",
         {"channel_account": channel_account, "contact": contact, "status": ["!=", "Closed"]},
@@ -339,7 +362,7 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
     if not delivery_status:
         delivery_status = "Received" if direction == "Inbound" else "Pending"
 
-    message = frappe.get_doc({
+    message_values = {
         "doctype": "Chat Message",
         "conversation": conversation,
         "direction": direction,
@@ -352,7 +375,10 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
         "delivery_status": delivery_status,
         "raw_payload": frappe.as_json(payload),
         "raw_transport_payload": frappe.as_json(payload.get("raw_transport_payload") or {}),
-    })
+    }
+    if _doctype_has_field("Chat Message", "company") and company:
+        message_values["company"] = company
+    message = frappe.get_doc(message_values)
 
     # Open 24h window before insert so AI autopilot (after_insert hook) sees an active window.
     if direction == "Inbound":
@@ -403,11 +429,6 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
         frappe.log_error(frappe.get_traceback(), "Inbound Attachment Persistence Failed")
 
     update_conversation_after_message(conversation, payload)
-    if direction == "Inbound":
-        try:
-            _enqueue_lead_scoring(conversation)
-        except Exception:
-            frappe.log_error(frappe.get_traceback(), "Lead Scoring Enqueue Failed")
     if attachment_file and direction == "Inbound":
         try:
             _sync_inbound_attachment_to_linked_record(
@@ -448,6 +469,11 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
             schedule_autopilot_for_message(message.name)
         except Exception:
             frappe.log_error(frappe.get_traceback(), "WA AI Autopilot Schedule Failed")
+    if direction == "Inbound":
+        try:
+            _enqueue_lead_scoring(conversation)
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "Lead Scoring Enqueue Failed")
     frappe.publish_realtime(
         "wa_chat_new_message",
         {
@@ -885,7 +911,7 @@ def _sync_crm_lead_pipeline_for_channel(lead_name: str, channel_account: Optiona
 
 def _inbound_lead_first_name(display_name: Optional[str], phone_number: str) -> str:
     text = (display_name or "").strip()
-    if text and text != phone_number:
+    if text and text != phone_number and re.search(r"[A-Za-z0-9]", text):
         return text.split()[0][:140]
     return phone_number[-10:] if len(phone_number) >= 10 else phone_number
 
@@ -964,7 +990,7 @@ def _create_lead_for_inbound(
     try:
         assert_ai_doctype_permission(doctype, "read")
         meta = frappe.get_meta(doctype)
-        lead_title = display_name or phone_number
+        lead_title = _inbound_lead_first_name(display_name, phone_number)
         first_name = _inbound_lead_first_name(display_name, phone_number)
 
         if meta.has_field("first_name"):

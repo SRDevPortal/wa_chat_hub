@@ -74,6 +74,7 @@ def _get_admin_link_cards():
                 _shortcut("Chat Assignment Rule", "Chat Assignment Rule", icon="assign"),
                 _shortcut("Chat Queue Event", "Chat Queue Event", icon="list"),
                 _shortcut("Chat Action Log", "Chat Action Log", icon="activity"),
+                _shortcut("WA Agent Event", "WA Agent Event", icon="activity"),
                 _shortcut("Chat Contact Channel Profile", "Chat Contact Channel Profile", icon="contact"),
             ],
         ),

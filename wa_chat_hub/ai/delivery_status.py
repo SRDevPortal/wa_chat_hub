@@ -53,8 +53,13 @@ BOT_CHECK_TOKENS = (
 )
 
 DELIVERY_VERIFY_REPLY = (
-    "Delivery status verify karne ke liye SRIAAS team aapka record check karegi. "
-    "Kripya registered mobile number, patient ID, order ID ya AWB number share kar dijiye."
+    "Ji, main delivery/order detail check karwa deta hoon. "
+    "Kripya order ID, AWB number, ya jis number se order place hua tha woh share kar dijiye."
+)
+
+DELIVERY_INTAKE_REPLY = (
+    "Ji, order ke liye main details note kar leta hoon. "
+    "Kripya patient/customer ka naam aur jis product ki zarurat hai woh bata dijiye."
 )
 
 
@@ -90,6 +95,17 @@ def _has_explicit_tracking_request(text: str) -> bool:
     )
 
 
+def _looks_like_new_order_intent(text: str | None) -> bool:
+    body = str(text or "").strip().lower()
+    if not body:
+        return False
+    return bool(
+        re.search(r"\b(order|buy|purchase)\b.{0,35}\b(karna|krna|chahiye|want|place|leni|lena|len[ai])\b", body)
+        or re.search(r"\b(mujhe|muje|i\s+want)\b.{0,35}\b(order|buy|purchase|medicine|dawai|dawa)\b", body)
+        or re.search(r"\b(medicine|dawai|dawa)\b.{0,35}\b(order|buy|purchase|chahiye|leni|lena)\b", body)
+    )
+
+
 def build_delivery_status_reply(conversation: str, latest_text: str | None = None) -> DeliveryStatusResult:
     """Resolve the WhatsApp sender to a Patient Encounter and build a shipment-status reply."""
     try:
@@ -110,10 +126,7 @@ def build_delivery_status_reply(conversation: str, latest_text: str | None = Non
         task_log("delivery_status", "patient_not_found", conversation=conversation, phone=phone)
         return DeliveryStatusResult(
             found=False,
-            reply=(
-                "I could not find a patient record for this WhatsApp number. "
-                "Please share your registered mobile number or order ID."
-            ),
+            reply=DELIVERY_INTAKE_REPLY if _looks_like_new_order_intent(latest_text) else DELIVERY_VERIFY_REPLY,
         )
 
     try:
@@ -128,8 +141,8 @@ def build_delivery_status_reply(conversation: str, latest_text: str | None = Non
             found=False,
             patient=patient,
             reply=(
-                "I could not find any active medicine shipment linked to your number. "
-                "Please share your order ID or AWB number."
+                "Ji, is number par active shipment detail clear nahi dikh rahi. "
+                "Kripya order ID ya AWB number share kar dijiye, main check karwa deta hoon."
             ),
         )
 

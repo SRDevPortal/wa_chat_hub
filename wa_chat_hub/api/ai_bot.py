@@ -1,14 +1,17 @@
 import json
 import hashlib
+import copy
 import re
 import time
 from difflib import SequenceMatcher
 from types import SimpleNamespace
+from urllib.parse import urljoin
 
 import frappe
 import requests
 from frappe.utils import add_to_date, cint, get_datetime
 from frappe.utils.background_jobs import enqueue
+from frappe.utils.password import get_decrypted_password
 from frappe.utils.synchronization import filelock
 
 from wa_chat_hub.ai.ocr_summary import (
@@ -28,6 +31,7 @@ from wa_chat_hub.ai.clinical_history import (
     is_clinical_history_query,
 )
 from wa_chat_hub.ai.service import create_ai_suggestion
+from wa_chat_hub.agent_event import log_agent_event
 from wa_chat_hub.api.vector_search import search_knowledge_base
 from wa_chat_hub.outbound import send_outbound_message
 from wa_chat_hub.prompts import (
@@ -342,6 +346,16 @@ def process_message(message_id, skip_batch_wait: bool = False):
     content_type = str(msg_doc.content_type or "Text").title()
     media_url = str(msg_doc.media_url or "").strip()
 
+    conversation_context = safe_ai_get_value(
+        "Chat Conversation",
+        conversation,
+        ["channel_account", "department"],
+        as_dict=True,
+    ) or {}
+    channel_account = conversation_context.get("channel_account")
+    department = conversation_context.get("department")
+    mcp_agent_runtime = _channel_prefers_mcp_agent(channel_account, settings)
+
     quick_media_reply = _quick_media_only_reply(content_type, body_text, media_url)
     if quick_media_reply:
         mode = _deliver_or_draft_ai_reply(conversation, quick_media_reply, settings, message_id) or "duplicate_skip"
@@ -354,7 +368,7 @@ def process_message(message_id, skip_batch_wait: bool = False):
         )
         return
 
-    if is_delivery_status_query(body_text):
+    if not mcp_agent_runtime and is_delivery_status_query(body_text):
         result = build_delivery_status_reply(conversation, body_text)
         response_text = result.reply
         mode = _deliver_or_draft_ai_reply(conversation, response_text, settings, message_id) or "duplicate_skip"
@@ -379,7 +393,7 @@ def process_message(message_id, skip_batch_wait: bool = False):
         )
         return
 
-    if is_clinical_history_query(body_text):
+    if not mcp_agent_runtime and is_clinical_history_query(body_text):
         result = build_clinical_history_reply(conversation, body_text)
         response_text = result.reply
         mode = _deliver_or_draft_ai_reply(conversation, response_text, settings, message_id) or "duplicate_skip"
@@ -406,14 +420,6 @@ def process_message(message_id, skip_batch_wait: bool = False):
     history = _load_recent_conversation_history(conversation)
     history_before_current = [row for row in history if str(row.name) != str(message_id)]
 
-    conversation_context = safe_ai_get_value(
-        "Chat Conversation",
-        conversation,
-        ["channel_account", "department"],
-        as_dict=True,
-    ) or {}
-    channel_account = conversation_context.get("channel_account")
-    department = conversation_context.get("department")
     set_ai_security_context(channel_account=channel_account)
     prompt_config = get_effective_prompt_config(channel_account)
 
@@ -452,6 +458,10 @@ def process_message(message_id, skip_batch_wait: bool = False):
     known_context = _build_known_conversation_context(conversation)
     if known_context:
         system_prompt = f"{system_prompt}\n\n{known_context}"
+
+    mcp_context = _build_mcp_operating_context(conversation, channel_account)
+    if mcp_context:
+        system_prompt = f"{system_prompt}\n\n{mcp_context}"
 
     if media_context:
         system_prompt = f"{system_prompt}\n\n{media_context}"
@@ -570,6 +580,16 @@ def process_message(message_id, skip_batch_wait: bool = False):
                 model=provider.model_name,
                 duration_sec=elapsed(provider_started),
             )
+            log_agent_event(
+                "Provider",
+                "Succeeded",
+                conversation=conversation,
+                message=str(message_id),
+                provider=provider.name,
+                provider_type=provider.provider_type,
+                model_name=provider.model_name,
+                duration_sec=elapsed(provider_started),
+            )
             response_text = _polish_autopilot_reply(str(response_text).strip())
             if _looks_like_degenerate_reply(response_text):
                 _log_ai_timing(
@@ -607,6 +627,18 @@ def process_message(message_id, skip_batch_wait: bool = False):
             )
             return
         except Exception as e:
+            log_agent_event(
+                "Provider",
+                "Failed",
+                conversation=conversation,
+                message=str(message_id),
+                provider=provider.name,
+                provider_type=provider.provider_type,
+                model_name=provider.model_name,
+                duration_sec=elapsed(provider_started),
+                error_message=str(e)[:500],
+                traceback=frappe.get_traceback(),
+            )
             _log_ai_timing(
                 "provider_failed",
                 message=message_id,
@@ -672,7 +704,7 @@ def _deliver_or_draft_ai_reply(
     response_text = str(response_text or "").strip()
     if not response_text:
         return ""
-    if _looks_like_recent_duplicate_reply(conversation, response_text):
+    if _looks_like_recent_duplicate_reply(conversation, response_text, message_id=message_id):
         _log_ai_timing(
             "skip",
             message=message_id,
@@ -708,15 +740,24 @@ def _near_duplicate_text(a: str, b: str) -> bool:
     return SequenceMatcher(None, left, right).ratio() >= 0.92
 
 
-def _looks_like_recent_duplicate_reply(conversation: str, response_text: str) -> bool:
+def _looks_like_recent_duplicate_reply(
+    conversation: str,
+    response_text: str,
+    message_id: str | None = None,
+) -> bool:
+    filters = {
+        "conversation": conversation,
+        "direction": "Outbound",
+        "sender_type": ["in", ["AI", "Agent"]],
+        "delivery_status": ["!=", "Failed"],
+    }
+    if message_id:
+        inbound_creation = safe_ai_get_value("Chat Message", message_id, "creation")
+        if inbound_creation:
+            filters["creation"] = [">", inbound_creation]
     rows = safe_ai_get_all(
         "Chat Message",
-        filters={
-            "conversation": conversation,
-            "direction": "Outbound",
-            "sender_type": ["in", ["AI", "Agent"]],
-            "delivery_status": ["!=", "Failed"],
-        },
+        filters=filters,
         fields=["name", "body", "sender_type"],
         order_by="creation desc, name desc",
         limit=3,
@@ -735,6 +776,8 @@ def _looks_like_recent_duplicate_reply(conversation: str, response_text: str) ->
 
 def _build_known_conversation_context(conversation: str) -> str:
     fields = [
+        "channel_account",
+        "company",
         "contact",
         "department",
         "assigned_to",
@@ -748,6 +791,10 @@ def _build_known_conversation_context(conversation: str) -> str:
     ]
     convo = safe_ai_get_value("Chat Conversation", conversation, fields, as_dict=True) or {}
     facts = []
+    if convo.get("channel_account"):
+        facts.append(f"Channel account: {convo.get('channel_account')}")
+    if convo.get("company"):
+        facts.append(f"Company: {convo.get('company')}")
     contact_name = convo.get("contact")
     if contact_name:
         contact = safe_ai_get_value(
@@ -789,6 +836,64 @@ def _build_known_conversation_context(conversation: str) -> str:
         "the customer changes or corrects them:\n- "
         + "\n- ".join(str(fact) for fact in facts if fact)
     )
+
+
+def _build_mcp_operating_context(conversation: str, channel_account: str | None) -> str:
+    company = safe_ai_get_value("Chat Channel Account", channel_account, "company") if channel_account else ""
+    contact_phone = ""
+    convo = safe_ai_get_value("Chat Conversation", conversation, ["contact"], as_dict=True) or {}
+    if convo.get("contact"):
+        contact_phone = safe_ai_get_value("Chat Contact", convo.get("contact"), "phone_number") or ""
+
+    phone_digits = re.sub(r"\D", "", str(contact_phone or ""))
+    phone_variants = []
+    if phone_digits:
+        phone_variants.append(phone_digits)
+        if phone_digits.startswith("91") and len(phone_digits) == 12:
+            phone_variants.extend([phone_digits[-10:], f"+91{phone_digits[-10:]}"])
+        elif len(phone_digits) == 10:
+            phone_variants.extend([f"91{phone_digits}", f"+91{phone_digits}"])
+    phone_variants = list(dict.fromkeys(phone_variants))
+
+    lines = [
+        "MCP operating rule:",
+        "- For any customer-specific data question, use the configured company MCP tools before answering.",
+        "- Customer-specific data includes previous order, latest order, patient record, CRM lead, prescription, treatment draft, address, payment, shipment, or report/history stored in ERP.",
+        "- Do not ask for patient/customer name before using the known WhatsApp phone for MCP lookup.",
+        "- First search Patient by WhatsApp phone using or_filters across phone fields. If not found, search CRM Lead/Lead the same way.",
+        "- Phone lookup fields to try with or_filters: mobile, phone, mobile_no, phone_number, whatsapp_number, custom_whatsapp_number.",
+        "- Do not use only one field such as phone. Many records store WhatsApp numbers in mobile.",
+        "- If a Patient is found and the customer asks order/treatment/history details, read the relevant Patient Encounter or related record with MCP before replying.",
+        "- Reply only from MCP results for stored data. If a field is missing in MCP result, say that detail is not visible.",
+        "- If the customer is asking general treatment/sales guidance, continue normally and use MCP only when record data or draft creation is needed.",
+    ]
+    if company:
+        lines.append(f"- Company for MCP selection: {company}.")
+    if channel_account:
+        lines.append(f"- Channel account: {channel_account}.")
+    if phone_variants:
+        lines.append("- WhatsApp phone variants to use: " + ", ".join(phone_variants) + ".")
+    return "\n".join(lines)
+
+
+def _channel_prefers_mcp_agent(channel_account: str | None, settings=None) -> bool:
+    if not channel_account or not getattr(settings, "allow_mcp_access", 0):
+        return False
+    if not safe_ai_exists("DocType", "WA Channel Account Prompt Map"):
+        return False
+    try:
+        rows = safe_ai_get_all(
+            "WA Channel Account Prompt Map",
+            filters={"chat_channel_account": channel_account, "is_active": 1},
+            fields=["name", "system_prompt"],
+            limit=1,
+        )
+    except Exception:
+        rows = []
+    if not rows:
+        return False
+    prompt = str((rows[0] or {}).get("system_prompt") or "").lower()
+    return "mcp" in prompt or "tool" in prompt
 
 
 def _quick_media_only_reply(content_type: str, body: str, media_url: str) -> str:
@@ -1826,14 +1931,24 @@ def _deliver_ai_reply(conversation: str, response_text: str) -> None:
         delivery_status = outbound.get("delivery_status") or "Sent"
         channel_message_id = outbound.get("provider_message_id")
     except Exception:
+        log_agent_event(
+            "Send",
+            "Failed",
+            conversation=conversation,
+            channel_account=convo.channel_account,
+            duration_sec=elapsed(send_started),
+            error_message="WA AI autopilot send failed",
+            traceback=frappe.get_traceback(),
+        )
         frappe.log_error(frappe.get_traceback(), "WA AI Autopilot Send Failed")
         delivery_status = "Failed"
         outbound = {"sent": False, "error": "Interakt send failed"}
 
     frappe.flags.wa_ai_outbound_reply = True
     frappe.local.wa_ai_outbound_reply = True
+    append_result = {}
     try:
-        append_message(
+        append_result = append_message(
             {
                 "channel_account": convo.channel_account,
                 "phone_number": phone_number,
@@ -1854,6 +1969,16 @@ def _deliver_ai_reply(conversation: str, response_text: str) -> None:
         frappe.flags.wa_ai_outbound_reply = False
         frappe.local.wa_ai_outbound_reply = False
     frappe.db.commit()
+    log_agent_event(
+        "Send",
+        "Succeeded" if delivery_status != "Failed" else "Failed",
+        conversation=conversation,
+        channel_account=convo.channel_account,
+        message=str(append_result.get("message") or ""),
+        duration_sec=elapsed(send_started),
+        response=outbound,
+        error_message=outbound.get("error") if isinstance(outbound, dict) else None,
+    )
     _log_ai_timing(
         "send_done",
         conversation=conversation,
@@ -1907,7 +2032,7 @@ def fetch_mcp_tools():
     tools_docs = safe_ai_get_all(
         "WA MCP Tool Endpoint",
         filters={"is_active": 1},
-        fields=["tool_name", "description", "parameters_schema", "endpoint_url", "http_method"],
+        fields=["tool_name", "description", "parameters_schema", "endpoint_url", "http_method", "server", "company"],
     )
     tools = []
     for t in tools_docs:
@@ -1931,6 +2056,8 @@ def fetch_mcp_tools():
                 "_meta": {
                     "url": t.endpoint_url,
                     "method": t.http_method,
+                    "server": t.server,
+                    "company": t.company,
                 },
             }
         )
@@ -1940,24 +2067,204 @@ def fetch_mcp_tools():
 def execute_mcp_tool(tool_name, arguments_dict):
     tools = fetch_mcp_tools()
     tool_meta = next((t["_meta"] for t in tools if t["function"]["name"] == tool_name), None)
+    conversation = arguments_dict.get("conversation") if isinstance(arguments_dict, dict) else None
     if not tool_meta:
+        log_agent_event(
+            "MCP Tool",
+            "Failed",
+            conversation=conversation,
+            tool_name=tool_name,
+            request=arguments_dict,
+            error_message=f"Tool {tool_name} not found.",
+        )
         return f"Error: Tool {tool_name} not found."
 
+    tool_started = time.monotonic()
     try:
-        url = tool_meta["url"]
+        url, headers = _resolve_mcp_http_target(tool_meta)
 
         if url.startswith("http"):
-            if tool_meta["method"] == "POST":
-                resp = requests.post(url, json=arguments_dict, timeout=10)
-            else:
-                resp = requests.get(url, params=arguments_dict, timeout=10)
+            resp, response_payload, final_arguments = _request_mcp_http_with_filter_repair(
+                url,
+                tool_meta["method"],
+                arguments_dict,
+                headers,
+            )
+            log_agent_event(
+                "MCP Tool",
+                "Succeeded" if resp.ok else "Failed",
+                company=tool_meta.get("company"),
+                conversation=conversation,
+                tool_name=tool_name,
+                duration_sec=elapsed(tool_started),
+                http_status=resp.status_code,
+                request=final_arguments,
+                response=response_payload,
+                error_message=None if resp.ok else str(response_payload)[:500],
+            )
             return resp.text
 
         fn = frappe.get_attr(url)
         res = fn(**arguments_dict)
+        log_agent_event(
+            "MCP Tool",
+            "Succeeded",
+            company=tool_meta.get("company"),
+            conversation=conversation,
+            tool_name=tool_name,
+            duration_sec=elapsed(tool_started),
+            request=arguments_dict,
+            response=res,
+        )
         return json.dumps(res)
     except Exception as e:
+        log_agent_event(
+            "MCP Tool",
+            "Failed",
+            company=tool_meta.get("company"),
+            conversation=conversation,
+            tool_name=tool_name,
+            duration_sec=elapsed(tool_started),
+            request=arguments_dict,
+            error_message=str(e)[:500],
+            traceback=frappe.get_traceback(),
+        )
         return f"Error executing {tool_name}: {str(e)}"
+
+
+def _safe_json_or_text(response):
+    try:
+        return response.json()
+    except Exception:
+        return response.text
+
+
+def _request_mcp_http_with_filter_repair(url: str, method: str, arguments: dict, headers: dict):
+    final_arguments = copy.deepcopy(arguments or {})
+    _expand_phone_filter_variants(final_arguments)
+    last_response = None
+    last_payload = None
+
+    for _attempt in range(6):
+        if method == "POST":
+            response = requests.post(url, json=final_arguments, headers=headers, timeout=10)
+        else:
+            response = requests.get(url, params=final_arguments, headers=headers, timeout=10)
+        payload = _safe_json_or_text(response)
+        last_response = response
+        last_payload = payload
+
+        invalid_field = _extract_field_not_permitted(payload)
+        if response.ok or not invalid_field:
+            return response, payload, final_arguments
+
+        repaired = _remove_filter_field(final_arguments, invalid_field)
+        if not repaired:
+            return response, payload, final_arguments
+
+    return last_response, last_payload, final_arguments
+
+
+def _extract_field_not_permitted(payload) -> str:
+    text = frappe.as_json(payload) if not isinstance(payload, str) else payload
+    match = re.search(r"Field not permitted in query:\s*([A-Za-z0-9_]+)", text or "")
+    return match.group(1) if match else ""
+
+
+def _remove_filter_field(arguments: dict, fieldname: str) -> bool:
+    changed = False
+    for key in ("filters", "or_filters"):
+        filters = arguments.get(key)
+        if isinstance(filters, list):
+            kept = []
+            for condition in filters:
+                if isinstance(condition, list) and condition and condition[0] == fieldname:
+                    changed = True
+                    continue
+                kept.append(condition)
+            arguments[key] = kept
+        elif isinstance(filters, dict) and fieldname in filters:
+            filters.pop(fieldname, None)
+            changed = True
+    return changed
+
+
+def _expand_phone_filter_variants(arguments: dict) -> bool:
+    phone_fields = {"mobile", "phone", "mobile_no", "phone_number", "whatsapp_number", "custom_whatsapp_number"}
+    changed = False
+
+    for key in ("filters", "or_filters"):
+        filters = arguments.get(key)
+        if not isinstance(filters, list):
+            continue
+        expanded = []
+        seen = set()
+        for condition in filters:
+            if not (isinstance(condition, list) and len(condition) >= 3):
+                marker = json.dumps(condition, default=str)
+                if marker not in seen:
+                    seen.add(marker)
+                    expanded.append(condition)
+                continue
+
+            fieldname, operator, value = condition[0], condition[1], condition[2]
+            values = [value]
+            if fieldname in phone_fields and str(operator).strip() == "=":
+                values = _phone_value_variants(value)
+            for variant in values:
+                new_condition = list(condition)
+                new_condition[2] = variant
+                marker = json.dumps(new_condition, default=str)
+                if marker not in seen:
+                    seen.add(marker)
+                    expanded.append(new_condition)
+                    changed = changed or variant != value
+        arguments[key] = expanded
+
+    return changed
+
+
+def _phone_value_variants(value) -> list[str]:
+    raw = str(value or "").strip()
+    digits = re.sub(r"\D", "", raw)
+    variants = []
+    if raw:
+        variants.append(raw)
+    if len(digits) == 12 and digits.startswith("91"):
+        variants.extend([digits[-10:], digits, f"+91{digits[-10:]}"])
+    elif len(digits) == 10:
+        variants.extend([digits, f"91{digits}", f"+91{digits}"])
+    elif digits:
+        variants.append(digits)
+    return list(dict.fromkeys(variants))
+
+
+def _resolve_mcp_http_target(tool_meta: dict) -> tuple[str, dict[str, str]]:
+    endpoint = str(tool_meta.get("url") or "").strip()
+    headers = {"Content-Type": "application/json"}
+    server_name = tool_meta.get("server")
+
+    if server_name and safe_ai_exists("WA MCP Server", server_name):
+        server = safe_ai_get_value(
+            "WA MCP Server",
+            server_name,
+            ["server_url"],
+            as_dict=True,
+        ) or {}
+        auth_header = get_decrypted_password(
+            "WA MCP Server",
+            server_name,
+            "authorization_header",
+            raise_exception=False,
+        )
+        if auth_header:
+            headers["Authorization"] = auth_header
+
+        base_url = str(server.get("server_url") or "").strip()
+        if base_url and not endpoint.startswith("http") and endpoint.startswith("/"):
+            endpoint = urljoin(base_url.rstrip("/") + "/", endpoint.lstrip("/"))
+
+    return endpoint, headers
 
 
 def _max_tokens_payload_key(model_name: str | None) -> str:
@@ -2112,7 +2419,9 @@ def call_openai_format(provider, messages, timeout=20):
 
     message = choices[0].get("message") or {}
 
-    if message.get("tool_calls"):
+    for tool_round in range(3):
+        if not message.get("tool_calls"):
+            break
         messages.append(message)
 
         for tc in message["tool_calls"]:
@@ -2127,6 +2436,7 @@ def call_openai_format(provider, messages, timeout=20):
                 provider=provider.name,
                 model=provider.model_name,
                 tool=tc["function"]["name"],
+                round=tool_round + 1,
                 duration_sec=elapsed(tool_started),
             )
             messages.append(
@@ -2144,6 +2454,7 @@ def call_openai_format(provider, messages, timeout=20):
             "api_followup_start",
             provider=provider.name,
             model=provider.model_name,
+            round=tool_round + 1,
             message_count=len(messages),
         )
         resp = requests.post(url, headers=headers, json=payload, timeout=request_timeout)
@@ -2151,6 +2462,7 @@ def call_openai_format(provider, messages, timeout=20):
             "api_followup_done",
             provider=provider.name,
             model=provider.model_name,
+            round=tool_round + 1,
             status_code=resp.status_code,
             duration_sec=elapsed(followup_started),
         )
@@ -2159,6 +2471,9 @@ def call_openai_format(provider, messages, timeout=20):
         follow_choices = data.get("choices") or []
         if not follow_choices:
             return ""
-        return _strip_model_reasoning((follow_choices[0].get("message") or {}).get("content", "") or "")
+        message = follow_choices[0].get("message") or {}
+
+    if message.get("tool_calls"):
+        return "Mujhe details check karne mein thoda issue aa raha hai. Main team ko iske liye mark kar deta hoon."
 
     return _strip_model_reasoning(message.get("content", "") or "")
