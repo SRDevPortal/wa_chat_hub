@@ -1501,7 +1501,10 @@ def execute_mcp_tool(tool_name, arguments_dict, allowed_tool_names=None, tool_co
         tool_context = tool_context or {}
         if tool_context.get("patient"):
             arguments_dict["patient"] = tool_context["patient"]
+        if tool_context.get("conversation"):
+            arguments_dict["conversation"] = tool_context["conversation"]
         arguments_dict.pop("patient_id", None)
+        arguments_dict.pop("conversation_id", None)
 
         if url.startswith("http"):
             if tool_meta["method"] == "POST":

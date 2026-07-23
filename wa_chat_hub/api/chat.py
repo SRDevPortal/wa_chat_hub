@@ -1075,7 +1075,7 @@ def _crm_lead_reference_lookup(reference_names: list[str]) -> dict[str, str]:
 
 
 @frappe.whitelist()
-def get_conversation_for_reference(reference_doctype, reference_name):
+def get_conversation_for_reference(reference_doctype, reference_name, channel_account=None):
     if not reference_doctype or not reference_name:
         frappe.throw(_("reference_doctype and reference_name are required"))
     if reference_doctype == "CRM Lead" and not can_read_crm_lead(reference_name):
@@ -1086,7 +1086,11 @@ def get_conversation_for_reference(reference_doctype, reference_name):
         ensure_can_read_conversation(conversation)
         return {"success": True, "conversation": conversation}
 
-    created = _try_create_conversation_for_reference(reference_doctype, reference_name)
+    created = _try_create_conversation_for_reference(
+        reference_doctype,
+        reference_name,
+        channel_account=channel_account,
+    )
     if created:
         ensure_can_read_conversation(created)
         return {"success": True, "conversation": created, "created": True}
@@ -1115,14 +1119,27 @@ def _load_reference_doc(reference_doctype: str, reference_name: str):
     return None
 
 
-def _try_create_conversation_for_reference(reference_doctype: str, reference_name: str) -> str | None:
+def _try_create_conversation_for_reference(
+    reference_doctype: str,
+    reference_name: str,
+    *,
+    channel_account: str | None = None,
+) -> str | None:
     try:
         if reference_doctype == "CRM Lead" and frappe.db.exists("CRM Lead", reference_name):
-            from wa_chat_hub.channel_resolver import get_or_create_mapped_lead_conversation
-
             lead = frappe.get_doc("CRM Lead", reference_name)
             if not _reference_has_phone(lead):
                 return None
+            if channel_account:
+                from wa_chat_hub.channel_resolver import get_or_create_lead_conversation_for_channel_account
+
+                return get_or_create_lead_conversation_for_channel_account(
+                    lead,
+                    channel_account,
+                )["conversation"]
+
+            from wa_chat_hub.channel_resolver import get_or_create_mapped_lead_conversation
+
             return get_or_create_mapped_lead_conversation(lead)["conversation"]
 
         patient_name = reference_name

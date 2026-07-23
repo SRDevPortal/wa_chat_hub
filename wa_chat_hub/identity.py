@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import frappe
@@ -7,6 +8,8 @@ from frappe.utils import now_datetime
 
 
 PATIENT_PHONE_FIELDS = ("mobile", "mobile_no", "phone", "custom_whatsapp_number")
+VERIFICATION_PATIENT_PHONE_FIELDS = ("mobile", "phone")
+PHONE_CANDIDATE_PATTERN = re.compile(r"(?<!\d)(?:\+?\d[\d\s().-]{8,}\d)(?!\d)")
 
 
 def reconcile_conversation_identity(
@@ -96,6 +99,95 @@ def reconcile_patient_encounter(doc, method=None) -> None:
             crm_lead=lead,
             source="patient_encounter",
         )
+
+
+def verify_patient_identity_from_inbound_message(
+    conversation: str,
+    message: str,
+) -> dict[str, Any]:
+    """Verify when chat, supplied, and linked Patient phones all match."""
+    if not conversation or not message:
+        return {"verified": False, "reason": "conversation_or_message_missing"}
+    if not frappe.db.exists("Chat Conversation", conversation):
+        return {"verified": False, "reason": "conversation_not_found"}
+    if not frappe.db.exists("Chat Message", message):
+        return {"verified": False, "reason": "message_not_found"}
+
+    convo = frappe.get_doc("Chat Conversation", conversation)
+    if getattr(convo, "identity_status", None) == "Verified":
+        return {
+            "verified": True,
+            "reason": "already_verified",
+            "patient": getattr(convo, "linked_patient", None),
+        }
+
+    patient, _ = _trusted_patient(convo, None, getattr(convo, "linked_crm_lead", None))
+    if not patient:
+        return {"verified": False, "reason": "linked_patient_missing"}
+
+    msg = frappe.get_doc("Chat Message", message)
+    if msg.conversation != conversation or msg.direction != "Inbound":
+        return {"verified": False, "reason": "message_not_current_inbound"}
+
+    chat_phone = _normalized_phone(
+        frappe.db.get_value("Chat Contact", convo.contact, "phone_number")
+        if getattr(convo, "contact", None)
+        else None
+    )
+    supplied_phones = _phones_from_text(msg.body)
+    if not chat_phone:
+        return {"verified": False, "reason": "chat_phone_missing", "patient": patient}
+    if chat_phone not in supplied_phones:
+        return {"verified": False, "reason": "supplied_phone_mismatch", "patient": patient}
+
+    patient_phone_field = _matching_patient_phone_field(patient, chat_phone)
+    if not patient_phone_field:
+        return {"verified": False, "reason": "patient_phone_mismatch", "patient": patient}
+
+    identity = reconcile_conversation_identity(
+        conversation,
+        patient=patient,
+        source="patient_phone_match",
+        verified=True,
+    )
+    from wa_chat_hub.agent_router import persist_agent_route, resolve_agent_route
+
+    route = resolve_agent_route(conversation)
+    persist_agent_route(conversation, route)
+    return {
+        "verified": True,
+        "reason": "three_way_phone_match",
+        "patient": patient,
+        "patient_phone_field": patient_phone_field,
+        "identity": identity,
+        "agent_profile": route.agent_profile,
+    }
+
+
+def _phones_from_text(text: str | None) -> set[str]:
+    phones: set[str] = set()
+    for candidate in PHONE_CANDIDATE_PATTERN.findall(str(text or "")):
+        normalized = _normalized_phone(candidate)
+        if normalized:
+            phones.add(normalized)
+    return phones
+
+
+def _normalized_phone(value: str | None) -> str | None:
+    digits = re.sub(r"\D", "", str(value or ""))
+    if len(digits) < 10:
+        return None
+    return digits[-10:]
+
+
+def _matching_patient_phone_field(patient: str, phone: str) -> str | None:
+    meta = frappe.get_meta("Patient")
+    fields = [field for field in VERIFICATION_PATIENT_PHONE_FIELDS if meta.has_field(field)]
+    values = frappe.db.get_value("Patient", patient, fields, as_dict=True) or {}
+    for field in fields:
+        if _normalized_phone(values.get(field)) == phone:
+            return field
+    return None
 
 
 def _trusted_patient(convo, patient: str | None, crm_lead: str | None) -> tuple[str | None, str | None]:

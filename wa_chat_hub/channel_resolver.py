@@ -80,12 +80,32 @@ def ensure_interakt_contact_for_lead(channel_account: str, contact: str, lead) -
 def get_or_create_mapped_lead_conversation(lead) -> dict[str, Any]:
     pipeline_row = get_pipeline_map_for_lead(lead)
     channel_account = pipeline_row["chat_channel_account"]
+    return get_or_create_lead_conversation_for_channel_account(
+        lead,
+        channel_account,
+        pipeline_map=pipeline_row.get("name"),
+        pipeline=pipeline_row.get("sr_lead_pipeline"),
+    )
+
+
+def get_or_create_lead_conversation_for_channel_account(
+    lead,
+    channel_account: str,
+    *,
+    pipeline_map: str | None = None,
+    pipeline: str | None = None,
+) -> dict[str, Any]:
+    """Create a lead conversation on an explicitly selected Interakt account."""
+    account = safe_ai_get_doc("Chat Channel Account", channel_account)
+    if not account.is_active or account.channel_type != "Interakt":
+        frappe.throw(_("WhatsApp channel {0} must be an active Interakt account.").format(channel_account))
+
     contact = get_or_create_lead_contact(lead)
     ensure_interakt_contact_for_reference(
         channel_account,
         contact,
         lead,
-        pipeline=pipeline_row.get("sr_lead_pipeline"),
+        pipeline=pipeline or lead.get("sr_lead_pipeline"),
     )
 
     conversation, created = _get_or_create_reference_conversation(
@@ -115,7 +135,7 @@ def get_or_create_mapped_lead_conversation(lead) -> dict[str, Any]:
 
     return {
         "conversation": conversation,
-        "pipeline_map": pipeline_row["name"],
+        "pipeline_map": pipeline_map,
         "channel_account": channel_account,
         "contact": contact,
         "created": created,
