@@ -11,3 +11,4 @@ wa_chat_hub.patches.v1_0.add_chat_message_window_index
 wa_chat_hub.patches.v1_0.add_indexed_phone_lookup_indexes
 wa_chat_hub.patches.v1_0.add_customer_indexed_phone_lookup
 wa_chat_hub.patches.v1_0.add_conversation_audit_indexes
+wa_chat_hub.patches.v1_0.activate_conversation_job_deduplication_setting

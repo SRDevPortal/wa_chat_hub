@@ -34,6 +34,7 @@
     "enable_indexed_phone_lookup",
     "enable_webhook_idempotency",
     "enable_conversation_job_deduplication",
+    "conversation_job_deduplication_setting_active",
     "enable_conditional_conversation_updates",
     "phone_backfill_batch_size",
     "raw_payload_retention_days",
@@ -200,10 +201,19 @@
       "label": "Enable Webhook Idempotency"
     },
     {
-      "default": "0",
+      "default": "1",
+      "description": "Deduplicate repeatable lead-scoring jobs for the same conversation. Provider webhook and outbound-send idempotency remain mandatory.",
       "fieldname": "enable_conversation_job_deduplication",
       "fieldtype": "Check",
       "label": "Enable Conversation Job Deduplication"
+    },
+    {
+      "default": "0",
+      "fieldname": "conversation_job_deduplication_setting_active",
+      "fieldtype": "Check",
+      "hidden": 1,
+      "label": "Conversation Job Deduplication Setting Active",
+      "read_only": 1
     },
     {
       "default": "1",

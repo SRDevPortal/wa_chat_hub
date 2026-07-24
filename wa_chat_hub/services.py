@@ -25,6 +25,7 @@ from wa_chat_hub.messaging.idempotency import (
 )
 from wa_chat_hub.phone_normalization import canonical_phone as _canonical_phone
 from wa_chat_hub.phone_normalization import normalize_phone
+from wa_chat_hub.performance_flags import conversation_job_enqueue_options
 from wa_chat_hub.prompts import (
     get_conversation_crm_lead,
     get_conversation_linked_reference,
@@ -670,6 +671,9 @@ def _enqueue_lead_scoring(conversation: str) -> None:
     if not conversation:
         return
 
+    enqueue_options = conversation_job_enqueue_options(
+        f"wa_lead_score_{conversation}"
+    )
     frappe.enqueue(
         "wa_chat_hub.ai.lead_scoring.score_and_sync_conversation",
         queue="short",
@@ -677,10 +681,15 @@ def _enqueue_lead_scoring(conversation: str) -> None:
         timeout=90,
         enqueue_after_commit=True,
         now=frappe.flags.in_test,
-        job_id=f"wa_lead_score_{conversation}",
-        deduplicate=True,
+        **enqueue_options,
     )
-    task_log("lead_score", "enqueue", conversation=conversation, queue="short")
+    task_log(
+        "lead_score",
+        "enqueue",
+        conversation=conversation,
+        queue="short",
+        deduplicated=bool(enqueue_options),
+    )
 
 
 def _enqueue_inbound_media_lead_summary(
