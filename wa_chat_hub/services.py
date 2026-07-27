@@ -433,8 +433,11 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
     provider_message_id = payload.get("provider_message_id")
     channel_message_id = payload.get("channel_message_id")
     provider_event_id = payload.get("provider_event_id")
-    dedupe_key = None
-    if webhook_idempotency_enabled():
+    explicit_dedupe_key = None
+    if direction == "Outbound" and payload.get("sender_type") == "System":
+        explicit_dedupe_key = str(payload.get("dedupe_key") or "").strip() or None
+    dedupe_key = explicit_dedupe_key
+    if not dedupe_key and webhook_idempotency_enabled():
         dedupe_key = build_message_dedupe_key(
             conversation=conversation,
             provider_name=provider_name,
