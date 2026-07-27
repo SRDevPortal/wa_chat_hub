@@ -467,7 +467,7 @@ def process_message(message_id, skip_batch_wait: bool = False):
         system_prompt = f"{system_prompt}\n\n{media_context}"
 
     clinical_history_context = ""
-    if last_user_query:
+    if last_user_query and not mcp_agent_runtime:
         try:
             clinical_history_context = build_clinical_history_context(conversation, last_user_query)
         except Exception:
@@ -2393,6 +2393,20 @@ def call_openai_format(provider, messages, timeout=20, company=None):
     system_prompt = str((messages[0] or {}).get("content") or "") if messages else ""
     tools = fetch_mcp_tools(company=company, system_prompt=system_prompt)
     api_tools = [{"type": t["type"], "function": t["function"]} for t in tools] if tools else None
+    requires_mcp_lookup = bool(api_tools and _requires_mcp_lookup(messages))
+    requires_encounter_detail = bool(
+        requires_mcp_lookup and _requires_encounter_detail(messages)
+    )
+    if requires_mcp_lookup:
+        api_tools = [
+            tool
+            for tool in api_tools
+            if _is_read_only_mcp_tool(tool["function"]["name"])
+        ]
+        requires_mcp_lookup = bool(api_tools)
+        requires_encounter_detail = bool(
+            requires_mcp_lookup and requires_encounter_detail
+        )
     token_limit_key = _max_tokens_payload_key(provider.model_name)
     is_vllm_provider = "vllm.buopso.net" in str(url).lower()
     request_timeout = timeout
@@ -2415,6 +2429,12 @@ def call_openai_format(provider, messages, timeout=20, company=None):
         )
     if api_tools:
         payload["tools"] = api_tools
+    if requires_mcp_lookup:
+        payload["tool_choice"] = _required_mcp_tool_choice(
+            api_tools,
+            [],
+            requires_encounter_detail,
+        )
 
     _log_ai_timing(
         "api_request_start",
@@ -2453,12 +2473,14 @@ def call_openai_format(provider, messages, timeout=20, company=None):
 
     message = choices[0].get("message") or {}
 
-    for tool_round in range(3):
+    called_tools = []
+    for tool_round in range(4):
         if not message.get("tool_calls"):
             break
         messages.append(message)
 
         for tc in message["tool_calls"]:
+            called_tools.append(tc["function"]["name"])
             tool_started = time.monotonic()
             try:
                 args = json.loads(tc["function"]["arguments"])
@@ -2488,6 +2510,18 @@ def call_openai_format(provider, messages, timeout=20, company=None):
             )
 
         payload["messages"] = messages
+        if _require_followup_mcp_tool(
+            requires_encounter_detail,
+            called_tools,
+            tool_round,
+        ):
+            payload["tool_choice"] = _required_mcp_tool_choice(
+                api_tools,
+                called_tools,
+                requires_encounter_detail,
+            )
+        else:
+            payload.pop("tool_choice", None)
         followup_started = time.monotonic()
         _log_ai_timing(
             "api_followup_start",
@@ -2516,3 +2550,105 @@ def call_openai_format(provider, messages, timeout=20, company=None):
         return "Mujhe details check karne mein thoda issue aa raha hai. Main team ko iske liye mark kar deta hoon."
 
     return _strip_model_reasoning(message.get("content", "") or "")
+
+
+def _latest_text_user_message(messages: list[dict]) -> str:
+    for message in reversed(messages or []):
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            return " ".join(
+                str(part.get("text") or "")
+                for part in content
+                if isinstance(part, dict) and part.get("type") == "text"
+            ).strip()
+    return ""
+
+
+def _requires_mcp_lookup(messages: list[dict]) -> bool:
+    text = _latest_text_user_message(messages)
+    if not text:
+        return False
+    if is_clinical_history_query(text) or is_delivery_status_query(text):
+        return True
+    return bool(
+        re.search(
+            r"\b("
+            r"do\s+you\s+know\s+me|know\s+who\s+i\s+am|"
+            r"my\s+(?:patient|customer|order|treatment|prescription|record|history|address|payment)|"
+            r"mera|meri|mere"
+            r")\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _requires_encounter_detail(messages: list[dict]) -> bool:
+    text = _latest_text_user_message(messages)
+    return bool(
+        re.search(
+            r"\b("
+            r"order|orders|last\s+order|previous\s+order|"
+            r"treatment|prescription|medicine|medication|"
+            r"encounter|visit|history|record"
+            r")\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _require_followup_mcp_tool(
+    requires_encounter_detail: bool,
+    called_tools: list[str],
+    tool_round: int,
+) -> bool:
+    if not requires_encounter_detail or tool_round >= 2:
+        return False
+    return not any(
+        "encounter" in str(name or "").lower()
+        and ("get" in str(name or "").lower() or "detail" in str(name or "").lower())
+        and "find" not in str(name or "").lower()
+        for name in called_tools
+    )
+
+
+def _is_read_only_mcp_tool(tool_name: str) -> bool:
+    return not bool(
+        re.search(
+            r"(?:^|_)(?:create|insert|update|delete|submit|cancel|write|draft)(?:_|$)",
+            str(tool_name or ""),
+            re.IGNORECASE,
+        )
+    )
+
+
+def _required_mcp_tool_choice(
+    api_tools: list[dict],
+    called_tools: list[str],
+    requires_encounter_detail: bool,
+):
+    names = [tool["function"]["name"] for tool in api_tools]
+    called = {str(name or "") for name in called_tools}
+
+    preferred_patterns = []
+    if not any("patient" in name.lower() for name in called):
+        preferred_patterns = [("find", "patient"), ("get", "list")]
+    elif requires_encounter_detail and not any(
+        "encounter" in name.lower() and ("find" in name.lower() or "list" in name.lower())
+        for name in called
+    ):
+        preferred_patterns = [("find", "encounter"), ("list", "encounter")]
+    elif requires_encounter_detail:
+        preferred_patterns = [("get", "encounter"), ("detail", "encounter")]
+
+    for pattern in preferred_patterns:
+        for name in names:
+            lowered = name.lower()
+            if name not in called and all(token in lowered for token in pattern):
+                return {"type": "function", "function": {"name": name}}
+    return "required"
