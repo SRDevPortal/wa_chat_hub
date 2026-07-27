@@ -528,7 +528,30 @@ def _match_interakt_channels_by_signature(account_names: list, raw_body: bytes) 
     matched = []
     for name in account_names:
         account = safe_ai_get_doc("Chat Channel Account", name)
-        secret = account.get_password("interakt_webhook_secret")
+        if not should_verify_webhook_signature(account):
+            continue
+        try:
+            secret = account.get_password(
+                "interakt_webhook_secret", raise_exception=False
+            )
+        except Exception as exc:
+            task_log(
+                "webhook",
+                "signature_account_skipped",
+                provider="Interakt",
+                channel_account=name,
+                reason=type(exc).__name__,
+            )
+            continue
+        if not secret:
+            task_log(
+                "webhook",
+                "signature_account_skipped",
+                provider="Interakt",
+                channel_account=name,
+                reason="missing_secret",
+            )
+            continue
         if secret and _interakt_signature_matches(secret, raw_body, received):
             matched.append(name)
     return matched
@@ -538,7 +561,9 @@ def _verify_interakt_signature(account, raw_body: bytes) -> None:
     if not should_verify_webhook_signature(account):
         return
 
-    secret = account.get_password("interakt_webhook_secret")
+    secret = account.get_password(
+        "interakt_webhook_secret", raise_exception=False
+    )
     if not secret:
         frappe.throw(
             _(
