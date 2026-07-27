@@ -6,9 +6,11 @@ import frappe
 from frappe import _
 from frappe.utils import cstr
 
-from wa_chat_hub.channel_resolver import get_or_create_mapped_patient_conversation
+from wa_chat_hub.channel_resolver import get_or_create_patient_conversation_for_channel_account
+from wa_chat_hub.interakt.templates_api import resolve_approved_template
+from wa_chat_hub.messaging.channel_map import get_pipeline_map, get_pipeline_map_for_patient
 from wa_chat_hub.outbound import send_interakt_template_message
-from wa_chat_hub.security import safe_ai_get_doc, set_service_user_context
+from wa_chat_hub.security import safe_ai_get_all, safe_ai_get_doc, set_service_user_context
 from wa_chat_hub.services import append_message
 
 
@@ -18,7 +20,9 @@ def send_patient_template(
     template_name: str,
     language_code: str = "en",
     body_values: list[str] | None = None,
+    body_preview: str | None = None,
     event_key: str,
+    fallback_channel_account: str | None = None,
 ) -> dict[str, Any]:
     patient = cstr(patient).strip()
     template_name = cstr(template_name).strip()
@@ -34,7 +38,10 @@ def send_patient_template(
     try:
         set_service_user_context(operation="shipment_whatsapp_template")
         patient_doc = safe_ai_get_doc("Patient", patient)
-        route = get_or_create_mapped_patient_conversation(patient_doc)
+        route = resolve_patient_route(
+            patient_doc,
+            fallback_channel_account=cstr(fallback_channel_account).strip() or None,
+        )
         conversation = route["conversation"]
         channel_account = route["channel_account"]
         account = safe_ai_get_doc("Chat Channel Account", channel_account)
@@ -52,9 +59,11 @@ def send_patient_template(
             "template_name": template_name,
             "language_code": cstr(language_code).strip() or "en",
             "body_values": [cstr(value) for value in (body_values or [])],
+            "body_preview": cstr(body_preview).strip(),
             "callback_data": event_key,
             "template_category": "UTILITY",
         }
+        template = resolve_approved_template(channel_account, template)
         outbound = send_interakt_template_message(conversation, template)
         if not outbound.get("sent"):
             frappe.throw(_("Interakt did not confirm that the template was sent."))
@@ -68,14 +77,21 @@ def send_patient_template(
                 "direction": "Outbound",
                 "sender_type": "System",
                 "content_type": "Template",
-                "body": f"Template: {template_name}",
+                "body": template.get("body_preview") or f"Template: {template['template_name']}",
                 "delivery_status": outbound.get("delivery_status") or "Sent",
                 "channel_message_id": provider_message_id,
                 "provider_message_id": provider_message_id,
                 "provider_event_id": event_key,
                 "provider_name": "Interakt",
                 "dedupe_key": event_key,
-                "raw_transport_payload": outbound,
+                "raw_transport_payload": {
+                    **outbound,
+                    "template_name": template.get("template_name"),
+                    "configured_template_name": template.get("configured_template_name"),
+                    "language_code": template.get("language_code"),
+                    "body_values": template.get("body_values"),
+                    "body_preview": template.get("body_preview"),
+                },
                 "template_category": template["template_category"],
             }
         )
@@ -84,6 +100,105 @@ def send_patient_template(
             "message": message_result.get("message"),
             "provider_message_id": provider_message_id,
             "delivery_status": outbound.get("delivery_status") or "Sent",
+            "channel_account": channel_account,
+            "routing_source": route["routing_source"],
         }
     finally:
         frappe.set_user(original_user)
+
+
+def resolve_patient_route(patient_doc, fallback_channel_account: str | None = None) -> dict[str, Any]:
+    existing = find_existing_patient_route(patient_doc.name)
+    if existing:
+        return existing
+
+    mapping_error = None
+    pipeline_row = None
+    try:
+        pipeline_row = get_pipeline_map_for_patient(patient_doc)
+    except frappe.ValidationError as exc:
+        if is_missing_pipeline_map_error(exc):
+            mapping_error = exc
+        elif (
+            fallback_channel_account
+            and is_multiple_pipeline_map_error(exc)
+            and patient_doc.get("sr_medical_department")
+        ):
+            pipeline_row = get_pipeline_map(
+                medical_department=patient_doc.get("sr_medical_department"),
+                channel_account=fallback_channel_account,
+            )
+        else:
+            raise
+    if pipeline_row:
+        route = get_or_create_patient_conversation_for_channel_account(
+            patient_doc,
+            pipeline_row["chat_channel_account"],
+            pipeline_map=pipeline_row.get("name"),
+            pipeline=pipeline_row.get("sr_lead_pipeline"),
+        )
+        route["routing_source"] = (
+            "Default Pipeline Map" if pipeline_row.get("is_default") else "Department Map"
+        )
+        return route
+
+    if fallback_channel_account:
+        route = get_or_create_patient_conversation_for_channel_account(
+            patient_doc,
+            fallback_channel_account,
+        )
+        route["routing_source"] = "Shipment Settings Fallback"
+        return route
+
+    if mapping_error:
+        raise mapping_error
+    frappe.throw(_("No WhatsApp route is available for Patient {0}.").format(patient_doc.name))
+
+
+def find_existing_patient_route(patient: str) -> dict[str, Any] | None:
+    filters_list = []
+    conversation_meta = frappe.get_meta("Chat Conversation")
+    if conversation_meta.has_field("linked_patient"):
+        filters_list.append({"linked_patient": patient, "status": ["!=", "Closed"]})
+    if conversation_meta.has_field("linked_reference_doctype"):
+        filters_list.append(
+            {
+                "linked_reference_doctype": "Patient",
+                "linked_reference_name": patient,
+                "status": ["!=", "Closed"],
+            }
+        )
+
+    for filters in filters_list:
+        rows = safe_ai_get_all(
+            "Chat Conversation",
+            filters=filters,
+            fields=["name", "channel_account", "contact"],
+            order_by="modified desc",
+            limit_page_length=1,
+        )
+        if not rows:
+            continue
+        row = rows[0]
+        account = safe_ai_get_doc("Chat Channel Account", row.channel_account)
+        if not account.is_active or account.channel_type != "Interakt":
+            continue
+        return {
+            "conversation": row.name,
+            "channel_account": row.channel_account,
+            "contact": row.contact,
+            "created": False,
+            "pipeline_map": None,
+            "routing_source": "Existing Conversation",
+        }
+    return None
+
+
+def is_missing_pipeline_map_error(error: Exception) -> bool:
+    message = cstr(error).strip().lower()
+    return message.startswith("no active ") and "wa channel pipeline map" in message
+
+
+def is_multiple_pipeline_map_error(error: Exception) -> bool:
+    message = cstr(error).strip().lower()
+    return message.startswith("multiple active wa channel pipeline map")

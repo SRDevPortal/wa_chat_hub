@@ -101,6 +101,82 @@ def fetch_approved_templates(channel_account: str, force_refresh: bool = False) 
     return manual
 
 
+def resolve_approved_template(
+    channel_account: str,
+    template: Dict[str, Any],
+) -> Dict[str, Any]:
+    template_name = (template.get("template_name") or "").strip()
+    language_code = (template.get("language_code") or "en").strip() or "en"
+    if not template_name:
+        frappe.throw(_("Template name is required."))
+
+    approved_templates = fetch_approved_templates(channel_account, force_refresh=False)
+    match = find_approved_template(approved_templates, template_name, language_code)
+    if not match:
+        approved_templates = fetch_approved_templates(channel_account, force_refresh=True)
+        match = find_approved_template(approved_templates, template_name, language_code)
+    if not match:
+        available = ", ".join(
+            sorted(
+                {
+                    f"{row.get('name')} ({row.get('language_code') or 'en'})"
+                    for row in approved_templates
+                    if row.get("name")
+                }
+            )
+        )
+        frappe.throw(
+            _(
+                "WhatsApp template '{0}' language '{1}' is not approved on channel '{2}'. "
+                "Approved templates available: {3}."
+            ).format(template_name, language_code, channel_account, available or _("none"))
+        )
+
+    body_values = template.get("body_values") or []
+    variable_count = int(match.get("body_variable_count") or len(match.get("body_variables") or []))
+    if variable_count != len(body_values):
+        frappe.throw(
+            _(
+                "WhatsApp template '{0}' expects {1} body variables, but {2} were provided."
+            ).format(match.get("name") or template_name, variable_count, len(body_values))
+        )
+
+    resolved_name = (match.get("name") or template_name).strip()
+    if resolved_name == template_name:
+        return template
+    return {
+        **template,
+        "template_name": resolved_name,
+        "configured_template_name": template_name,
+    }
+
+
+def find_approved_template(
+    templates: List[Dict[str, Any]],
+    template_name: str,
+    language_code: str,
+) -> Optional[Dict[str, Any]]:
+    wanted_name = (template_name or "").strip().lower()
+    wanted_language = (language_code or "en").strip().lower() or "en"
+    display_match = None
+
+    for row in templates or []:
+        name = (row.get("name") or "").strip()
+        display_name = (row.get("display_name") or "").strip()
+        languages = row.get("languages") or [row.get("language_code") or "en"]
+        available_languages = {
+            str(language or "en").strip().lower() or "en" for language in languages
+        }
+        if wanted_language not in available_languages:
+            continue
+        if name.lower() == wanted_name:
+            return row
+        if display_name.lower() == wanted_name and not display_match:
+            display_match = row
+
+    return display_match
+
+
 def _load_manual_catalog(account) -> List[Dict[str, Any]]:
     rows = getattr(account, "interakt_template_catalog", None) or []
     templates: List[Dict[str, Any]] = []

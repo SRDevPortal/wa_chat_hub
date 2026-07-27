@@ -50,6 +50,7 @@ def ensure_interakt_contact_for_reference(
     reference_doc,
     *,
     pipeline: str | None = None,
+    allow_unmapped: bool = False,
 ) -> dict[str, Any]:
     """Sync Chat Contact to Interakt (CRM Lead, Patient, etc.)."""
     from wa_chat_hub.interakt.contact_sync import push_contact_to_interakt
@@ -58,7 +59,8 @@ def ensure_interakt_contact_for_reference(
     try:
         pipeline_map_row = get_pipeline_map(channel_account=channel_account)
     except Exception:
-        pass
+        if allow_unmapped:
+            pipeline_map_row = {}
 
     return push_contact_to_interakt(
         channel_account,
@@ -165,13 +167,32 @@ def get_or_create_patient_contact(patient) -> str:
 
 def get_or_create_mapped_patient_conversation(patient) -> dict[str, Any]:
     pipeline_row = get_pipeline_map_for_patient(patient)
-    channel_account = pipeline_row["chat_channel_account"]
+    return get_or_create_patient_conversation_for_channel_account(
+        patient,
+        pipeline_row["chat_channel_account"],
+        pipeline_map=pipeline_row["name"],
+        pipeline=pipeline_row.get("sr_lead_pipeline"),
+    )
+
+
+def get_or_create_patient_conversation_for_channel_account(
+    patient,
+    channel_account: str,
+    *,
+    pipeline_map: str | None = None,
+    pipeline: str | None = None,
+) -> dict[str, Any]:
+    account = safe_ai_get_doc("Chat Channel Account", channel_account)
+    if not account.is_active or account.channel_type != "Interakt":
+        frappe.throw(_("WhatsApp channel {0} must be an active Interakt account.").format(channel_account))
+
     contact = get_or_create_patient_contact(patient)
     ensure_interakt_contact_for_reference(
         channel_account,
         contact,
         patient,
-        pipeline=pipeline_row.get("sr_lead_pipeline"),
+        pipeline=pipeline,
+        allow_unmapped=not pipeline_map,
     )
 
     conversation, created = _get_or_create_reference_conversation(
@@ -194,7 +215,7 @@ def get_or_create_mapped_patient_conversation(patient) -> dict[str, Any]:
 
     return {
         "conversation": conversation,
-        "pipeline_map": pipeline_row["name"],
+        "pipeline_map": pipeline_map,
         "channel_account": channel_account,
         "contact": contact,
         "created": created,
