@@ -560,6 +560,7 @@ def process_message(message_id, skip_batch_wait: bool = False):
                 history_before_current,
                 latest_user_text=latest_user_text,
                 current_inbound=current_inbound,
+                company=safe_ai_get_value("Chat Conversation", conversation, "company"),
             )
             if not response_text or not str(response_text).strip():
                 _log_ai_timing(
@@ -1987,7 +1988,14 @@ def _deliver_ai_reply(conversation: str, response_text: str) -> None:
     )
 
 
-def call_provider(provider, system_prompt, history, latest_user_text=None, current_inbound=None):
+def call_provider(
+    provider,
+    system_prompt,
+    history,
+    latest_user_text=None,
+    current_inbound=None,
+    company=None,
+):
     messages = [{"role": "system", "content": system_prompt}]
     for h in history:
         role = "user" if h.direction == "Inbound" else "assistant"
@@ -2006,13 +2014,18 @@ def call_provider(provider, system_prompt, history, latest_user_text=None, curre
 
     is_buopso_vllm = "vllm.buopso.net" in str(provider.base_url or "").lower()
     if provider.provider_type in ("OpenAI", "Custom"):
-        return call_openai_format(provider, messages, timeout=15 if is_buopso_vllm else 45)
+        return call_openai_format(
+            provider,
+            messages,
+            timeout=15 if is_buopso_vllm else 45,
+            company=company,
+        )
     if provider.provider_type == "Gemini":
         if not provider.base_url:
             provider.base_url = (
                 "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
             )
-        return call_openai_format(provider, messages, timeout=45)
+        return call_openai_format(provider, messages, timeout=45, company=company)
     if provider.provider_type == "Anthropic":
         raise Exception(
             "Anthropic specific MCP format requires SDK. Please use OpenAI/Gemini/Custom."
@@ -2021,7 +2034,7 @@ def call_provider(provider, system_prompt, history, latest_user_text=None, curre
     raise Exception(f"Unsupported provider type {provider.provider_type}")
 
 
-def fetch_mcp_tools():
+def fetch_mcp_tools(company=None, system_prompt=None):
     assert_ai_doctype_permission("WA Chat Hub Settings", "read")
     settings = frappe.get_single("WA Chat Hub Settings")
     if not getattr(settings, "allow_mcp_access", 0):
@@ -2029,13 +2042,30 @@ def fetch_mcp_tools():
     if not safe_ai_exists("DocType", "WA MCP Tool Endpoint"):
         return []
 
+    filters = {"is_active": 1}
+    if company:
+        filters["company"] = ["in", ["", company]]
+
     tools_docs = safe_ai_get_all(
         "WA MCP Tool Endpoint",
-        filters={"is_active": 1},
-        fields=["tool_name", "description", "parameters_schema", "endpoint_url", "http_method", "server", "company"],
+        filters=filters,
+        fields=[
+            "tool_name",
+            "description",
+            "parameters_schema",
+            "endpoint_url",
+            "http_method",
+            "server",
+            "company",
+        ],
     )
     tools = []
     for t in tools_docs:
+        tool_company = str(t.company or "").strip()
+        if company and tool_company and tool_company != company:
+            continue
+        if system_prompt is not None and t.tool_name not in system_prompt:
+            continue
         try:
             params = (
                 json.loads(t.parameters_schema)
@@ -2064,9 +2094,12 @@ def fetch_mcp_tools():
     return tools
 
 
-def execute_mcp_tool(tool_name, arguments_dict):
-    tools = fetch_mcp_tools()
-    tool_meta = next((t["_meta"] for t in tools if t["function"]["name"] == tool_name), None)
+def execute_mcp_tool(tool_name, arguments_dict, company=None, system_prompt=None):
+    tools = fetch_mcp_tools(company=company, system_prompt=system_prompt)
+    tool_meta = next(
+        (t["_meta"] for t in tools if t["function"]["name"] == tool_name),
+        None,
+    )
     conversation = arguments_dict.get("conversation") if isinstance(arguments_dict, dict) else None
     if not tool_meta:
         log_agent_event(
@@ -2345,7 +2378,7 @@ def _fit_messages_for_provider(provider, messages: list[dict]) -> list[dict]:
     return kept
 
 
-def call_openai_format(provider, messages, timeout=20):
+def call_openai_format(provider, messages, timeout=20, company=None):
     request_started = time.monotonic()
     url = provider.base_url or "https://api.openai.com/v1/chat/completions"
     headers = {
@@ -2357,7 +2390,8 @@ def call_openai_format(provider, messages, timeout=20):
         url += "chat/completions"
     messages = _fit_messages_for_provider(provider, messages)
 
-    tools = fetch_mcp_tools()
+    system_prompt = str((messages[0] or {}).get("content") or "") if messages else ""
+    tools = fetch_mcp_tools(company=company, system_prompt=system_prompt)
     api_tools = [{"type": t["type"], "function": t["function"]} for t in tools] if tools else None
     token_limit_key = _max_tokens_payload_key(provider.model_name)
     is_vllm_provider = "vllm.buopso.net" in str(url).lower()
@@ -2430,7 +2464,12 @@ def call_openai_format(provider, messages, timeout=20):
                 args = json.loads(tc["function"]["arguments"])
             except Exception:
                 args = {}
-            tool_res = execute_mcp_tool(tc["function"]["name"], args)
+            tool_res = execute_mcp_tool(
+                tc["function"]["name"],
+                args,
+                company=company,
+                system_prompt=system_prompt,
+            )
             _log_ai_timing(
                 "tool_done",
                 provider=provider.name,
