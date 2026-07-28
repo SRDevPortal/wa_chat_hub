@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import frappe
 
 
@@ -8,6 +10,37 @@ PATIENT_AGENT_PROMPT = """You are the clinic's Patient Care WhatsApp agent. Help
 VERIFICATION_AGENT_PROMPT = """You are the clinic's Patient Verification WhatsApp agent. Help with general clinic information and guide the contact through the approved identity-verification process. Do not reveal, confirm, or infer any patient record, appointment, prescription, encounter, payment, or order information until identity is verified. Escalate ambiguous or shared-number cases to a human."""
 
 PATIENT_GUARDRAILS = """Never expose one patient's information to another contact. Do not provide diagnosis, medicine changes, dosage changes, or emergency assessment. Urgent symptoms, self-harm language, severe deterioration, adverse medicine reactions, and post-procedure complications require the approved safety response and immediate human escalation."""
+
+PATIENT_CARE_TOOL_NAMES = (
+    "get_verified_patient_profile",
+    "get_verified_patient_encounters",
+    "get_verified_patient_diet_charts",
+    "get_verified_patient_sales_invoices",
+    "get_verified_patient_doctor_certifications",
+    "get_verified_patient_shipping_history",
+)
+
+PATIENT_SHIPPING_HISTORY_TOOL = {
+    "tool_name": "get_verified_patient_shipping_history",
+    "description": (
+        "Read shipment, tracking, AWB, courier, delivery, and linked encounter shipping "
+        "history for the verified patient in the current chat."
+    ),
+    "endpoint_url": "wa_chat_hub.mcp.patient_records.get_verified_patient_shipping_history",
+    "http_method": "POST",
+    "parameters_schema": {
+        "type": "object",
+        "properties": {
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10,
+                "description": "Maximum number of recent shipping records to return.",
+            }
+        },
+        "additionalProperties": False,
+    },
+}
 
 
 def ensure_default_agent_profiles() -> int:
@@ -49,7 +82,177 @@ def ensure_default_agent_profiles() -> int:
         )
         doc.insert(ignore_permissions=True)
         created += 1
+    ensure_patient_care_agent_tools(commit=False)
     return created
+
+
+def ensure_patient_care_agent_tools(commit: bool = True) -> dict:
+    """Attach verified-patient record tools to the shared Patient Care Agent."""
+    required_doctypes = ("WA AI Agent Profile", "WA AI Agent Tool", "WA MCP Tool Endpoint")
+    if not all(frappe.db.exists("DocType", doctype) for doctype in required_doctypes):
+        return {
+            "updated": False,
+            "reason": "required_doctypes_missing",
+            "tools": [],
+            "missing_tools": list(PATIENT_CARE_TOOL_NAMES),
+        }
+
+    if not frappe.db.exists("WA AI Agent Profile", "Patient Care Agent"):
+        return {
+            "updated": False,
+            "reason": "patient_care_agent_missing",
+            "tools": [],
+            "missing_tools": list(PATIENT_CARE_TOOL_NAMES),
+        }
+
+    doc = frappe.get_doc("WA AI Agent Profile", "Patient Care Agent")
+    existing_rows = {row.mcp_tool: row for row in (doc.allowed_tools or []) if row.mcp_tool}
+    active_tools = set(
+        frappe.get_all(
+            "WA MCP Tool Endpoint",
+            filters={"tool_name": ["in", PATIENT_CARE_TOOL_NAMES], "is_active": 1},
+            pluck="name",
+        )
+    )
+
+    changed = False
+    added = []
+    reactivated = []
+    for tool_name in PATIENT_CARE_TOOL_NAMES:
+        if tool_name not in active_tools:
+            continue
+        row = existing_rows.get(tool_name)
+        if row:
+            if not row.is_active:
+                row.is_active = 1
+                changed = True
+                reactivated.append(tool_name)
+            continue
+        doc.append("allowed_tools", {"mcp_tool": tool_name, "is_active": 1})
+        changed = True
+        added.append(tool_name)
+
+    if changed:
+        doc.save(ignore_permissions=True)
+        if commit:
+            frappe.db.commit()
+
+    configured = [
+        row.mcp_tool
+        for row in (doc.allowed_tools or [])
+        if row.mcp_tool in PATIENT_CARE_TOOL_NAMES and row.is_active
+    ]
+    return {
+        "updated": changed,
+        "agent_profile": "Patient Care Agent",
+        "tools": configured,
+        "added": added,
+        "reactivated": reactivated,
+        "missing_tools": [
+            tool_name for tool_name in PATIENT_CARE_TOOL_NAMES if tool_name not in active_tools
+        ],
+    }
+
+
+def ensure_patient_shipping_history_tool(commit: bool = True) -> dict:
+    """Create/activate shipping-history MCP and allow it in patient-care routing."""
+    if not frappe.db.exists("DocType", "WA MCP Tool Endpoint"):
+        return {"updated": False, "reason": "mcp_tool_endpoint_missing"}
+
+    endpoint_updated = _upsert_shipping_history_endpoint()
+    agent_result = ensure_patient_care_agent_tools(commit=False)
+    department_result = _ensure_shipping_history_on_patient_departments()
+
+    if commit:
+        frappe.db.commit()
+
+    return {
+        "updated": bool(endpoint_updated or agent_result.get("updated") or department_result["updated"]),
+        "tool": PATIENT_SHIPPING_HISTORY_TOOL["tool_name"],
+        "endpoint_updated": endpoint_updated,
+        "agent": agent_result,
+        "department_profiles": department_result,
+    }
+
+
+def _upsert_shipping_history_endpoint() -> bool:
+    tool_name = PATIENT_SHIPPING_HISTORY_TOOL["tool_name"]
+    values = {
+        key: value
+        for key, value in PATIENT_SHIPPING_HISTORY_TOOL.items()
+        if key != "parameters_schema"
+    }
+    values["parameters_schema"] = json.dumps(
+        PATIENT_SHIPPING_HISTORY_TOOL["parameters_schema"],
+        indent=2,
+    )
+
+    if frappe.db.exists("WA MCP Tool Endpoint", tool_name):
+        doc = frappe.get_doc("WA MCP Tool Endpoint", tool_name)
+        changed = False
+        for fieldname, value in values.items():
+            if doc.get(fieldname) != value:
+                doc.set(fieldname, value)
+                changed = True
+        if not doc.is_active:
+            doc.is_active = 1
+            changed = True
+        if changed:
+            doc.save(ignore_permissions=True)
+        return changed
+
+    frappe.get_doc(
+        {
+            "doctype": "WA MCP Tool Endpoint",
+            "is_active": 1,
+            **values,
+        }
+    ).insert(ignore_permissions=True)
+    return True
+
+
+def _ensure_shipping_history_on_patient_departments() -> dict:
+    if not frappe.db.exists("DocType", "WA AI Department Profile"):
+        return {"updated": False, "reason": "department_profile_doctype_missing", "profiles": []}
+
+    tool_name = PATIENT_SHIPPING_HISTORY_TOOL["tool_name"]
+    profiles = frappe.get_all(
+        "WA AI Department Profile",
+        filters={"agent_profile": "Patient Care Agent", "is_active": 1},
+        pluck="name",
+        limit_page_length=500,
+    )
+
+    changed = False
+    added = []
+    reactivated = []
+    configured = []
+    for profile_name in profiles:
+        doc = frappe.get_doc("WA AI Department Profile", profile_name)
+        existing_rows = {row.mcp_tool: row for row in (doc.allowed_tools or []) if row.mcp_tool}
+        profile_changed = False
+        row = existing_rows.get(tool_name)
+        if row:
+            if not row.is_active:
+                row.is_active = 1
+                profile_changed = True
+                reactivated.append(profile_name)
+        else:
+            doc.append("allowed_tools", {"mcp_tool": tool_name, "is_active": 1})
+            profile_changed = True
+            added.append(profile_name)
+        if profile_changed:
+            changed = True
+            doc.save(ignore_permissions=True)
+        configured.append(profile_name)
+
+    return {
+        "updated": changed,
+        "tool": tool_name,
+        "profiles": configured,
+        "added": added,
+        "reactivated": reactivated,
+    }
 
 
 def backfill_conversation_identities() -> None:
@@ -159,6 +362,24 @@ def get_agent_setup_status() -> dict:
         "profiles": profiles,
         "conversation_identity_counts": identity_counts,
         "sample_routes": sample_routes,
+    }
+
+
+def get_agent_route_status(conversation: str = "43") -> dict:
+    """Return a JSON-safe resolved route diagnostic for a specific conversation."""
+    from wa_chat_hub.agent_router import resolve_agent_route
+
+    route = resolve_agent_route(str(conversation))
+    return {
+        "conversation": str(conversation),
+        "party_type": route.party_type,
+        "identity_status": route.identity_status,
+        "agent_profile": route.agent_profile,
+        "medical_department": route.department,
+        "patient": route.patient,
+        "routing_reason": route.routing_reason,
+        "tools_available": len(route.allowed_tool_names),
+        "allowed_tool_names": sorted(route.allowed_tool_names),
     }
 
 

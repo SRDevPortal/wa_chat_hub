@@ -84,6 +84,50 @@ PRACTITIONER_FIELDS = (
     "hospital",
 )
 
+SHIPMENT_FIELDS = (
+    "name",
+    "sales_invoice",
+    "patient_encounter",
+    "patient",
+    "customer",
+    "shipkia_order_id",
+    "shipkia_awb_number",
+    "shipkia_tracking_id",
+    "shipkia_stage",
+    "shipkia_status",
+    "normalized_status",
+    "shipkia_status_detail",
+    "payment_mode",
+    "delivery_partner",
+    "delivery_location",
+    "company",
+    "company_id",
+    "shipkia_estimated_delivery",
+    "shipkia_delivered_on",
+    "last_synced_on",
+)
+
+SHIPMENT_EVENT_FIELDS = (
+    "date_time",
+    "status",
+    "detail",
+    "location",
+)
+
+ENCOUNTER_SHIPMENT_FIELDS = (
+    "name",
+    "encounter_date",
+    "encounter_time",
+    "pe_shipkia_order_id",
+    "pe_shipkia_awb_number",
+    "pe_shipkia_stage",
+    "pe_shipkia_status",
+    "pe_shipkia_estimated_delivery",
+    "pe_shipkia_delivered_on",
+    "pe_delivery_partner",
+    "pe_shipkia_shipment",
+)
+
 
 def get_verified_patient_profile(*, patient: str, conversation: str) -> dict[str, Any]:
     """Return a small allowlisted profile for the verified conversation patient."""
@@ -205,6 +249,54 @@ def get_verified_patient_doctor_certifications(
     return {"patient": patient_name, "doctor_certifications": practitioners}
 
 
+def get_verified_patient_shipping_history(
+    *, patient: str, conversation: str, limit: int = 5
+) -> dict[str, Any]:
+    """Return shipment/tracking history belonging only to the verified patient."""
+    patient_name = _verified_patient(patient=patient, conversation=conversation)
+    limit = _safe_limit(limit)
+
+    shipments = []
+    if frappe.db.exists("DocType", "Shipment Tracking Shipment"):
+        shipment_names = safe_ai_get_all(
+            "Shipment Tracking Shipment",
+            filters={"patient": patient_name},
+            pluck="name",
+            order_by="modified desc",
+            limit_page_length=limit,
+        )
+        for shipment_name in shipment_names:
+            shipment = safe_ai_get_doc("Shipment Tracking Shipment", shipment_name)
+            values = _allowlisted_doc(shipment, SHIPMENT_FIELDS)
+            values["events"] = [
+                _allowlisted_doc(event, SHIPMENT_EVENT_FIELDS)
+                for event in (shipment.get("events") or [])
+            ]
+            shipments.append(values)
+
+    encounter_shipments = []
+    encounter_fields = _existing_fields("Patient Encounter", ENCOUNTER_SHIPMENT_FIELDS)
+    if len(encounter_fields) > 1:
+        encounters = safe_ai_get_all(
+            "Patient Encounter",
+            filters={"patient": patient_name},
+            fields=encounter_fields,
+            order_by="encounter_date desc, encounter_time desc, modified desc",
+            limit_page_length=limit,
+        )
+        shipment_fieldnames = set(encounter_fields) - {"name", "encounter_date", "encounter_time"}
+        for encounter in encounters:
+            row = dict(encounter)
+            if any(row.get(fieldname) for fieldname in shipment_fieldnames):
+                encounter_shipments.append(row)
+
+    return {
+        "patient": patient_name,
+        "shipping_history": shipments,
+        "encounter_shipping_history": encounter_shipments,
+    }
+
+
 def _verified_patient(*, patient: str, conversation: str) -> str:
     patient = str(patient or "").strip()
     conversation = str(conversation or "").strip()
@@ -230,6 +322,15 @@ def _verified_patient(*, patient: str, conversation: str) -> str:
 
 def _allowlisted_doc(doc, fields: tuple[str, ...]) -> dict[str, Any]:
     return {fieldname: doc.get(fieldname) for fieldname in fields if doc.meta.has_field(fieldname) or fieldname == "name"}
+
+
+def _existing_fields(doctype: str, fields: tuple[str, ...]) -> list[str]:
+    meta = frappe.get_meta(doctype)
+    return [
+        fieldname
+        for fieldname in fields
+        if fieldname == "name" or meta.has_field(fieldname)
+    ]
 
 
 def _safe_limit(value: int) -> int:

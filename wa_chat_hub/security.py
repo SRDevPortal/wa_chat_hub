@@ -47,6 +47,8 @@ DEFAULT_AI_DOCTYPE_PERMISSIONS = (
     ("Diet Chart", 1, 0, 0, "Read diet charts linked through a verified patient's encounters."),
     ("Sales Invoice", 1, 0, 0, "Read invoices belonging to a verified patient."),
     ("Healthcare Practitioner", 1, 0, 0, "Read credentials of practitioners linked to a verified patient's encounters."),
+    ("Shipment Tracking Shipment", 1, 0, 0, "Read shipments belonging to a verified patient."),
+    ("Shipment Tracking Shipment Event", 1, 0, 0, "Read shipment tracking events for verified patient shipments."),
     ("Medical Department", 1, 0, 0, "Validate Patient medical-department routing."),
     ("CRM Lead Status", 1, 0, 0, "Read default CRM lead status for inbound lead creation."),
     ("CRM Lead Source", 1, 1, 0, "Resolve/create CRM lead source values such as WhatsApp."),

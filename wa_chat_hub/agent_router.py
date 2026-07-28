@@ -96,8 +96,31 @@ def build_agent_prompt(route: AgentRoute) -> str:
         route.medical_guardrail_policy,
         route.escalation_policy,
         route.prompt_overlay,
+        _identity_verification_prompt(route),
     ]
     return "\n\n".join(part for part in parts if part)
+
+
+def _identity_verification_prompt(route: AgentRoute) -> str:
+    if route.party_type != "Patient":
+        return ""
+    if route.identity_status != "Verified":
+        return (
+            "IDENTITY VERIFICATION RULES (mandatory): Ask only for the patient's "
+            "registered 10-digit mobile number. Do not ask for full name, date of "
+            "birth, email, address, patient ID, or any other identity detail. "
+            "Verification is performed immediately in this chat when the customer "
+            "sends the matching registered number. Never say that verification is "
+            "being processed, that the customer must wait, or that you will update "
+            "them later. If the latest message does not contain the number, ask for "
+            "only the registered 10-digit mobile number."
+        )
+    return (
+        "IDENTITY VERIFIED: Do not ask for identity details again. If the customer "
+        "has just completed verification, briefly confirm success and immediately "
+        "continue the most recent unresolved request from the conversation history "
+        "in the same reply. Never ask the customer to wait for verification."
+    )
 
 
 def persist_agent_route(conversation: str, route: AgentRoute) -> None:
@@ -121,6 +144,8 @@ def _resolve_party(convo) -> tuple[str, str | None]:
         patient = getattr(convo, "linked_reference_name", None)
     if patient:
         return "Patient", patient
+    if getattr(convo, "party_type", None) == "Patient":
+        return "Patient", None
     if getattr(convo, "linked_crm_lead", None) or getattr(convo, "linked_reference_doctype", None) in {
         "CRM Lead", "Lead"
     }:

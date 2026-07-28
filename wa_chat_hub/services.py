@@ -9,7 +9,7 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 import frappe
 from frappe import _
-from frappe.utils import cint
+from frappe.utils import cint, now_datetime
 from frappe.utils.file_lock import LockTimeoutError
 from frappe.utils.synchronization import filelock
 
@@ -45,6 +45,7 @@ from wa_chat_hub.task_logger import elapsed, task_log
 
 
 DEFAULT_CONVERSATION_STATUS = "Open"
+ACTIVE_CONVERSATION_STATUSES = ("Open", "Pending", "Resolved")
 WA_LEAD_CONTEXT_MARKER = "WA_CHAT_HUB_CONTEXT_JSON"
 WA_LEAD_PAYLOAD_MARKER = "WA_CHAT_HUB_PAYLOAD_JSON"
 APPEND_MESSAGE_LOCK_TIMEOUT = 8
@@ -280,7 +281,11 @@ def get_or_create_conversation(
     assigned_to: Optional[str] = None,
     status: str = DEFAULT_CONVERSATION_STATUS,
 ) -> str:
-    filters = {"channel_account": channel_account, "contact": contact, "status": ["!=", "Closed"]}
+    filters = {
+        "channel_account": channel_account,
+        "contact": contact,
+        "status": ["in", ACTIVE_CONVERSATION_STATUSES],
+    }
 
     existing = with_db_lock_retry(
         "conversation_lookup",
@@ -397,7 +402,11 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
     channel_account = payload["channel_account"]
     existing_conversation = safe_ai_get_value(
         "Chat Conversation",
-        {"channel_account": channel_account, "contact": contact, "status": ["!=", "Closed"]},
+        {
+            "channel_account": channel_account,
+            "contact": contact,
+            "status": ["in", ACTIVE_CONVERSATION_STATUSES],
+        },
         "name",
     )
 
@@ -894,7 +903,20 @@ def _apply_vobiz_patient_routing(
     did_number = _channel_account_phone_number(channel_account)
     try:
         from vobiz_ai.api.patient_routing import resolve_patient_routing_for_chat
+    except ModuleNotFoundError as exc:
+        if str(getattr(exc, "name", "")).startswith("vobiz_ai"):
+            task_log(
+                "patient_routing",
+                "optional_vobiz_module_missing",
+                conversation=conversation,
+                patient=patient,
+                module=getattr(exc, "name", ""),
+            )
+            return
+        frappe.log_error(frappe.get_traceback(), "WA Chat Hub Vobiz Patient Routing Failed")
+        return
 
+    try:
         routing = resolve_patient_routing_for_chat(patient=patient, did_number=did_number)
     except Exception:
         frappe.log_error(frappe.get_traceback(), "WA Chat Hub Vobiz Patient Routing Failed")
@@ -1082,6 +1104,27 @@ def _link_or_create_master_record(
     if ref_dt == "Patient" and ref_name:
         _apply_vobiz_patient_routing(conversation, ref_name, getattr(convo, "channel_account", None))
         return
+
+    patient_matches = _find_indexed_phone_match_names(
+        "Patient",
+        ["mobile", "mobile_no", "phone", "custom_whatsapp_number"],
+        phone_number,
+        limit=2,
+    )
+    if len(patient_matches) > 1:
+        _mark_conversation_patient_ambiguous(convo)
+        return
+    if patient_matches:
+        _link_patient_to_conversation(
+            conversation=conversation,
+            convo=convo,
+            contact=contact,
+            patient_name=next(iter(patient_matches)),
+            phone_number=phone_number,
+            display_name=display_name,
+        )
+        return
+
     existing_crm_lead = get_conversation_crm_lead(convo)
     if existing_crm_lead and safe_ai_exists("CRM Lead", existing_crm_lead):
         _finalize_crm_lead_after_inbound(
@@ -1092,38 +1135,6 @@ def _link_or_create_master_record(
         )
         return
     if ref_dt and ref_name and ref_dt not in {"CRM Lead", "Lead"}:
-        return
-
-    patient_name = _find_by_phone("Patient", ["mobile", "mobile_no", "phone", "custom_whatsapp_number"], phone_number)
-    if patient_name:
-        contact_updates = {
-            "linked_patient": patient_name,
-            "source_doctype": "Patient",
-            "source_name": patient_name,
-        }
-        if display_name and not contact.display_name:
-            contact_updates["display_name"] = display_name
-        _set_contact_fields(contact, contact_updates)
-        _set_conversation_fields(
-            convo,
-            {
-                "linked_reference_doctype": "Patient",
-                "linked_reference_name": patient_name,
-            },
-        )
-        if not _skip_vobiz_patient_routing_for_ambiguous_match(
-            conversation,
-            patient_name,
-            getattr(convo, "channel_account", None),
-            phone_number,
-        ):
-            _apply_vobiz_patient_routing(conversation, patient_name, getattr(convo, "channel_account", None))
-        try:
-            from wa_chat_hub.interakt.contact_sync import enqueue_push_for_conversation
-
-            enqueue_push_for_conversation(conversation)
-        except Exception:
-            frappe.log_error(frappe.get_traceback(), "Interakt Contact Push Enqueue Failed")
         return
 
     customer_name = _find_by_phone("Customer", ["mobile_no", "phone", "custom_whatsapp_number"], phone_number)
@@ -1216,6 +1227,70 @@ def _set_contact_fields(contact, updates: Dict[str, Any]) -> None:
     )
     for key, value in updates.items():
         setattr(contact, key, value)
+
+
+def _link_patient_to_conversation(
+    *,
+    conversation: str,
+    convo,
+    contact,
+    patient_name: str,
+    phone_number: str,
+    display_name: Optional[str] = None,
+) -> None:
+    """Make a unique Patient authoritative while preserving CRM Lead history."""
+    contact_updates = {
+        "linked_patient": patient_name,
+        "source_doctype": "Patient",
+        "source_name": patient_name,
+    }
+    if display_name and not contact.display_name:
+        contact_updates["display_name"] = display_name
+    _set_contact_fields(contact, contact_updates)
+
+    try:
+        from wa_chat_hub.identity import reconcile_conversation_identity
+
+        reconcile_conversation_identity(
+            conversation,
+            patient=patient_name,
+            crm_lead=getattr(convo, "linked_crm_lead", None),
+            source="inbound_phone_match",
+        )
+        convo.reload()
+    except Exception:
+        frappe.log_error(
+            frappe.get_traceback(),
+            "WA Chat Hub Patient Identity Reconciliation Failed",
+        )
+        return
+
+    _apply_vobiz_patient_routing(
+        conversation,
+        patient_name,
+        getattr(convo, "channel_account", None),
+    )
+    try:
+        from wa_chat_hub.interakt.contact_sync import enqueue_push_for_conversation
+
+        enqueue_push_for_conversation(conversation)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "Interakt Contact Push Enqueue Failed")
+
+
+def _mark_conversation_patient_ambiguous(convo) -> None:
+    """A shared phone is Patient traffic, but no record may be selected automatically."""
+    meta = frappe.get_meta("Chat Conversation")
+    updates = {
+        "linked_patient": None,
+        "party_type": "Patient",
+        "identity_status": "Ambiguous",
+        "agent_profile": None,
+        "routing_reason": "patient_identity:ambiguous_phone_match",
+        "last_identity_sync_at": now_datetime(),
+    }
+    updates = {key: value for key, value in updates.items() if meta.has_field(key)}
+    _set_conversation_fields(convo, updates)
 
 
 def _set_conversation_fields(convo, updates: Dict[str, Any]) -> None:
@@ -1463,21 +1538,49 @@ def _phone_rows(doctype: str, fieldname: str, value: str, *, limit: int):
     )
 
 
-def _legacy_phone_rows(doctype: str, fieldname: str, normalized: str, *, limit: int):
-    """Temporary compatibility path used only until indexed keys are backfilled."""
-    last10 = normalized[-10:] if len(normalized) >= 10 else normalized
-    candidates = safe_ai_get_all(
+def _indexed_phone_rows(doctype: str, fieldname: str, value: str, *, limit: int):
+    """Exact bounded lookup; no sort is needed when resolving identity."""
+    return safe_ai_get_all(
         doctype,
-        filters={fieldname: ["like", f"%{last10}%"]},
-        fields=["name", fieldname],
+        filters={fieldname: value},
+        fields=["name"],
         limit_page_length=limit,
     )
-    return [
-        row
-        for row in candidates
-        if (value := normalize_phone(row.get(fieldname)))
-        and (value == normalized or value.endswith(last10))
-    ]
+
+
+def _find_indexed_phone_match_names(
+    doctype: str,
+    phone_fields: list[str],
+    phone_number: str,
+    *,
+    limit: int = 2,
+) -> set[str]:
+    """Return zero, one, or multiple exact normalized matches without wildcard scans."""
+    matches: set[str] = set()
+    try:
+        if not safe_ai_exists("DocType", doctype):
+            return matches
+
+        assert_ai_doctype_permission(doctype, "read")
+        meta = frappe.get_meta(doctype)
+        normalized = normalize_phone(phone_number)
+        if not normalized:
+            return matches
+
+        bounded_limit = max(2, min(int(limit or 2), 10))
+        for fieldname, value in _available_phone_index_filters(meta, phone_fields, normalized):
+            rows = _indexed_phone_rows(
+                doctype,
+                fieldname,
+                value,
+                limit=bounded_limit,
+            )
+            matches.update(row.name for row in rows if row.get("name"))
+            if len(matches) >= bounded_limit:
+                break
+    except WAChatHubSecurityError:
+        return set()
+    return matches
 
 
 def _find_by_phone(doctype: str, phone_fields: list[str], phone_number: str) -> Optional[str]:
@@ -1499,18 +1602,10 @@ def _find_by_phone(doctype: str, phone_fields: list[str], phone_number: str) -> 
             if rows:
                 return rows[0].name
 
-        if _indexed_phone_lookup_enabled():
-            for fieldname, value in _available_phone_index_filters(meta, phone_fields, normalized):
-                rows = _phone_rows(doctype, fieldname, value, limit=1)
-                if rows:
-                    return rows[0].name
-        else:
-            for fieldname in phone_fields:
-                if not meta.has_field(fieldname):
-                    continue
-                rows = _legacy_phone_rows(doctype, fieldname, normalized, limit=20)
-                if rows:
-                    return rows[0].name
+        for fieldname, value in _available_phone_index_filters(meta, phone_fields, normalized):
+            rows = _phone_rows(doctype, fieldname, value, limit=1)
+            if rows:
+                return rows[0].name
     except WAChatHubSecurityError:
         return None
     return None
@@ -1534,16 +1629,9 @@ def _find_phone_match_names(doctype: str, phone_fields: list[str], phone_number:
             exact_rows = _phone_rows(doctype, fieldname, normalized, limit=50)
             matches.update(row.name for row in exact_rows if row.get("name"))
 
-        if _indexed_phone_lookup_enabled():
-            for fieldname, value in _available_phone_index_filters(meta, phone_fields, normalized):
-                rows = _phone_rows(doctype, fieldname, value, limit=50)
-                matches.update(row.name for row in rows if row.get("name"))
-        else:
-            for fieldname in phone_fields:
-                if not meta.has_field(fieldname):
-                    continue
-                rows = _legacy_phone_rows(doctype, fieldname, normalized, limit=50)
-                matches.update(row.name for row in rows if row.get("name"))
+        for fieldname, value in _available_phone_index_filters(meta, phone_fields, normalized):
+            rows = _phone_rows(doctype, fieldname, value, limit=50)
+            matches.update(row.name for row in rows if row.get("name"))
     except WAChatHubSecurityError:
         return set()
     return matches

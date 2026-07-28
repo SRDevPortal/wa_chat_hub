@@ -29,16 +29,23 @@ def reconcile_conversation_identity(
     values: dict[str, Any] = {"last_identity_sync_at": now_datetime()}
 
     if patient and frappe.db.exists("Patient", patient):
+        identity_status = (
+            "Verified"
+            if verified or getattr(convo, "identity_status", None) == "Verified"
+            else "Matched"
+        )
         values.update(
             {
                 "linked_patient": patient,
                 "party_type": "Patient",
-                "identity_status": "Verified" if verified else "Matched",
+                "identity_status": identity_status,
                 "linked_reference_doctype": "Patient",
                 "linked_reference_name": patient,
                 "routing_reason": f"patient_identity:{patient_source or source}",
             }
         )
+        if verified and meta.has_field("verification_completed_at"):
+            values["verification_completed_at"] = now_datetime()
         if crm_lead and not getattr(convo, "linked_crm_lead", None):
             values["linked_crm_lead"] = crm_lead
         patient_meta = frappe.get_meta("Patient")
@@ -126,7 +133,7 @@ def verify_patient_identity_from_inbound_message(
         return {"verified": False, "reason": "linked_patient_missing"}
 
     msg = frappe.get_doc("Chat Message", message)
-    if msg.conversation != conversation or msg.direction != "Inbound":
+    if str(msg.conversation) != str(conversation) or msg.direction != "Inbound":
         return {"verified": False, "reason": "message_not_current_inbound"}
 
     chat_phone = _normalized_phone(

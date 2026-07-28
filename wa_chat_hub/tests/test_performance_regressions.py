@@ -24,6 +24,7 @@ from wa_chat_hub.messaging.idempotency import (
 )
 from wa_chat_hub.messaging.windows import get_messaging_window_state
 from wa_chat_hub.services import _available_phone_index_filters, _phone_rows
+from wa_chat_hub.services import _find_indexed_phone_match_names
 
 
 class _Meta:
@@ -35,6 +36,34 @@ class _Meta:
 
 
 class TestPhoneLookupPerformance(TestCase):
+    @patch("wa_chat_hub.services.assert_ai_doctype_permission")
+    @patch("wa_chat_hub.services.safe_ai_exists", return_value=True)
+    @patch("wa_chat_hub.services.frappe.get_meta")
+    @patch("wa_chat_hub.services._indexed_phone_rows")
+    def test_patient_identity_lookup_is_exact_bounded_and_detects_ambiguity(
+        self,
+        indexed_rows,
+        get_meta,
+        _exists,
+        _permission,
+    ):
+        get_meta.return_value = _Meta(
+            {"vobiz_normalized_phone", "vobiz_mobile_last10"}
+        )
+        indexed_rows.side_effect = [
+            [frappe._dict(name="PAT-1"), frappe._dict(name="PAT-2")],
+        ]
+
+        matches = _find_indexed_phone_match_names(
+            "Patient",
+            ["mobile", "phone"],
+            "+91 98765-43210",
+            limit=2,
+        )
+
+        self.assertEqual(matches, {"PAT-1", "PAT-2"})
+        self.assertEqual(indexed_rows.call_args.kwargs["limit"], 2)
+
     def test_uses_normalized_index_fields_without_duplicates(self):
         meta = _Meta(
             {

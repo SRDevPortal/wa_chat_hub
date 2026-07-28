@@ -30,6 +30,11 @@
   "routing_reason",
   "routing_version",
   "last_identity_sync_at",
+  "pending_patient_request",
+  "pending_request_message",
+  "verification_started_at",
+  "verification_attempts",
+  "verification_completed_at",
   "linked_reference_doctype",
   "linked_reference_name",
   "sb_messaging_window",
@@ -223,6 +228,38 @@
    "fieldname": "last_identity_sync_at",
    "fieldtype": "Datetime",
    "label": "Last Identity Sync At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "pending_patient_request",
+   "fieldtype": "Text",
+   "label": "Pending Patient Request",
+   "read_only": 1
+  },
+  {
+   "fieldname": "pending_request_message",
+   "fieldtype": "Link",
+   "label": "Pending Request Message",
+   "options": "Chat Message",
+   "read_only": 1
+  },
+  {
+   "fieldname": "verification_started_at",
+   "fieldtype": "Datetime",
+   "label": "Verification Started At",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "verification_attempts",
+   "fieldtype": "Int",
+   "label": "Verification Attempts",
+   "read_only": 1
+  },
+  {
+   "fieldname": "verification_completed_at",
+   "fieldtype": "Datetime",
+   "label": "Verification Completed At",
    "read_only": 1
   },
   {

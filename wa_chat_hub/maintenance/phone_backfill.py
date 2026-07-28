@@ -25,6 +25,8 @@ TARGET_SOURCE_FIELDS = {
     "sr_mobile_norm": ("mobile_no", "mobile"),
 }
 PROGRESS_PREFIX = "wa_chat_hub_phone_backfill_last_name"
+BACKGROUND_BACKFILL_DOCTYPES = ("Patient", "CRM Lead", "Customer", "Lead")
+BACKGROUND_BACKFILL_JOB_ID = "wa_chat_hub_indexed_phone_backfill"
 
 
 def _progress_key(doctype: str) -> str:
@@ -79,6 +81,21 @@ def backfill_phone_keys(
 ) -> dict[str, Any]:
     """Backfill normalized phone keys in bounded, resumable batches."""
     frappe.only_for("System Manager")
+    return _backfill_phone_keys(
+        doctype=doctype,
+        batch_size=batch_size,
+        max_batches=max_batches,
+        dry_run=dry_run,
+    )
+
+
+def _backfill_phone_keys(
+    *,
+    doctype: str,
+    batch_size: int,
+    max_batches: int,
+    dry_run: bool = False,
+) -> dict[str, Any]:
     if doctype not in SUPPORTED_DOCTYPES:
         frappe.throw(f"Unsupported phone backfill doctype: {doctype}")
     if not frappe.db.exists("DocType", doctype):
@@ -156,6 +173,41 @@ def backfill_phone_keys(
         "done": done,
         "source_fields": source_fields,
         "target_fields": target_fields,
+    }
+
+
+def run_indexed_phone_backfill(doctype_index: int = 0) -> dict[str, Any]:
+    """Background-safe, throttled backfill; enable exact lookup only after completion."""
+    doctype_index = max(0, cint(doctype_index))
+    if doctype_index >= len(BACKGROUND_BACKFILL_DOCTYPES):
+        frappe.db.set_single_value(
+            "WA Chat Hub Settings",
+            "enable_indexed_phone_lookup",
+            1,
+        )
+        frappe.db.commit()
+        return {"done": True, "indexed_lookup_enabled": True}
+
+    doctype = BACKGROUND_BACKFILL_DOCTYPES[doctype_index]
+    result = _backfill_phone_keys(
+        doctype=doctype,
+        batch_size=1000,
+        max_batches=1,
+    )
+    next_index = doctype_index + 1 if result.get("done") else doctype_index
+    frappe.enqueue(
+        "wa_chat_hub.maintenance.phone_backfill.run_indexed_phone_backfill",
+        queue="long",
+        timeout=1800,
+        enqueue_after_commit=True,
+        job_id=f"{BACKGROUND_BACKFILL_JOB_ID}_{next_index}",
+        deduplicate=True,
+        doctype_index=next_index,
+    )
+    return {
+        **result,
+        "done": False,
+        "next_doctype_index": next_index,
     }
 
 
