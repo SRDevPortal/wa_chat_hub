@@ -1,0 +1,193 @@
+{
+ "actions": [],
+ "autoname": "autoincrement",
+ "creation": "2026-07-28 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "event_time",
+  "status",
+  "execution_source",
+  "tool",
+  "tool_name",
+  "access_mode",
+  "http_method",
+  "endpoint_url",
+  "duration_ms",
+  "context_section",
+  "conversation",
+  "channel_account",
+  "patient",
+  "crm_lead",
+  "agent_profile",
+  "reference_doctype",
+  "reference_name",
+  "request_json",
+  "response_json",
+  "error",
+  "traceback"
+ ],
+ "fields": [
+  {
+   "default": "Now",
+   "fieldname": "event_time",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Event Time",
+   "read_only": 1
+  },
+  {
+   "default": "Success",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Success\nFailed",
+   "reqd": 1
+  },
+  {
+   "default": "AI",
+   "fieldname": "execution_source",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Execution Source",
+   "options": "AI\nRuntime\nDesk\nSystem"
+  },
+  {
+   "fieldname": "tool",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "MCP Tool",
+   "options": "WA MCP Tool Endpoint"
+  },
+  {
+   "fieldname": "tool_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Tool Name",
+   "reqd": 1
+  },
+  {
+   "default": "Read",
+   "fieldname": "access_mode",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Access Mode",
+   "options": "Read\nWrite"
+  },
+  {
+   "fieldname": "http_method",
+   "fieldtype": "Data",
+   "label": "HTTP Method"
+  },
+  {
+   "fieldname": "endpoint_url",
+   "fieldtype": "Data",
+   "label": "Endpoint URL / Handler"
+  },
+  {
+   "fieldname": "duration_ms",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Duration (ms)"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "context_section",
+   "fieldtype": "Section Break",
+   "label": "Context"
+  },
+  {
+   "fieldname": "conversation",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Conversation",
+   "options": "Chat Conversation"
+  },
+  {
+   "fieldname": "channel_account",
+   "fieldtype": "Link",
+   "label": "Channel Account",
+   "options": "Chat Channel Account"
+  },
+  {
+   "fieldname": "patient",
+   "fieldtype": "Link",
+   "label": "Patient",
+   "options": "Patient"
+  },
+  {
+   "fieldname": "crm_lead",
+   "fieldtype": "Link",
+   "label": "CRM Lead",
+   "options": "CRM Lead"
+  },
+  {
+   "fieldname": "agent_profile",
+   "fieldtype": "Link",
+   "label": "Agent Profile",
+   "options": "WA AI Agent Profile"
+  },
+  {
+   "fieldname": "reference_doctype",
+   "fieldtype": "Link",
+   "label": "Reference DocType",
+   "options": "DocType"
+  },
+  {
+   "fieldname": "reference_name",
+   "fieldtype": "Dynamic Link",
+   "label": "Reference Name",
+   "options": "reference_doctype"
+  },
+  {
+   "fieldname": "request_json",
+   "fieldtype": "Code",
+   "label": "Request JSON",
+   "options": "JSON"
+  },
+  {
+   "fieldname": "response_json",
+   "fieldtype": "Code",
+   "label": "Response JSON",
+   "options": "JSON"
+  },
+  {
+   "fieldname": "error",
+   "fieldtype": "Small Text",
+   "in_list_view": 1,
+   "label": "Error"
+  },
+  {
+   "fieldname": "traceback",
+   "fieldtype": "Code",
+   "label": "Traceback"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-07-28 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "WA Chat Hub",
+ "name": "MCP Event",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "tool_name",
+ "track_changes": 1
+}

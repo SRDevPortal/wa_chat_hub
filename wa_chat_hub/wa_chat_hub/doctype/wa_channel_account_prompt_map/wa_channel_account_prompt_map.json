@@ -9,7 +9,11 @@
   "system_prompt",
   "medical_guardrail_policy",
   "escalation_policy",
-  "multilingual_reply_policy"
+  "multilingual_reply_policy",
+  "mcp_section",
+  "allow_mcp_tools",
+  "max_tool_calls",
+  "mcp_tool_names"
  ],
  "fields": [
   {
@@ -46,6 +50,34 @@
    "fieldname": "multilingual_reply_policy",
    "fieldtype": "Long Text",
    "label": "Multilingual Reply Policy"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "mcp_section",
+   "fieldtype": "Section Break",
+   "label": "Account MCP Tools"
+  },
+  {
+   "default": "0",
+   "description": "Expose the listed MCP tools only when this account prompt row is active.",
+   "fieldname": "allow_mcp_tools",
+   "fieldtype": "Check",
+   "label": "Allow MCP Tools"
+  },
+  {
+   "default": "2",
+   "depends_on": "eval:doc.allow_mcp_tools",
+   "description": "Maximum MCP tool calls allowed for this account prompt row. Runtime still caps this at 5.",
+   "fieldname": "max_tool_calls",
+   "fieldtype": "Int",
+   "label": "Maximum Tool Calls"
+  },
+  {
+   "depends_on": "eval:doc.allow_mcp_tools",
+   "description": "Comma or newline separated WA MCP Tool Endpoint tool_name values, for example get_linked_crm_lead_profile.",
+   "fieldname": "mcp_tool_names",
+   "fieldtype": "Small Text",
+   "label": "Allowed MCP Tool Names"
   }
  ],
  "index_web_pages_for_search": 1,

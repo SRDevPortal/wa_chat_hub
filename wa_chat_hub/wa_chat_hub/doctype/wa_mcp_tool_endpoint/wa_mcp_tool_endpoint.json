@@ -8,11 +8,13 @@
  "field_order": [
   "tool_name",
   "is_active",
+  "access_mode",
   "description",
   "server",
   "endpoint_url",
   "http_method",
-  "parameters_schema"
+  "parameters_schema",
+  "execution_config"
  ],
  "fields": [
   {
@@ -30,6 +32,15 @@
    "fieldtype": "Check",
    "in_list_view": 1,
    "label": "Is Active"
+  },
+  {
+   "default": "Read",
+   "description": "Choose whether this MCP tool is intended only to read data or can write/update data.",
+   "fieldname": "access_mode",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Access Mode",
+   "options": "Read\nWrite"
   },
   {
    "fieldname": "description",
@@ -62,6 +73,13 @@
    "fieldname": "parameters_schema",
    "fieldtype": "Code",
    "label": "Parameters Schema",
+   "options": "JSON"
+  },
+  {
+   "description": "Optional JSON behavior config used by generic MCP handlers. This lets admins change supported MCP behavior from UI without editing code.",
+   "fieldname": "execution_config",
+   "fieldtype": "Code",
+   "label": "Execution Config",
    "options": "JSON"
   }
  ],

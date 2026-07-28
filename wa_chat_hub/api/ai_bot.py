@@ -31,10 +31,15 @@ from wa_chat_hub.patient_verification_flow import (
     clear_pending_patient_request,
     evaluate_patient_verification_gate,
 )
+from wa_chat_hub.mcp.event_log import elapsed_ms as mcp_elapsed_ms
+from wa_chat_hub.mcp.event_log import log_mcp_event, now_ms as mcp_now_ms
 from wa_chat_hub.prompts import (
     build_system_prompt_from_config,
+    get_account_max_tool_calls,
+    get_account_mcp_tool_names,
     get_effective_prompt_config,
     get_multilingual_policy,
+    is_account_mcp_tools_enabled,
 )
 from wa_chat_hub.services import append_message
 from wa_chat_hub.security import (
@@ -475,6 +480,10 @@ def process_message(message_id, skip_batch_wait: bool = False):
     department = conversation_context.get("department")
     set_ai_security_context(channel_account=channel_account)
     prompt_config = get_effective_prompt_config(channel_account)
+    account_mcp_tools = get_account_mcp_tool_names(prompt_config)
+    if is_account_mcp_tools_enabled(prompt_config):
+        route.allowed_tool_names = set(account_mcp_tools)
+        route.max_tool_calls = get_account_max_tool_calls(prompt_config)
 
     media_context = ""
     use_vision_for_image = False
@@ -1708,7 +1717,14 @@ def fetch_mcp_tools(allowed_tool_names=None):
     tools_docs = safe_ai_get_all(
         "WA MCP Tool Endpoint",
         filters={"is_active": 1, "tool_name": ["in", sorted(allowed_tool_names)]},
-        fields=["tool_name", "description", "parameters_schema", "endpoint_url", "http_method"],
+        fields=[
+            "tool_name",
+            "description",
+            "parameters_schema",
+            "endpoint_url",
+            "http_method",
+            "access_mode",
+        ],
     )
     tools = []
     for t in tools_docs:
@@ -1732,6 +1748,7 @@ def fetch_mcp_tools(allowed_tool_names=None):
                 "_meta": {
                     "url": t.endpoint_url,
                     "method": t.http_method,
+                    "access_mode": t.get("access_mode") or "Read",
                 },
             }
         )
@@ -1739,9 +1756,19 @@ def fetch_mcp_tools(allowed_tool_names=None):
 
 
 def execute_mcp_tool(tool_name, arguments_dict, allowed_tool_names=None, tool_context=None):
+    started_ms = mcp_now_ms()
     tools = fetch_mcp_tools(allowed_tool_names)
     tool_meta = next((t["_meta"] for t in tools if t["function"]["name"] == tool_name), None)
     if not tool_meta:
+        log_mcp_event(
+            tool_name=tool_name,
+            status="Failed",
+            execution_source="AI",
+            request_payload=arguments_dict,
+            error=f"Tool {tool_name} not found.",
+            duration_ms=mcp_elapsed_ms(started_ms),
+            tool_context=tool_context or {},
+        )
         return f"Error: Tool {tool_name} not found."
 
     try:
@@ -1762,13 +1789,59 @@ def execute_mcp_tool(tool_name, arguments_dict, allowed_tool_names=None, tool_co
                 resp = requests.get(url, params=arguments_dict, timeout=10)
             resp.raise_for_status()
             if "application/json" in (resp.headers.get("Content-Type") or ""):
-                return json.dumps(resp.json())
-            return resp.text
+                result = resp.json()
+                log_mcp_event(
+                    tool_name=tool_name,
+                    status="Success",
+                    execution_source="AI",
+                    request_payload=arguments_dict,
+                    response_payload=result,
+                    duration_ms=mcp_elapsed_ms(started_ms),
+                    tool_meta=tool_meta,
+                    tool_context=tool_context,
+                )
+                return json.dumps(result)
+            response_text = resp.text
+            log_mcp_event(
+                tool_name=tool_name,
+                status="Success",
+                execution_source="AI",
+                request_payload=arguments_dict,
+                response_payload=response_text,
+                duration_ms=mcp_elapsed_ms(started_ms),
+                tool_meta=tool_meta,
+                tool_context=tool_context,
+            )
+            return response_text
 
         fn = frappe.get_attr(url)
-        res = fn(**arguments_dict)
+        call_arguments = dict(arguments_dict)
+        if url == "wa_chat_hub.mcp.configured.execute_configured_tool":
+            call_arguments["__mcp_tool_name"] = tool_name
+        res = fn(**call_arguments)
+        log_mcp_event(
+            tool_name=tool_name,
+            status="Success",
+            execution_source="AI",
+            request_payload=arguments_dict,
+            response_payload=res,
+            duration_ms=mcp_elapsed_ms(started_ms),
+            tool_meta=tool_meta,
+            tool_context=tool_context,
+        )
         return json.dumps(res, default=json_handler)
     except Exception as e:
+        log_mcp_event(
+            tool_name=tool_name,
+            status="Failed",
+            execution_source="AI",
+            request_payload=arguments_dict,
+            error=str(e),
+            traceback_text=frappe.get_traceback(),
+            duration_ms=mcp_elapsed_ms(started_ms),
+            tool_meta=tool_meta,
+            tool_context=tool_context,
+        )
         return f"Error executing {tool_name}: {str(e)}"
 
 

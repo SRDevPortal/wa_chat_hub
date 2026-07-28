@@ -64,6 +64,7 @@ def _get_admin_link_cards():
                 _shortcut("WA LLM Provider", "WA LLM Provider", icon="cpu"),
                 _shortcut("WA MCP Server", "WA MCP Server", icon="server"),
                 _shortcut("WA MCP Tool Endpoint", "WA MCP Tool Endpoint", icon="tool"),
+                _shortcut("MCP Event", "MCP Event", icon="activity"),
                 _shortcut("WA AI Tool Permission", "WA AI Tool Permission", icon="lock"),
                 _shortcut("Chat AI Suggestion", "Chat AI Suggestion", icon="sparkles"),
                 _shortcut("WA Lead AI Insight", "WA Lead AI Insight", icon="chart"),

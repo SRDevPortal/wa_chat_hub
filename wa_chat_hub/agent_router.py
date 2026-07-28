@@ -85,8 +85,6 @@ def resolve_agent_route(conversation: str | Any) -> AgentRoute:
             department_profile.get("knowledge_bases"), "knowledge_base"
         )
 
-    if (party_type == "Patient" or agent.require_verified_identity) and identity_status != "Verified":
-        route.allowed_tool_names.clear()
     return route
 
 

@@ -18,6 +18,7 @@ PATIENT_CARE_TOOL_NAMES = (
     "get_verified_patient_sales_invoices",
     "get_verified_patient_doctor_certifications",
     "get_verified_patient_shipping_history",
+    "create_verified_patient_draft_encounter",
 )
 
 PATIENT_SHIPPING_HISTORY_TOOL = {
@@ -28,6 +29,7 @@ PATIENT_SHIPPING_HISTORY_TOOL = {
     ),
     "endpoint_url": "wa_chat_hub.mcp.patient_records.get_verified_patient_shipping_history",
     "http_method": "POST",
+    "access_mode": "Read",
     "parameters_schema": {
         "type": "object",
         "properties": {
@@ -40,6 +42,184 @@ PATIENT_SHIPPING_HISTORY_TOOL = {
         },
         "additionalProperties": False,
     },
+}
+
+CRM_LEAD_PROFILE_TOOL = {
+    "tool_name": "get_linked_crm_lead_profile",
+    "description": (
+        "Read allowlisted CRM Lead details and notes only for the CRM Lead linked "
+        "to the current WhatsApp conversation."
+    ),
+    "endpoint_url": "wa_chat_hub.mcp.lead_records.get_linked_crm_lead_profile",
+    "http_method": "POST",
+    "access_mode": "Read",
+    "parameters_schema": {
+        "type": "object",
+        "properties": {
+            "include_notes": {
+                "type": "integer",
+                "enum": [0, 1],
+                "description": "Set to 1 to include recent CRM Lead notes.",
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10,
+                "description": "Maximum number of recent notes to return.",
+            },
+        },
+        "additionalProperties": False,
+    },
+}
+
+DRAFT_ENCOUNTER_EXECUTION_CONFIG = {
+    "action": "insert_doc",
+    "target_doctype": "Patient Encounter",
+    "requires_confirmation_field": "customer_confirmed",
+    "ignore_links": True,
+    "created_by_agent": "WA Draft Encounter MCP",
+    "resolve_patient": {
+        "enabled": True,
+        "create_if_missing": True,
+        "link_to_conversation": True,
+        "company": {"arg": "company", "link_or_default": "Company"},
+        "global_defaults": {
+            "company": {"source": "context", "path": "company"},
+        },
+        "patient_field_values": {
+            "first_name": {
+                "source": "raw_payload",
+                "paths": [
+                    "raw_payload.data.customer.traits.name",
+                    "display_name",
+                ],
+                "fallback_template": "WhatsApp {mobile}",
+            },
+            "patient_name": {
+                "source": "raw_payload",
+                "paths": [
+                    "raw_payload.data.customer.traits.name",
+                    "display_name",
+                ],
+                "fallback_template": "WhatsApp {mobile}",
+            },
+            "mobile": {"source": "context", "path": "mobile"},
+            "status": {"source": "value", "value": "Active"},
+            "sex": {"source": "value", "value": "Male"},
+            "sr_medical_department": {
+                "source": "raw_payload",
+                "paths": [
+                    "raw_payload.data.customer.traits.sr_medical_department",
+                    "detected_department",
+                    "channel_department",
+                ],
+                "doctype": "Medical Department",
+                "fallback": "Diabetology",
+                "use_default_link": True,
+            },
+            "sr_dpt_disease": {
+                "source": "raw_payload",
+                "paths": [
+                    "raw_payload.data.customer.traits.sr_lead_disease",
+                    "raw_payload.data.customer.traits.disease",
+                ],
+            },
+            "created_by_agent": {"source": "context", "path": "created_by_agent"},
+        },
+    },
+    "field_values": {
+        "naming_series": "HLC-ENC-.YYYY.-",
+        "sr_encounter_type": "Followup",
+        "sr_encounter_place": {
+            "arg": "encounter_place",
+            "default": "Online",
+            "allowed": ["Online", "OPD"],
+        },
+        "patient": {"context": "patient"},
+        "patient_name": {"patient_field": "patient_name"},
+        "patient_sex": {"patient_field": "sex"},
+        "patient_age": {"patient_field": "sr_patient_age"},
+        "sr_pe_mobile": {"patient_field": "mobile"},
+        "sr_pe_deptt": {"patient_field": "sr_medical_department"},
+        "sr_pe_age": {"patient_field": "sr_patient_age"},
+        "company": {"context": "company"},
+        "status": "Open",
+        "encounter_date": {"date_arg": "encounter_date"},
+        "encounter_time": {"arg": "encounter_time", "default": "nowtime"},
+        "medical_department": {"patient_field": "sr_medical_department"},
+        "practitioner": {"arg": "practitioner"},
+        "pe_practitioner": {"arg": "practitioner"},
+        "appointment": {"arg": "appointment"},
+        "diet_chart": {"arg": "diet_chart"},
+        "sr_encounter_source": {"link_or_none": "SR Lead Source", "value": "WhatsApp"},
+        "sr_sales_type": {"link_or_none": "SR Sales Type", "value": "Whatsapp"},
+        "sr_complaints": {"fallback_args": ["complaints", "encounter_reason"]},
+        "sr_observations": {"arg": "observations"},
+        "sr_investigations": {"arg": "investigations"},
+        "sr_diagnosis": {"arg": "diagnosis"},
+        "sr_notes": {
+            "template": "Draft encounter created from WhatsApp chat: {encounter_reason}\nCustomer address: {customer_address}"
+        },
+        "sr_pe_instruction": {"arg": "instructions"},
+    },
+    "return_fields": ["docstatus", "status", "encounter_date", "encounter_time"],
+}
+
+PATIENT_DRAFT_ENCOUNTER_TOOL = {
+    "tool_name": "create_verified_patient_draft_encounter",
+    "description": (
+        "Create a draft Patient Encounter for the current WhatsApp chat. If the "
+        "chat is a lead and no patient is linked yet, the MCP creates/reuses a "
+        "minimal patient first. Ask for the customer's address, then use only "
+        "after the customer explicitly confirms."
+    ),
+    "endpoint_url": "wa_chat_hub.mcp.configured.execute_configured_tool",
+    "http_method": "POST",
+    "access_mode": "Write",
+    "parameters_schema": {
+        "type": "object",
+        "properties": {
+            "encounter_reason": {
+                "type": "string",
+                "description": "Short reason or summary for creating the draft encounter.",
+            },
+            "customer_confirmed": {
+                "type": "integer",
+                "enum": [1],
+                "description": "Must be 1 only after the customer explicitly confirms creating the draft encounter.",
+            },
+            "encounter_type": {
+                "type": "string",
+                "enum": ["Followup", "Order", "Appointment"],
+                "description": "Encounter type. Defaults to Followup.",
+            },
+            "encounter_place": {
+                "type": "string",
+                "enum": ["Online", "OPD"],
+                "description": "Encounter place. Defaults to Online.",
+            },
+            "complaints": {"type": "string"},
+            "observations": {"type": "string"},
+            "investigations": {"type": "string"},
+            "diagnosis": {"type": "string"},
+            "notes": {"type": "string"},
+            "instructions": {"type": "string"},
+            "practitioner": {"type": "string"},
+            "appointment": {"type": "string"},
+            "diet_chart": {"type": "string"},
+            "medical_department": {"type": "string"},
+            "company": {"type": "string"},
+            "customer_address": {
+                "type": "string",
+                "description": "Customer's full address collected before creating the draft encounter.",
+            },
+            "encounter_date": {"type": "string", "description": "YYYY-MM-DD date."},
+            "encounter_time": {"type": "string", "description": "HH:MM:SS time."},
+        },
+        "required": ["encounter_reason", "customer_confirmed"],
+        "additionalProperties": False,
+    },
+    "execution_config": DRAFT_ENCOUNTER_EXECUTION_CONFIG,
 }
 
 
@@ -175,6 +355,46 @@ def ensure_patient_shipping_history_tool(commit: bool = True) -> dict:
     }
 
 
+def ensure_crm_lead_account_mcp_tool(commit: bool = True) -> dict:
+    """Create/activate CRM Lead MCP and enable it on active account prompt rows."""
+    if not frappe.db.exists("DocType", "WA MCP Tool Endpoint"):
+        return {"updated": False, "reason": "mcp_tool_endpoint_missing"}
+
+    endpoint_updated = _upsert_crm_lead_profile_endpoint()
+    account_result = _ensure_crm_lead_tool_on_account_prompt_maps()
+
+    if commit:
+        frappe.db.commit()
+
+    return {
+        "updated": bool(endpoint_updated or account_result["updated"]),
+        "tool": CRM_LEAD_PROFILE_TOOL["tool_name"],
+        "endpoint_updated": endpoint_updated,
+        "account_prompt_maps": account_result,
+    }
+
+
+def ensure_patient_draft_encounter_tool(commit: bool = True) -> dict:
+    """Create/activate draft-encounter MCP and allow it in patient-care routing."""
+    if not frappe.db.exists("DocType", "WA MCP Tool Endpoint"):
+        return {"updated": False, "reason": "mcp_tool_endpoint_missing"}
+
+    endpoint_updated = _upsert_patient_draft_encounter_endpoint()
+    agent_result = ensure_patient_care_agent_tools(commit=False)
+    department_result = _ensure_draft_encounter_on_patient_departments()
+
+    if commit:
+        frappe.db.commit()
+
+    return {
+        "updated": bool(endpoint_updated or agent_result.get("updated") or department_result["updated"]),
+        "tool": PATIENT_DRAFT_ENCOUNTER_TOOL["tool_name"],
+        "endpoint_updated": endpoint_updated,
+        "agent": agent_result,
+        "department_profiles": department_result,
+    }
+
+
 def _upsert_shipping_history_endpoint() -> bool:
     tool_name = PATIENT_SHIPPING_HISTORY_TOOL["tool_name"]
     values = {
@@ -211,11 +431,177 @@ def _upsert_shipping_history_endpoint() -> bool:
     return True
 
 
+def _upsert_crm_lead_profile_endpoint() -> bool:
+    tool_name = CRM_LEAD_PROFILE_TOOL["tool_name"]
+    values = {
+        key: value
+        for key, value in CRM_LEAD_PROFILE_TOOL.items()
+        if key != "parameters_schema"
+    }
+    values["parameters_schema"] = json.dumps(
+        CRM_LEAD_PROFILE_TOOL["parameters_schema"],
+        indent=2,
+    )
+
+    if frappe.db.exists("WA MCP Tool Endpoint", tool_name):
+        doc = frappe.get_doc("WA MCP Tool Endpoint", tool_name)
+        changed = False
+        for fieldname, value in values.items():
+            if doc.get(fieldname) != value:
+                doc.set(fieldname, value)
+                changed = True
+        if not doc.is_active:
+            doc.is_active = 1
+            changed = True
+        if changed:
+            doc.save(ignore_permissions=True)
+        return changed
+
+    frappe.get_doc(
+        {
+            "doctype": "WA MCP Tool Endpoint",
+            "is_active": 1,
+            **values,
+        }
+    ).insert(ignore_permissions=True)
+    return True
+
+
+def _upsert_patient_draft_encounter_endpoint() -> bool:
+    tool_name = PATIENT_DRAFT_ENCOUNTER_TOOL["tool_name"]
+    values = {
+        key: value
+        for key, value in PATIENT_DRAFT_ENCOUNTER_TOOL.items()
+        if key not in {"parameters_schema", "execution_config"}
+    }
+    values["parameters_schema"] = json.dumps(
+        PATIENT_DRAFT_ENCOUNTER_TOOL["parameters_schema"],
+        indent=2,
+    )
+    values["execution_config"] = json.dumps(
+        PATIENT_DRAFT_ENCOUNTER_TOOL["execution_config"],
+        indent=2,
+    )
+
+    if frappe.db.exists("WA MCP Tool Endpoint", tool_name):
+        doc = frappe.get_doc("WA MCP Tool Endpoint", tool_name)
+        changed = False
+
+        old_handler = "wa_chat_hub.mcp.patient_records.create_verified_patient_draft_encounter"
+        if doc.get("endpoint_url") in ("", None, old_handler):
+            doc.set("endpoint_url", values["endpoint_url"])
+            changed = True
+
+        for fieldname in ("http_method", "access_mode", "description", "parameters_schema", "execution_config"):
+            value = values.get(fieldname)
+            if not doc.get(fieldname) and value is not None:
+                doc.set(fieldname, value)
+                changed = True
+        if not doc.is_active:
+            doc.is_active = 1
+            changed = True
+        if changed:
+            doc.save(ignore_permissions=True)
+        return changed
+
+    frappe.get_doc(
+        {
+            "doctype": "WA MCP Tool Endpoint",
+            "is_active": 1,
+            **values,
+        }
+    ).insert(ignore_permissions=True)
+    return True
+
+
+def _ensure_crm_lead_tool_on_account_prompt_maps() -> dict:
+    if not frappe.db.exists("DocType", "WA Chat Hub Settings"):
+        return {"updated": False, "reason": "settings_missing", "accounts": []}
+
+    settings = frappe.get_single("WA Chat Hub Settings")
+    tool_name = CRM_LEAD_PROFILE_TOOL["tool_name"]
+    changed = False
+    accounts = []
+
+    for row in settings.get("account_prompt_maps") or []:
+        if not row.get("chat_channel_account") or not row.get("is_active"):
+            continue
+        accounts.append(row.chat_channel_account)
+        if not row.get("allow_mcp_tools"):
+            row.allow_mcp_tools = 1
+            changed = True
+        if not row.get("max_tool_calls"):
+            row.max_tool_calls = 2
+            changed = True
+        existing_tools = {
+            part.strip()
+            for part in str(row.get("mcp_tool_names") or "").replace(",", "\n").splitlines()
+            if part.strip()
+        }
+        if tool_name not in existing_tools:
+            existing_tools.add(tool_name)
+            row.mcp_tool_names = "\n".join(sorted(existing_tools))
+            changed = True
+
+    if changed:
+        settings.save(ignore_permissions=True)
+
+    return {
+        "updated": changed,
+        "tool": tool_name,
+        "accounts": accounts,
+    }
+
+
 def _ensure_shipping_history_on_patient_departments() -> dict:
     if not frappe.db.exists("DocType", "WA AI Department Profile"):
         return {"updated": False, "reason": "department_profile_doctype_missing", "profiles": []}
 
     tool_name = PATIENT_SHIPPING_HISTORY_TOOL["tool_name"]
+    profiles = frappe.get_all(
+        "WA AI Department Profile",
+        filters={"agent_profile": "Patient Care Agent", "is_active": 1},
+        pluck="name",
+        limit_page_length=500,
+    )
+
+    changed = False
+    added = []
+    reactivated = []
+    configured = []
+    for profile_name in profiles:
+        doc = frappe.get_doc("WA AI Department Profile", profile_name)
+        existing_rows = {row.mcp_tool: row for row in (doc.allowed_tools or []) if row.mcp_tool}
+        profile_changed = False
+        row = existing_rows.get(tool_name)
+        if row:
+            if not row.is_active:
+                row.is_active = 1
+                profile_changed = True
+                reactivated.append(profile_name)
+        else:
+            doc.append("allowed_tools", {"mcp_tool": tool_name, "is_active": 1})
+            profile_changed = True
+            added.append(profile_name)
+        if profile_changed:
+            changed = True
+            doc.save(ignore_permissions=True)
+        configured.append(profile_name)
+
+    return {
+        "updated": changed,
+        "tool": tool_name,
+        "profiles": configured,
+        "added": added,
+        "reactivated": reactivated,
+    }
+
+
+def _ensure_draft_encounter_on_patient_departments() -> dict:
+    if not frappe.db.exists("DocType", "WA AI Department Profile"):
+        return {"updated": False, "reason": "department_profile_doctype_missing", "profiles": []}
+
+    tool_name = PATIENT_DRAFT_ENCOUNTER_TOOL["tool_name"]
     profiles = frappe.get_all(
         "WA AI Department Profile",
         filters={"agent_profile": "Patient Care Agent", "is_active": 1},
@@ -407,7 +793,7 @@ def get_department_setup_catalog() -> dict:
     )
     tools = frappe.get_all(
         "WA MCP Tool Endpoint",
-        fields=["name", "tool_name", "description", "is_active"],
+        fields=["name", "tool_name", "description", "is_active", "access_mode"],
         order_by="tool_name asc",
         limit_page_length=500,
     )

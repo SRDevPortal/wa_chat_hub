@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 
 import frappe
@@ -20,6 +21,8 @@ PROMPT_FIELDS = (
     "multilingual_reply_policy",
 )
 
+DEFAULT_ACCOUNT_MCP_MAX_TOOL_CALLS = 2
+
 CONVERSATION_MEMORY_POLICY = """
 Conversation memory rule:
 - Before replying, first use the recent chat history, not only the latest user message.
@@ -38,6 +41,9 @@ def get_effective_prompt_config(channel_account: Optional[str] = None) -> Any:
     assert_ai_doctype_permission("WA Chat Hub Settings", "read")
     settings = frappe.get_single("WA Chat Hub Settings")
     merged = {field: getattr(settings, field, None) for field in PROMPT_FIELDS}
+    merged["account_mcp_tools_enabled"] = False
+    merged["account_mcp_tool_names"] = set()
+    merged["account_max_tool_calls"] = 0
 
     if channel_account:
         for row in settings.get("account_prompt_maps") or []:
@@ -46,6 +52,21 @@ def get_effective_prompt_config(channel_account: Optional[str] = None) -> Any:
                     value = (getattr(row, field, None) or "").strip()
                     if value:
                         merged[field] = value
+                if cint(getattr(row, "allow_mcp_tools", 0)):
+                    merged["account_mcp_tools_enabled"] = True
+                    merged["account_mcp_tool_names"] = _parse_mcp_tool_names(
+                        getattr(row, "mcp_tool_names", None)
+                    )
+                    merged["account_max_tool_calls"] = max(
+                        0,
+                        min(
+                            5,
+                            cint(
+                                getattr(row, "max_tool_calls", 0)
+                                or DEFAULT_ACCOUNT_MCP_MAX_TOOL_CALLS
+                            ),
+                        ),
+                    )
                 break
 
     return SimpleNamespace(**merged)
@@ -65,6 +86,22 @@ def get_multilingual_policy(config: Any, settings) -> str:
     if cint(getattr(settings, "enable_multilingual_replies", 0)):
         return (getattr(config, "multilingual_reply_policy", None) or "").strip()
     return ""
+
+
+def get_account_mcp_tool_names(config: Any) -> set[str]:
+    return {
+        str(tool_name).strip()
+        for tool_name in (getattr(config, "account_mcp_tool_names", None) or set())
+        if str(tool_name).strip()
+    }
+
+
+def is_account_mcp_tools_enabled(config: Any) -> bool:
+    return bool(cint(getattr(config, "account_mcp_tools_enabled", 0)))
+
+
+def get_account_max_tool_calls(config: Any) -> int:
+    return max(0, min(5, cint(getattr(config, "account_max_tool_calls", 0) or 0)))
 
 
 def get_conversation_crm_lead(conversation: str | Any) -> Optional[str]:
@@ -131,3 +168,16 @@ def _resolve_primary_crm_lead(lead_name: str | None) -> Optional[str]:
         if primary and safe_ai_exists("CRM Lead", primary):
             return primary
     return lead_name
+
+
+def _parse_mcp_tool_names(value: str | None) -> set[str]:
+    names = {
+        part.strip()
+        for part in re.split(r"[\s,]+", str(value or ""))
+        if part.strip()
+    }
+    return {
+        name
+        for name in names
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
+    }
