@@ -14,6 +14,9 @@ from wa_chat_hub.security import safe_ai_get_all, safe_ai_get_doc, set_service_u
 from wa_chat_hub.services import append_message
 
 
+ROUTABLE_CONVERSATION_STATUSES = ("Open", "Pending", "Resolved")
+
+
 def send_patient_template(
     *,
     patient: str,
@@ -42,6 +45,7 @@ def send_patient_template(
             patient_doc,
             fallback_channel_account=cstr(fallback_channel_account).strip() or None,
         )
+        frappe.db.commit()
         conversation = route["conversation"]
         channel_account = route["channel_account"]
         account = safe_ai_get_doc("Chat Channel Account", channel_account)
@@ -159,13 +163,15 @@ def find_existing_patient_route(patient: str) -> dict[str, Any] | None:
     filters_list = []
     conversation_meta = frappe.get_meta("Chat Conversation")
     if conversation_meta.has_field("linked_patient"):
-        filters_list.append({"linked_patient": patient, "status": ["!=", "Closed"]})
+        filters_list.append(
+            {"linked_patient": patient, "status": ["in", ROUTABLE_CONVERSATION_STATUSES]}
+        )
     if conversation_meta.has_field("linked_reference_doctype"):
         filters_list.append(
             {
                 "linked_reference_doctype": "Patient",
                 "linked_reference_name": patient,
-                "status": ["!=", "Closed"],
+                "status": ["in", ROUTABLE_CONVERSATION_STATUSES],
             }
         )
 
@@ -175,6 +181,7 @@ def find_existing_patient_route(patient: str) -> dict[str, Any] | None:
             filters=filters,
             fields=["name", "channel_account", "contact"],
             order_by="modified desc",
+            limit_start=0,
             limit_page_length=1,
         )
         if not rows:

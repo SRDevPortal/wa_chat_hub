@@ -13,6 +13,7 @@ class TestAutomatedPatientTemplate(FrappeTestCase):
         patient = frappe._dict(name="PAT-0001")
         account = frappe._dict(name="Interakt Test", is_active=1, channel_type="Interakt")
         contact = frappe._dict(name="CONTACT-0001", phone_number="919876543210")
+        call_order = []
 
         def get_doc(doctype, name):
             return {
@@ -35,11 +36,14 @@ class TestAutomatedPatientTemplate(FrappeTestCase):
             ),
             patch(
                 "wa_chat_hub.automation.send_interakt_template_message",
-                return_value={
-                    "sent": True,
-                    "delivery_status": "Sent",
-                    "provider_message_id": "MSG-0001",
-                },
+                side_effect=lambda *args: (
+                    call_order.append("provider")
+                    or {
+                        "sent": True,
+                        "delivery_status": "Sent",
+                        "provider_message_id": "MSG-0001",
+                    }
+                ),
             ) as send_template,
             patch(
                 "wa_chat_hub.automation.resolve_approved_template",
@@ -49,6 +53,10 @@ class TestAutomatedPatientTemplate(FrappeTestCase):
                 "wa_chat_hub.automation.append_message",
                 return_value={"message": "CHAT-MSG-0001"},
             ) as append_message,
+            patch(
+                "wa_chat_hub.automation.frappe.db.commit",
+                side_effect=lambda: call_order.append("commit"),
+            ) as commit,
             patch("wa_chat_hub.automation.frappe.set_user"),
         ):
             result = send_patient_template(
@@ -65,6 +73,8 @@ class TestAutomatedPatientTemplate(FrappeTestCase):
         self.assertEqual(result["provider_message_id"], "MSG-0001")
         self.assertEqual(result["routing_source"], "Department Map")
         self.assertEqual(result["channel_account"], "Interakt Test")
+        commit.assert_called_once()
+        self.assertEqual(call_order, ["commit", "provider"])
         self.assertEqual(
             send_template.call_args.args[1]["template_name"],
             "order_picked_up",
