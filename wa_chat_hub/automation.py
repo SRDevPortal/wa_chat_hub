@@ -36,7 +36,7 @@ def send_patient_template(
 
     original_user = frappe.session.user
     try:
-        set_service_user_context(operation="shipment_whatsapp_template")
+        set_service_user_context(operation="patient_notification_template")
         patient_doc = safe_ai_get_doc("Patient", patient)
         route = resolve_patient_route(
             patient_doc,
@@ -49,7 +49,7 @@ def send_patient_template(
             frappe.throw(_("WhatsApp channel account {0} is disabled.").format(channel_account))
         if account.channel_type != "Interakt":
             frappe.throw(
-                _("Automated shipment templates require an Interakt channel account; {0} uses {1}.").format(
+                _("Automated patient templates require an Interakt channel account; {0} uses {1}.").format(
                     channel_account,
                     account.channel_type,
                 )
@@ -147,7 +147,7 @@ def resolve_patient_route(patient_doc, fallback_channel_account: str | None = No
             patient_doc,
             fallback_channel_account,
         )
-        route["routing_source"] = "Shipment Settings Fallback"
+        route["routing_source"] = "Configured Fallback"
         return route
 
     if mapping_error:

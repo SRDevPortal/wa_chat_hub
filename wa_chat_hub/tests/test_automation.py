@@ -193,7 +193,7 @@ class TestAutomatedPatientTemplate(FrappeTestCase):
         self.assertEqual(result["routing_source"], "Department Map")
         self.assertEqual(create_conversation.call_args.args[1], "Testing Interakt")
 
-    def test_missing_map_uses_shipment_settings_fallback(self):
+    def test_missing_map_uses_configured_fallback(self):
         patient = frappe._dict(name="PAT-0001")
         with (
             patch("wa_chat_hub.automation.find_existing_patient_route", return_value=None),
@@ -212,10 +212,10 @@ class TestAutomatedPatientTemplate(FrappeTestCase):
         ):
             result = resolve_patient_route(patient, fallback_channel_account="Fallback Interakt")
 
-        self.assertEqual(result["routing_source"], "Shipment Settings Fallback")
+        self.assertEqual(result["routing_source"], "Configured Fallback")
         self.assertEqual(create_conversation.call_args.args[1], "Fallback Interakt")
 
-    def test_missing_default_map_uses_shipment_settings_fallback(self):
+    def test_missing_default_map_uses_configured_fallback(self):
         patient = frappe._dict(name="PAT-0001")
         with (
             patch("wa_chat_hub.automation.find_existing_patient_route", return_value=None),
@@ -236,7 +236,7 @@ class TestAutomatedPatientTemplate(FrappeTestCase):
         ):
             result = resolve_patient_route(patient, fallback_channel_account="Fallback Interakt")
 
-        self.assertEqual(result["routing_source"], "Shipment Settings Fallback")
+        self.assertEqual(result["routing_source"], "Configured Fallback")
         self.assertEqual(create_conversation.call_args.args[1], "Fallback Interakt")
 
     def test_invalid_mapping_error_is_not_hidden_by_fallback(self):
