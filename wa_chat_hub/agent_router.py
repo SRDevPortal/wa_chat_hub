@@ -85,6 +85,9 @@ def resolve_agent_route(conversation: str | Any) -> AgentRoute:
             department_profile.get("knowledge_bases"), "knowledge_base"
         )
 
+    if agent.get("require_verified_identity") and identity_status != "Verified":
+        route.allowed_tool_names.clear()
+
     return route
 
 
@@ -104,14 +107,12 @@ def _identity_verification_prompt(route: AgentRoute) -> str:
         return ""
     if route.identity_status != "Verified":
         return (
-            "IDENTITY VERIFICATION RULES (mandatory): Ask only for the patient's "
-            "registered 10-digit mobile number. Do not ask for full name, date of "
-            "birth, email, address, patient ID, or any other identity detail. "
-            "Verification is performed immediately in this chat when the customer "
-            "sends the matching registered number. Never say that verification is "
-            "being processed, that the customer must wait, or that you will update "
-            "them later. If the latest message does not contain the number, ask for "
-            "only the registered 10-digit mobile number."
+            "IDENTITY VERIFICATION RULES (mandatory): Do not ask the customer for "
+            "a mobile number, full name, date of birth, email, address, patient ID, "
+            "or any other identity detail. Immediately call verify_patient_identity "
+            "without arguments. Confirm success only when the tool returns "
+            "verified=true. On failure, disclose no patient information and escalate "
+            "to a human for secure verification."
         )
     return (
         "IDENTITY VERIFIED: Do not ask for identity details again. If the customer "

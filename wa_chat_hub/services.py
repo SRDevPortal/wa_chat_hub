@@ -603,17 +603,6 @@ def _run_append_message_followups(payload: Dict[str, Any], result: Dict[str, str
                 "WA Chat Hub Inbound Link Failed",
             )
 
-    if direction == "Inbound" and conversation and message_name:
-        try:
-            from wa_chat_hub.identity import verify_patient_identity_from_inbound_message
-
-            verify_patient_identity_from_inbound_message(conversation, message_name)
-        except Exception:
-            frappe.log_error(
-                frappe.get_traceback(),
-                "WA Chat Hub Patient Verification Failed",
-            )
-
     attachment_file = None
     if message:
         try:

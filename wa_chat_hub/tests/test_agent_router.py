@@ -76,12 +76,12 @@ class TestAgentRouter(TestCase):
 
     @patch("wa_chat_hub.agent_router._department_profile", return_value=None)
     @patch("wa_chat_hub.agent_router._default_agent")
-    def test_verification_prompt_requires_only_mobile_and_no_waiting(self, default_agent, _department):
+    def test_verification_prompt_calls_zero_input_tool_without_questions(self, default_agent, _department):
         default_agent.return_value = _agent(agent_type="Patient Verification")
         prompt = build_agent_prompt(resolve_agent_route(_conversation()))
-        self.assertIn("registered 10-digit mobile number", prompt)
-        self.assertIn("Do not ask for full name, date of birth", prompt)
-        self.assertIn("Never say that verification is being processed", prompt)
+        self.assertIn("Do not ask the customer for a mobile number", prompt)
+        self.assertIn("call verify_patient_identity without arguments", prompt)
+        self.assertIn("verified=true", prompt)
 
     @patch("wa_chat_hub.agent_router._department_profile", return_value=None)
     @patch("wa_chat_hub.agent_router._default_agent")

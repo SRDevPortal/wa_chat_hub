@@ -25,12 +25,7 @@ from wa_chat_hub.ai.delivery_status import build_delivery_status_reply, is_deliv
 from wa_chat_hub.ai.service import create_ai_suggestion
 from wa_chat_hub.api.vector_search import search_knowledge_base
 from wa_chat_hub.agent_router import build_agent_prompt, persist_agent_route, resolve_agent_route
-from wa_chat_hub.identity import verify_patient_identity_from_inbound_message
 from wa_chat_hub.outbound import send_outbound_message
-from wa_chat_hub.patient_verification_flow import (
-    clear_pending_patient_request,
-    evaluate_patient_verification_gate,
-)
 from wa_chat_hub.mcp.event_log import elapsed_ms as mcp_elapsed_ms
 from wa_chat_hub.mcp.event_log import log_mcp_event, now_ms as mcp_now_ms
 from wa_chat_hub.prompts import (
@@ -393,53 +388,11 @@ def process_message(message_id, skip_batch_wait: bool = False):
     body_text = str(msg_doc.body or "").strip()
     content_type = str(msg_doc.content_type or "Text").title()
     media_url = str(msg_doc.media_url or "").strip()
-    try:
-        verification_result = verify_patient_identity_from_inbound_message(
-            conversation,
-            str(message_id),
-        )
-        if verification_result.get("verified"):
-            _log_ai_timing(
-                "patient_identity_verified",
-                message=message_id,
-                conversation=conversation,
-                patient=verification_result.get("patient"),
-                reason=verification_result.get("reason"),
-            )
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "WA AI Patient Identity Verification Failed")
-
     route = resolve_agent_route(conversation)
     persist_agent_route(conversation, route)
     frappe.db.commit()
     if route.auto_reply_mode:
         settings.autopilot_mode = route.auto_reply_mode
-
-    verification_gate = evaluate_patient_verification_gate(
-        conversation,
-        str(message_id),
-        body_text,
-    )
-    pending_patient_request = verification_gate.pending_request
-    if verification_gate.handled:
-        mode = (
-            _deliver_or_draft_ai_reply(
-                conversation,
-                verification_gate.response,
-                settings,
-                message_id,
-            )
-            or "duplicate_skip"
-        )
-        _log_ai_timing(
-            "total_done",
-            message=message_id,
-            conversation=conversation,
-            mode=f"patient_verification_{mode}",
-            verification_reason=verification_gate.reason,
-            total_sec=elapsed(total_started),
-        )
-        return
 
     if is_delivery_status_query(body_text):
         result = build_delivery_status_reply(conversation, body_text)
@@ -505,11 +458,7 @@ def process_message(message_id, skip_batch_wait: bool = False):
             frappe.log_error(frappe.get_traceback(), "WA AI Recent Attachment Context Failed")
             media_context = ""
 
-    last_user_query = (
-        pending_patient_request
-        or _meaningful_body(body_text, content_type)
-        or media_context[:500]
-    )
+    last_user_query = _meaningful_body(body_text, content_type) or media_context[:500]
 
     agent_prompt = build_agent_prompt(route)
     if route.agent_profile and agent_prompt:
@@ -564,13 +513,6 @@ def process_message(message_id, skip_batch_wait: bool = False):
         system_prompt = f"{system_prompt}\n\n{multilingual_policy}"
 
     latest_user_text = _build_latest_user_turn(msg_doc, media_context, use_vision_for_image)
-    if pending_patient_request:
-        latest_user_text = (
-            "The customer's identity has just been verified. Briefly confirm successful "
-            "verification, then immediately handle this pending request from the same "
-            f"conversation: {pending_patient_request}"
-        )
-
     forced_patient_context, forced_patient_tools = build_forced_patient_mcp_context(
         route,
         conversation,
@@ -689,9 +631,6 @@ def process_message(message_id, skip_batch_wait: bool = False):
                     total_sec=elapsed(total_started),
                 )
                 return
-            if pending_patient_request:
-                clear_pending_patient_request(conversation)
-
             _log_ai_timing(
                 "total_done",
                 message=message_id,

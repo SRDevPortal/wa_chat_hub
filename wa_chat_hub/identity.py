@@ -171,6 +171,59 @@ def verify_patient_identity_from_inbound_message(
     }
 
 
+def verify_patient_identity_by_agent(
+    *,
+    patient: str,
+    conversation: str,
+) -> dict[str, Any]:
+    """Match the current chat number to the linked Patient's registered number."""
+    if not conversation or not frappe.db.exists("Chat Conversation", conversation):
+        frappe.throw("Chat Conversation was not found.", frappe.PermissionError)
+
+    convo = frappe.get_doc("Chat Conversation", conversation)
+    linked_patient, _source = _trusted_patient(
+        convo,
+        None,
+        getattr(convo, "linked_crm_lead", None),
+    )
+    if not linked_patient or linked_patient != patient:
+        frappe.throw(
+            "The patient does not match the conversation identity.",
+            frappe.PermissionError,
+        )
+
+    chat_phone = _normalized_phone(
+        frappe.db.get_value("Chat Contact", convo.contact, "phone_number")
+        if getattr(convo, "contact", None)
+        else None
+    )
+    if not chat_phone:
+        return {"verified": False, "reason": "chat_phone_missing"}
+
+    patient_phone_field = _matching_patient_phone_field(patient, chat_phone)
+    if not patient_phone_field:
+        return {"verified": False, "reason": "patient_phone_mismatch"}
+
+    identity = reconcile_conversation_identity(
+        conversation,
+        patient=patient,
+        source="patient_verification_agent",
+        verified=True,
+    )
+    from wa_chat_hub.agent_router import persist_agent_route, resolve_agent_route
+
+    route = resolve_agent_route(conversation)
+    persist_agent_route(conversation, route)
+    return {
+        "verified": True,
+        "reason": "chat_patient_phone_match",
+        "patient": patient,
+        "patient_phone_field": patient_phone_field,
+        "identity": identity,
+        "agent_profile": route.agent_profile,
+    }
+
+
 def _phones_from_text(text: str | None) -> set[str]:
     phones: set[str] = set()
     for candidate in PHONE_CANDIDATE_PATTERN.findall(str(text or "")):

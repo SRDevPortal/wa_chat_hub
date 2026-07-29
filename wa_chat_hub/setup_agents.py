@@ -7,7 +7,7 @@ import frappe
 
 PATIENT_AGENT_PROMPT = """You are the clinic's Patient Care WhatsApp agent. Help verified patients with operational questions and approved care instructions using only the supplied records and knowledge. Never invent patient facts, diagnose a new condition, or change medication or dosage. If information is unavailable or clinical judgment is required, hand the conversation to the configured care team."""
 
-VERIFICATION_AGENT_PROMPT = """You are the clinic's Patient Verification WhatsApp agent. Help with general clinic information and guide the contact through the approved identity-verification process. Do not reveal, confirm, or infer any patient record, appointment, prescription, encounter, payment, or order information until identity is verified. Escalate ambiguous or shared-number cases to a human."""
+VERIFICATION_AGENT_PROMPT = """You are the clinic's Patient Verification WhatsApp agent. You alone manage the verification conversation; there are no hardcoded keyword replies. Do not ask the customer for a mobile number or any other identity detail. Immediately call verify_patient_identity without arguments. The tool securely compares the current WhatsApp Chat Contact number with the linked Patient's registered number. Confirm verification only when the tool returns verified=true. If it fails, do not disclose the reason or any patient information; escalate the conversation to a human for secure verification. Never reveal, confirm, or infer any patient record, appointment, prescription, encounter, payment, or order information before successful verification."""
 
 PATIENT_GUARDRAILS = """Never expose one patient's information to another contact. Do not provide diagnosis, medicine changes, dosage changes, or emergency assessment. Urgent symptoms, self-harm language, severe deterioration, adverse medicine reactions, and post-procedure complications require the approved safety response and immediate human escalation."""
 
@@ -20,6 +20,22 @@ PATIENT_CARE_TOOL_NAMES = (
     "get_verified_patient_shipping_history",
     "create_verified_patient_draft_encounter",
 )
+
+PATIENT_VERIFICATION_TOOL = {
+    "tool_name": "verify_patient_identity",
+    "description": (
+        "Verify the current conversation by matching its WhatsApp Chat Contact "
+        "number with the linked Patient's registered mobile or phone."
+    ),
+    "endpoint_url": "wa_chat_hub.identity.verify_patient_identity_by_agent",
+    "http_method": "POST",
+    "access_mode": "Write",
+    "parameters_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": False,
+    },
+}
 
 PATIENT_SHIPPING_HISTORY_TOOL = {
     "tool_name": "get_verified_patient_shipping_history",
@@ -244,8 +260,8 @@ def ensure_default_agent_profiles() -> int:
             "medical_guardrail_policy": PATIENT_GUARDRAILS,
             "escalation_policy": "Escalate identity ambiguity and shared-number cases to a human without disclosing records.",
             "auto_reply_mode": "Suggest Only",
-            "max_tool_calls": 0,
-            "require_verified_identity": 1,
+            "max_tool_calls": 1,
+            "require_verified_identity": 0,
         },
     )
     created = 0
@@ -263,7 +279,80 @@ def ensure_default_agent_profiles() -> int:
         doc.insert(ignore_permissions=True)
         created += 1
     ensure_patient_care_agent_tools(commit=False)
+    ensure_verification_agent_tool(commit=False)
     return created
+
+
+def ensure_verification_agent_tool(commit: bool = True) -> dict:
+    """Create the verification MCP and expose it only to the verification agent."""
+    required_doctypes = ("WA AI Agent Profile", "WA AI Agent Tool", "WA MCP Tool Endpoint")
+    if not all(frappe.db.exists("DocType", doctype) for doctype in required_doctypes):
+        return {"updated": False, "reason": "required_doctype_missing"}
+
+    tool_name = PATIENT_VERIFICATION_TOOL["tool_name"]
+    values = {
+        key: value
+        for key, value in PATIENT_VERIFICATION_TOOL.items()
+        if key != "parameters_schema"
+    }
+    values["parameters_schema"] = json.dumps(
+        PATIENT_VERIFICATION_TOOL["parameters_schema"],
+        indent=2,
+    )
+
+    changed = False
+    if frappe.db.exists("WA MCP Tool Endpoint", tool_name):
+        endpoint = frappe.get_doc("WA MCP Tool Endpoint", tool_name)
+        for fieldname, value in values.items():
+            if endpoint.get(fieldname) != value:
+                endpoint.set(fieldname, value)
+                changed = True
+        if not endpoint.is_active:
+            endpoint.is_active = 1
+            changed = True
+        if changed:
+            endpoint.save(ignore_permissions=True)
+    else:
+        frappe.get_doc(
+            {"doctype": "WA MCP Tool Endpoint", "is_active": 1, **values}
+        ).insert(ignore_permissions=True)
+        changed = True
+
+    profile_name = frappe.db.get_value(
+        "WA AI Agent Profile",
+        {"agent_type": "Patient Verification", "is_default": 1, "is_active": 1},
+        "name",
+    )
+    if profile_name:
+        profile = frappe.get_doc("WA AI Agent Profile", profile_name)
+        profile_changed = False
+        if int(profile.max_tool_calls or 0) < 1:
+            profile.max_tool_calls = 1
+            profile_changed = True
+        if profile.get("require_verified_identity"):
+            profile.require_verified_identity = 0
+            profile_changed = True
+        if profile.system_prompt != VERIFICATION_AGENT_PROMPT:
+            profile.system_prompt = VERIFICATION_AGENT_PROMPT
+            profile_changed = True
+        tool_row = next(
+            (row for row in (profile.allowed_tools or []) if row.mcp_tool == tool_name),
+            None,
+        )
+        if tool_row:
+            if not tool_row.is_active:
+                tool_row.is_active = 1
+                profile_changed = True
+        else:
+            profile.append("allowed_tools", {"mcp_tool": tool_name, "is_active": 1})
+            profile_changed = True
+        if profile_changed:
+            profile.save(ignore_permissions=True)
+            changed = True
+
+    if commit:
+        frappe.db.commit()
+    return {"updated": changed, "tool": tool_name, "agent_profile": profile_name}
 
 
 def ensure_patient_care_agent_tools(commit: bool = True) -> dict:
