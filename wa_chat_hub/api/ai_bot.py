@@ -60,106 +60,6 @@ AUTOPILOT_MEDIA_BURST_GAP_SECONDS = 90
 AUTOPILOT_MEDIA_SETTLE_SECONDS = 5
 LOW_CONTEXT_INPUT_CHAR_BUDGET = 6500
 LOW_CONTEXT_SYSTEM_CHAR_BUDGET = 4200
-MAX_FORCED_PATIENT_MCP_CONTEXT_CHARS = 8000
-
-PATIENT_MCP_INTENT_RULES = (
-    (
-        "shipping_history",
-        (
-            "shipping",
-            "shipment",
-            "shipping history",
-            "tracking",
-            "track order",
-            "awb",
-            "courier",
-            "delivery",
-            "delivery status",
-            "order status",
-            "dispatch",
-            "parcel",
-            "shipkia",
-        ),
-        ("get_verified_patient_shipping_history",),
-    ),
-    (
-        "medical_history",
-        (
-            "medical history",
-            "clinical history",
-            "history",
-            "encounter",
-            "encounters",
-            "treatment history",
-            "record",
-            "records",
-            "meri medical",
-            "meri clinical",
-            "medical histry",
-            "clinical histry",
-            "case history",
-        ),
-        (
-            "get_verified_patient_profile",
-            "get_verified_patient_encounters",
-            "get_verified_patient_diet_charts",
-        ),
-    ),
-    (
-        "diet_chart",
-        (
-            "diet",
-            "diet chart",
-            "food",
-            "allowed food",
-            "restricted food",
-            "khana",
-            "parhej",
-        ),
-        ("get_verified_patient_diet_charts",),
-    ),
-    (
-        "invoice_order",
-        (
-            "invoice",
-            "bill",
-            "billing",
-            "payment",
-            "paid",
-            "outstanding",
-            "order",
-            "order detail",
-            "order details",
-            "purchase",
-        ),
-        ("get_verified_patient_sales_invoices",),
-    ),
-    (
-        "doctor_certification",
-        (
-            "doctor",
-            "practitioner",
-            "certificate",
-            "certification",
-            "qualification",
-            "registration",
-        ),
-        ("get_verified_patient_doctor_certifications",),
-    ),
-    (
-        "profile",
-        (
-            "my profile",
-            "patient profile",
-            "my details",
-            "patient details",
-            "registered details",
-        ),
-        ("get_verified_patient_profile",),
-    ),
-)
-
-
 def _log_ai_timing(event: str, **fields) -> None:
     task_log("ai", event, **fields)
 
@@ -391,6 +291,22 @@ def process_message(message_id, skip_batch_wait: bool = False):
     route = resolve_agent_route(conversation)
     persist_agent_route(conversation, route)
     frappe.db.commit()
+
+    route, verification_can_continue = _preverify_matched_patient_route(
+        conversation,
+        route,
+        message_id=message_id,
+    )
+    if not verification_can_continue:
+        _log_ai_timing(
+            "skip",
+            message=message_id,
+            conversation=conversation,
+            reason="patient_verification_failed_closed",
+            total_sec=elapsed(total_started),
+        )
+        return
+
     if route.auto_reply_mode:
         settings.autopilot_mode = route.auto_reply_mode
 
@@ -435,8 +351,11 @@ def process_message(message_id, skip_batch_wait: bool = False):
     prompt_config = get_effective_prompt_config(channel_account)
     account_mcp_tools = get_account_mcp_tool_names(prompt_config)
     if is_account_mcp_tools_enabled(prompt_config):
-        route.allowed_tool_names = set(account_mcp_tools)
-        route.max_tool_calls = get_account_max_tool_calls(prompt_config)
+        _apply_account_mcp_tool_override(
+            route,
+            account_mcp_tools,
+            get_account_max_tool_calls(prompt_config),
+        )
 
     media_context = ""
     use_vision_for_image = False
@@ -513,20 +432,6 @@ def process_message(message_id, skip_batch_wait: bool = False):
         system_prompt = f"{system_prompt}\n\n{multilingual_policy}"
 
     latest_user_text = _build_latest_user_turn(msg_doc, media_context, use_vision_for_image)
-    forced_patient_context, forced_patient_tools = build_forced_patient_mcp_context(
-        route,
-        conversation,
-        latest_user_text or last_user_query,
-        allowed_tool_names=route.allowed_tool_names,
-    )
-    if forced_patient_context:
-        system_prompt = f"{system_prompt}\n\n{forced_patient_context}"
-        _log_ai_timing(
-            "forced_patient_mcp_context",
-            message=message_id,
-            conversation=conversation,
-            tools=",".join(forced_patient_tools),
-        )
 
     current_inbound = None
     if use_vision_for_image:
@@ -669,6 +574,90 @@ def process_message(message_id, skip_batch_wait: bool = False):
 
 def _should_auto_send(settings) -> bool:
     return (settings.autopilot_mode or "") == "Limited Auto Reply"
+
+
+def _apply_account_mcp_tool_override(
+    route,
+    account_mcp_tools,
+    account_max_tool_calls: int,
+) -> None:
+    """Apply account tools without stripping record tools from verified Patients."""
+    account_tools = {
+        str(tool_name).strip()
+        for tool_name in (account_mcp_tools or set())
+        if str(tool_name).strip()
+    }
+    account_limit = max(0, min(5, int(account_max_tool_calls or 0)))
+
+    if route.party_type == "Patient" and route.identity_status == "Verified":
+        route.allowed_tool_names |= account_tools
+        route.max_tool_calls = max(int(route.max_tool_calls or 0), account_limit)
+        return
+
+    # Preserve the established account-level replacement behavior for every
+    # other route (Lead, General, Unknown, Matched, Ambiguous, and Unverified).
+    route.allowed_tool_names = account_tools
+    route.max_tool_calls = account_limit
+
+
+def _preverify_matched_patient_route(
+    conversation: str,
+    route,
+    *,
+    message_id: str | None = None,
+):
+    """Verify a uniquely matched Patient before any LLM can produce a reply."""
+    if route.party_type != "Patient" or route.identity_status != "Matched":
+        return route, True
+
+    result = {}
+    try:
+        if not route.patient:
+            result = {"verified": False, "reason": "linked_patient_missing"}
+        else:
+            from wa_chat_hub.identity import verify_patient_identity_by_agent
+
+            result = verify_patient_identity_by_agent(
+                patient=route.patient,
+                conversation=conversation,
+            )
+    except Exception:
+        result = {"verified": False, "reason": "verification_error"}
+        frappe.log_error(
+            frappe.get_traceback(),
+            "WA Chat Hub Patient Pre-verification Failed",
+        )
+
+    if not result.get("verified"):
+        reason = str(result.get("reason") or "verification_failed")
+        create_ai_suggestion(
+            conversation,
+            "Support Ticket Draft",
+            "Verification failed. Human review required.",
+        )
+        task_log(
+            "patient_verification",
+            "failed_closed",
+            conversation=conversation,
+            message=message_id,
+            patient=route.patient,
+            reason=reason,
+        )
+        frappe.db.commit()
+        return route, False
+
+    verified_route = resolve_agent_route(conversation)
+    persist_agent_route(conversation, verified_route)
+    task_log(
+        "patient_verification",
+        "verified",
+        conversation=conversation,
+        message=message_id,
+        patient=verified_route.patient,
+        agent_profile=verified_route.agent_profile,
+    )
+    frappe.db.commit()
+    return verified_route, True
 
 
 def _deliver_or_draft_ai_reply(
@@ -1563,83 +1552,6 @@ def call_provider(
         )
 
     raise Exception(f"Unsupported provider type {provider.provider_type}")
-
-
-def build_forced_patient_mcp_context(
-    route,
-    conversation: str,
-    latest_user_text: str | None,
-    *,
-    allowed_tool_names=None,
-) -> tuple[str, list[str]]:
-    """Fetch patient MCP data in code for verified patient-record requests."""
-    if not _should_force_patient_mcp(route):
-        return "", []
-
-    selected_tools = _forced_patient_mcp_tools(latest_user_text, allowed_tool_names)
-    if not selected_tools:
-        return "", []
-
-    blocks = []
-    executed_tools = []
-    tool_context = {
-        "conversation": conversation,
-        "patient": route.patient,
-        "agent_profile": route.agent_profile,
-        "department": route.department,
-        "identity_status": route.identity_status,
-    }
-    for tool_name in selected_tools:
-        tool_res = execute_mcp_tool(
-            tool_name,
-            {},
-            allowed_tool_names=allowed_tool_names,
-            tool_context=tool_context,
-        )
-        executed_tools.append(tool_name)
-        blocks.append(f"--- {tool_name} ---\n{str(tool_res or '').strip()}")
-
-    if not blocks:
-        return "", []
-
-    context = (
-        "MANDATORY VERIFIED PATIENT RECORD CONTEXT:\n"
-        "The backend has already fetched the approved MCP patient-record tools for "
-        "this verified patient request. Use this data as the source of truth. Do not "
-        "claim records are missing unless the relevant fetched JSON is empty. If a "
-        "requested record type is not present in the fetched data, say that specific "
-        "record type was not found; do not say you could not retrieve data.\n\n"
-        + "\n\n".join(blocks)
-    )
-    return context[:MAX_FORCED_PATIENT_MCP_CONTEXT_CHARS], executed_tools
-
-
-def _should_force_patient_mcp(route) -> bool:
-    return bool(
-        route
-        and route.party_type == "Patient"
-        and route.identity_status == "Verified"
-        and route.patient
-        and route.agent_profile == "Patient Care Agent"
-    )
-
-
-def _forced_patient_mcp_tools(latest_user_text: str | None, allowed_tool_names=None) -> list[str]:
-    text = str(latest_user_text or "").lower()
-    if not text.strip():
-        return []
-
-    allowed = {str(name).strip() for name in (allowed_tool_names or []) if name}
-    selected = []
-    for _intent, keywords, tools in PATIENT_MCP_INTENT_RULES:
-        if not any(keyword in text for keyword in keywords):
-            continue
-        for tool_name in tools:
-            if allowed and tool_name not in allowed:
-                continue
-            if tool_name not in selected:
-                selected.append(tool_name)
-    return selected
 
 
 def fetch_mcp_tools(allowed_tool_names=None):

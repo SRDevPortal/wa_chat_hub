@@ -8,7 +8,7 @@ from frappe.utils import now_datetime
 
 
 PATIENT_PHONE_FIELDS = ("mobile", "mobile_no", "phone", "custom_whatsapp_number")
-VERIFICATION_PATIENT_PHONE_FIELDS = ("mobile", "phone")
+VERIFICATION_PATIENT_PHONE_FIELDS = PATIENT_PHONE_FIELDS
 PHONE_CANDIDATE_PATTERN = re.compile(r"(?<!\d)(?:\+?\d[\d\s().-]{8,}\d)(?!\d)")
 
 
