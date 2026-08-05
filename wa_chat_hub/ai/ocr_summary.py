@@ -20,6 +20,7 @@ from wa_chat_hub.ai.providers import (
     looks_like_vision_model,
 )
 from wa_chat_hub.prompts import get_conversation_crm_lead
+from wa_chat_hub.policy import policy_reply, policy_section
 from wa_chat_hub.security import (
     WAChatHubSecurityError,
     assert_ai_doctype_permission,
@@ -62,9 +63,11 @@ def build_media_context_for_chat(
     media_url: str,
     content_type: str,
     body_hint: str = "",
+    channel_account: str | None = None,
 ) -> str:
     """Plain-text context about an inbound attachment for AI autopilot (not CRM notes)."""
     content_type = str(content_type or "Document").title()
+    media_policy = policy_section(channel_account, "media_policy")
     caption = _clean_media_caption(body_hint)
     lines = [f"Customer sent a {content_type} attachment on WhatsApp."]
     if caption:
@@ -76,18 +79,13 @@ def build_media_context_for_chat(
             extracted = _extract_with_openai_vision(media_url)
         if extracted:
             lines.append(f"Attachment OCR / visual classification:\n{extracted[:3500]}")
-            lines.append(
-                "Use this classification before replying. If it is a medical report, say report received "
-                "and move to doctor/team review. If it is a skin/body photo, prescription photo, chat "
-                "screenshot, bill/payment screenshot, random/non-medical image, or unclear photo, do not "
-                "call it a report; acknowledge the actual image type and ask the next relevant question."
-            )
+            instruction = str(media_policy.get("report_summary_prompt") or "").strip()
+            if instruction:
+                lines.append(instruction)
         else:
-            lines.append(
-                "No readable text or reliable visual classification could be extracted. Do not call this "
-                "a report by default. Acknowledge the image/photo and ask the customer what it shows or "
-                "request a clearer photo if clinically relevant."
-            )
+            unavailable = policy_reply(channel_account, "media_unavailable")
+            if unavailable:
+                lines.append(unavailable)
     else:
         lines.append(f"Attachment URL: {media_url[:200]}")
 
@@ -330,7 +328,9 @@ def _extract_with_openai_vision(
         return ""
 
     for provider in providers:
-        base_url = provider["base_url"] or "https://api.openai.com/v1/chat/completions"
+        base_url = str(provider.get("base_url") or "").strip()
+        if not base_url:
+            continue
         if base_url.endswith("/") and "chat/completions" not in base_url:
             base_url = f"{base_url}chat/completions"
 
@@ -422,55 +422,7 @@ def _summarize_report_text(extracted: str, body_hint: str, content_type: str) ->
 
 def _heuristic_report_summary(extracted_text: str) -> str:
     text = str(extracted_text or "").strip()
-    if not text:
-        return ""
-
-    lowered = text.lower()
-    if "kidney function" not in lowered and "kft" not in lowered and "creatinine" not in lowered:
-        return "Report summary:\n• OCR text extracted, but automatic report interpretation is limited.\n\nKey findings:\n• Review extracted report text manually.\n\nAbnormal values:\n• Not automatically identified.\n\nSuggested follow-up:\n• Ask doctor/team to review the attachment and confirm clinically."
-
-    checks = [
-        ("Blood Urea", "mg/dL", 15, 40),
-        ("Serum Creatinine", "mg/dL", 0.6, 1.2),
-        ("BUN / Creatinine Ratio", "", 10, 20),
-        ("Uric Acid", "mg/dL", 3.5, 7.2),
-        ("Sodium", "mEq/L", 135, 145),
-        ("Potassium", "mEq/L", 3.5, 5.0),
-        ("Chloride", "mEq/L", 98, 106),
-        ("Bicarbonate", "mEq/L", 22, 28),
-        ("Calcium", "mg/dL", 8.6, 10.2),
-        ("Phosphorus", "mg/dL", 2.5, 4.5),
-    ]
-    abnormal = []
-    for label, unit, low, high in checks:
-        value = _find_nearby_number(text, label)
-        if value is None:
-            continue
-        if value < low:
-            abnormal.append(f"{label}: {value:g} {unit}".strip() + f" (low; ref {low:g}-{high:g})")
-        elif value > high:
-            abnormal.append(f"{label}: {value:g} {unit}".strip() + f" (high; ref {low:g}-{high:g})")
-
-    if "reduced egfr" in lowered or "significantly reduced egfr" in lowered:
-        abnormal.append("eGFR: report impression says significantly reduced")
-    if "metabolic acidosis" in lowered:
-        abnormal.append("Report impression mentions metabolic acidosis")
-    if "renal impairment" in lowered:
-        abnormal.append("Report impression says findings are consistent with significant renal impairment")
-
-    key_findings = abnormal[:8] if abnormal else ["Kidney function report text extracted; doctor review advised."]
-    return (
-        "Report summary:\n"
-        "• KFT/kidney function report received and OCR text was readable.\n"
-        "• Report impression suggests renal/kidney function concern; clinical correlation is needed.\n\n"
-        "Key findings:\n"
-        + "\n".join(f"• {item}" for item in key_findings)
-        + "\n\nAbnormal values:\n"
-        + ("\n".join(f"• {item}" for item in abnormal) if abnormal else "• Not automatically identified.")
-        + "\n\nSuggested follow-up:\n"
-        "• Doctor/nephrologist review is advisable, especially because creatinine/urea/electrolytes appear abnormal.\n"
-        "• Ask patient for current symptoms, BP/diabetes history, urine output/swelling, and any previous creatinine reports."
-    )
+    return text[:10000]
 
 
 def _find_nearby_number(text: str, label: str) -> float | None:
@@ -492,7 +444,9 @@ def _find_nearby_number(text: str, label: str) -> float | None:
 
 
 def _summarize_with_model(provider: Dict, extracted_text: str) -> str:
-    base_url = provider["base_url"] or "https://api.openai.com/v1/chat/completions"
+    base_url = str(provider.get("base_url") or "").strip()
+    if not base_url:
+        return ""
     if base_url.endswith("/") and "chat/completions" not in base_url:
         base_url = f"{base_url}chat/completions"
     prompt = (

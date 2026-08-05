@@ -1,0 +1,128 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "field:intent_name",
+ "creation": "2026-08-04 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "intent_name",
+  "intent_label",
+  "is_active",
+  "priority",
+  "description",
+  "classifier_examples",
+  "fallback_match",
+  "confidence_threshold",
+  "requires_patient_data",
+  "is_default_fallback",
+  "clarification_prompt"
+ ],
+ "fields": [
+  {
+   "description": "Stable machine-readable intent key returned by the classifier.",
+   "fieldname": "intent_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Intent Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "intent_label",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Intent Label",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Is Active"
+  },
+  {
+   "default": "0",
+   "description": "Higher-priority configured fallback matches win when more than one intent matches.",
+   "fieldname": "priority",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Priority"
+  },
+  {
+   "description": "Business meaning supplied to the AI classifier.",
+   "fieldname": "description",
+   "fieldtype": "Long Text",
+   "label": "Classifier Description",
+   "reqd": 1
+  },
+  {
+   "description": "One representative customer message per line.",
+   "fieldname": "classifier_examples",
+   "fieldtype": "Long Text",
+   "label": "Classifier Examples"
+  },
+  {
+   "description": "Optional safe literal-match JSON used when the classifier is unavailable. Supported keys: full_text_any, contains_any, contains_all, excludes_any.",
+   "fieldname": "fallback_match",
+   "fieldtype": "Code",
+   "label": "Fallback Match",
+   "options": "JSON"
+  },
+  {
+   "default": "0.55",
+   "fieldname": "confidence_threshold",
+   "fieldtype": "Float",
+   "label": "Confidence Threshold",
+   "precision": "2"
+  },
+  {
+   "default": "0",
+   "description": "Protected intent: answering requires this customer's stored patient data.",
+   "fieldname": "requires_patient_data",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Requires Patient Data"
+  },
+  {
+   "default": "0",
+   "description": "The single safe intent used when classification is unavailable or below threshold.",
+   "fieldname": "is_default_fallback",
+   "fieldtype": "Check",
+   "label": "Default Fallback"
+  },
+  {
+   "fieldname": "clarification_prompt",
+   "fieldtype": "Small Text",
+   "label": "Clarification Prompt"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-04 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "WA Chat Hub",
+ "name": "WA AI Intent",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "priority",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "intent_label",
+ "track_changes": 1
+}

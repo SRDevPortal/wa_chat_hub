@@ -63,21 +63,36 @@ def after_migrate() -> None:
         _safe_log_error("WA Chat Hub Workspace Sync Failed")
     ensure_lead_scoring_fields()
     ensure_chat_message_indexes()
+    ensure_app_update_indexes()
+    ensure_app_update_setting()
+    backfill_channel_account_medical_departments()
     migrate_conversation_crm_lead_links()
     try:
         from wa_chat_hub.security import ensure_default_ai_doctype_permissions
         from wa_chat_hub.setup_agents import (
             backfill_conversation_identities,
+            ensure_crm_lead_account_mcp_tool,
             ensure_default_agent_profiles,
+            ensure_verification_agent_tool,
         )
 
         ensure_default_ai_doctype_permissions()
         ensure_default_agent_profiles()
+        ensure_verification_agent_tool()
+        ensure_crm_lead_account_mcp_tool()
+        from wa_chat_hub.setup_ai_routing import seed_default_ai_routing
+        from wa_chat_hub.setup_ai_routing import ensure_default_route_blocked_replies
+        from wa_chat_hub.setup_ai_routing import ensure_default_policy_assignment
+
+        seed_default_ai_routing()
+        ensure_default_policy_assignment()
+        ensure_default_route_blocked_replies()
         backfill_conversation_identities()
     except Exception:
         _safe_log_error("WA Chat Hub Agent Setup Failed")
     backfill_indexed_phone_keys()
     backfill_messaging_windows()
+
 
 
 def backfill_indexed_phone_keys() -> None:
@@ -192,6 +207,73 @@ def ensure_chat_message_indexes() -> None:
         ensure_customer_phone_lookup_schema()
     except Exception:
         _safe_log_error("Chat Message Index Sync Failed")
+
+
+def ensure_app_update_indexes() -> None:
+    """Keep filtered update-log history reads index-backed."""
+    table_name = "tabWA App Update Log"
+    index_name = "idx_wa_update_script_executed_at"
+    table_exists = frappe.db.sql(
+        """
+        SELECT 1
+        FROM information_schema.TABLES
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+        LIMIT 1
+        """,
+        table_name,
+    )
+    if not table_exists:
+        return
+    exists = frappe.db.sql(
+        """
+        SELECT COUNT(*)
+        FROM information_schema.STATISTICS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = %s
+          AND INDEX_NAME = %s
+        """,
+        (table_name, index_name),
+    )[0][0]
+    if exists:
+        return
+    frappe.db.sql(
+        f"""
+        ALTER TABLE `{table_name}`
+        ADD INDEX `{index_name}` (`update_script`, `executed_at`),
+        ALGORITHM=INPLACE, LOCK=NONE
+        """
+    )
+
+
+def ensure_app_update_setting() -> None:
+    if not frappe.db.exists("DocType", "WA Chat Hub Settings"):
+        return
+    initialized = frappe.db.get_single_value(
+        "WA Chat Hub Settings", "app_update_system_initialized"
+    )
+    if not initialized:
+        frappe.db.set_single_value("WA Chat Hub Settings", "enable_app_update_system", 1)
+        frappe.db.set_single_value("WA Chat Hub Settings", "app_update_system_initialized", 1)
+
+
+def backfill_channel_account_medical_departments() -> None:
+    """Copy existing account pipeline-map medical departments into the account default."""
+    if not frappe.db.exists("DocType", "Chat Channel Account"):
+        return
+    if not frappe.get_meta("Chat Channel Account").has_field("default_medical_department"):
+        return
+    if not frappe.db.exists("DocType", "WA Channel Pipeline Map"):
+        return
+    statement = """
+        UPDATE `tabChat Channel Account` cca
+        INNER JOIN `tabWA Channel Pipeline Map` wpm
+            ON wpm.chat_channel_account = cca.name
+           AND wpm.is_active = 1
+        SET cca.default_medical_department = wpm.sr_medical_department
+        WHERE {condition}
+    """
+    frappe.db.sql(statement.format(condition="cca.default_medical_department IS NULL"))
+    frappe.db.sql(statement.format(condition="cca.default_medical_department = ''"))
 
 
 def migrate_conversation_crm_lead_links() -> None:

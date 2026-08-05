@@ -1,0 +1,185 @@
+{
+  "WA AI Policy Bundle": [
+    {
+      "policy_name": "Default Configurable WhatsApp Policy",
+      "is_active": 1,
+      "is_default": 1,
+      "policy_version": 6,
+      "identity_policy": {
+        "phone_fields": {
+          "Patient": ["mobile", "mobile_no", "phone", "custom_whatsapp_number"]
+        },
+        "phone_candidate_min_digits": 10,
+        "phone_match_last_digits": 10,
+        "allow_supplied_registered_number": true,
+        "allow_current_chat_number_claim": true,
+        "verification_tool_name": "verify_patient_identity",
+        "current_number_claim_phrases": {
+          "en": ["this is my number", "this is my no", "this number is mine", "current number is mine", "whatsapp number is mine"],
+          "hi-latn": ["yahi mera number hai", "yehi mera number hai", "ye mera number hai", "ye mera number h", "ye mera no hai", "ye mera no h", "isi number par baat ho rahi hai", "haan ye mera number hai"]
+        },
+        "validity_hours": 24,
+        "statuses": {
+          "verified": "Verified",
+          "matched": "Matched",
+          "unverified": "Unverified",
+          "ambiguous": "Ambiguous"
+        }
+      },
+      "party_routing_policy": {
+        "phone_match_priority": ["Patient", "Customer", "CRM Lead", "Lead"],
+        "preserve_existing_reference": true,
+        "unknown_party_type": "Unknown",
+        "phone_fields": {
+          "Customer": ["mobile_no", "phone", "custom_whatsapp_number"],
+          "CRM Lead": ["mobile_no", "phone", "custom_whatsapp_number"],
+          "Lead": ["mobile_no", "phone"]
+        },
+        "ambiguous_patient_party_type": "Patient",
+        "allowed_party_types": ["Unknown", "Lead", "Patient", "Customer"],
+        "party_type_by_reference_doctype": {
+          "Patient": "Patient", "CRM Lead": "Lead", "Lead": "Lead", "Customer": "Customer"
+        },
+        "agent_type_by_party_status": {
+          "Patient": {
+            "Verified": "Patient",
+            "default": "Patient Verification"
+          },
+          "Lead": {"default": "General"},
+          "Customer": {"default": "General"},
+          "Unknown": {"default": "General"}
+        }
+      },
+      "language_policy": {
+        "default_language": "en",
+        "default_language_label": "English",
+        "script_ratio_threshold": 0.15,
+        "roman_marker_ratio_threshold": 0.12,
+        "roman_ascii_ratio_threshold": 0.5,
+        "ascii_ratio_threshold": 0.6,
+        "roman_language_code": "hi-latn",
+        "roman_language_label": "Hindi (Hinglish / Roman)",
+        "ascii_language_code": "en",
+        "ascii_language_label": "English",
+        "script_reply_instruction": "Reply in {language} using the same script as the customer.",
+        "roman_reply_instruction": "Reply in natural Hinglish using English letters and match the customer's tone.",
+        "ascii_reply_instruction": "Reply in English.",
+        "auto_reply_instruction": "Reply in the language used by the customer.",
+        "prompt_policy": "Match the language and script of the customer's latest message and use a natural conversational tone.",
+        "script_ranges": [
+          {"code": "hi", "label": "Hindi", "start": "0900", "end": "097F"},
+          {"code": "bn", "label": "Bengali", "start": "0980", "end": "09FF"},
+          {"code": "pa", "label": "Punjabi", "start": "0A00", "end": "0A7F"},
+          {"code": "gu", "label": "Gujarati", "start": "0A80", "end": "0AFF"},
+          {"code": "or", "label": "Odia", "start": "0B00", "end": "0B7F"},
+          {"code": "ta", "label": "Tamil", "start": "0B80", "end": "0BFF"},
+          {"code": "te", "label": "Telugu", "start": "0C00", "end": "0C7F"},
+          {"code": "kn", "label": "Kannada", "start": "0C80", "end": "0CFF"},
+          {"code": "ml", "label": "Malayalam", "start": "0D00", "end": "0D7F"},
+          {"code": "ur", "label": "Urdu", "start": "0600", "end": "06FF"}
+        ],
+        "roman_markers": [
+          "aap", "aapka", "aapki", "hai", "hain", "ho", "kya", "kyun", "kaise", "kab", "kahan",
+          "mujhe", "mere", "meri", "mera", "mein", "main", "nahi", "nahin", "haan", "ji", "dhanyavad",
+          "shukriya", "namaste", "doctor", "dawai", "bukhar", "dard", "appointment", "ilaj", "bataiye",
+          "bataye", "batao", "chahiye", "sakta", "sakte", "kripya", "please"
+        ]
+      },
+      "reply_templates": {
+        "ai_safe_fallback": {
+          "default": "I could not complete that request right now. Your request has been retained for the configured support team."
+        },
+        "mcp_action_failed": {
+          "default": "I could not complete that action safely right now. Your request has been retained for the configured support team."
+        },
+        "media_unavailable": {
+          "default": "The attachment was received, but its contents could not be processed automatically. Please add a short description."
+        },
+        "system_identity_verification": {
+          "default": "Identity verification is mandatory before protected records can be accessed. Accept either a registered phone number supplied by the customer or an explicit current-number ownership statement allowed by the Identity Policy. Execute the configured verification tool only after evidence is present in the latest inbound message. Disclose no protected facts before server-confirmed success."
+        },
+        "system_identity_verified": {
+          "default": "Identity is verified for this conversation. Do not ask for identity again. Continue the most recent unresolved request and use only configured, authorized tools."
+        },
+        "system_public_patient_conversation": {
+          "default": "The current request is public and does not require stored patient data. Use normal conversation behavior, do not request verification, and do not disclose or infer protected records."
+        }
+      },
+      "patient_creation_policy": {
+        "create_if_missing": true,
+        "missing_required_field_action": "stop",
+        "required_patient_fields": ["first_name", "mobile", "company", "sex", "sr_medical_department"],
+        "demographic_defaults": {
+          "sex": "Prefer not to say"
+        },
+        "field_sources": {
+          "first_name": ["workflow.customer_name"],
+          "mobile": ["contact.phone_number", "lead.mobile_no", "lead.phone"],
+          "company": ["workflow.company", "global_default.Company"],
+          "sex": ["policy.demographic_defaults.sex"],
+          "medical_department": ["channel_account.default_medical_department"]
+        }
+      },
+      "lead_scoring_policy": {
+        "enabled": true,
+        "base_score": 20,
+        "inbound_message_weight": 3,
+        "inbound_message_cap": 30,
+        "unread_weight": 2,
+        "unread_cap": 15,
+        "priority_weights": {"Low": 0, "Medium": 5, "High": 12, "Urgent": 20},
+        "hot_terms": ["price", "cost", "book", "appointment", "consult", "today", "urgent", "buy", "payment"],
+        "hot_term_weight": 4,
+        "warm_terms": ["interested", "details", "plan", "treatment", "package"],
+        "warm_term_weight": 2,
+        "temperature_bands": [
+          {"minimum": 70, "label": "Hot"},
+          {"minimum": 40, "label": "Warm"},
+          {"minimum": 0, "label": "Cold"}
+        ],
+        "legacy_auto_update": {
+          "base_score": 35,
+          "high_terms": ["urgent", "emergency", "serious", "pain", "blood", "report", "appointment", "consult", "call"],
+          "high_term_weight": 10,
+          "medium_terms": ["problem", "issue", "symptom", "medicine", "treatment", "doctor", "help", "test"],
+          "medium_term_weight": 5,
+          "disease_hints": {}
+        }
+      },
+      "media_policy": {
+        "enable_local_clinical_heuristics": false,
+        "approved_report_rules": [],
+        "attachment_followup_terms": ["report", "image", "photo", "test", "value", "result", "explain", "read"],
+        "vision_prompt": "Describe visible content objectively without diagnosis or prescriptions.",
+        "report_summary_prompt": "Summarize the supplied document objectively for authorized staff review without diagnosis or prescriptions.",
+        "transcript_summary_prompt": "Summarize the customer request objectively for authorized staff review without diagnosis or prescriptions."
+      },
+      "provider_policy": {
+        "require_configured_base_url": true,
+        "endpoints": {
+          "OpenAI": "https://api.openai.com/v1/chat/completions",
+          "Gemini": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        },
+        "request_timeouts": {"chat": 45, "classification": 20, "vision": 45, "transcription": 90}
+      },
+      "runtime_policy": {
+        "conversation_history_limit": 100,
+        "max_history_message_chars": 1200,
+        "text_reply_delay_seconds": 3,
+        "media_reply_delay_seconds": 15,
+        "batch_lock_timeout_seconds": 180,
+        "batch_lookback_minutes": 15,
+        "media_burst_lookback_minutes": 10,
+        "media_burst_gap_seconds": 90,
+        "media_settle_seconds": 5,
+        "input_character_budget": 6500,
+        "system_character_budget": 4200,
+        "maximum_tool_calls": 5
+      },
+      "permission_policy": {
+        "unrestricted_roles": ["System Manager", "WA Chat Manager"],
+        "administrator_bypass": true
+      }
+    }
+  ]
+}

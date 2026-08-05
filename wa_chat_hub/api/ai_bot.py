@@ -1,6 +1,7 @@
 import json
 import hashlib
 import re
+import secrets
 import time
 from difflib import SequenceMatcher
 from types import SimpleNamespace
@@ -21,11 +22,29 @@ from wa_chat_hub.ai.media_transcription import (
     TRANSCRIPT_CONTENT_TYPES,
     build_transcript_context_for_chat,
 )
-from wa_chat_hub.ai.delivery_status import build_delivery_status_reply, is_delivery_status_query
+from wa_chat_hub.ai.configuration import active_workflow_action_tools
+from wa_chat_hub.ai.intent_classifier import (
+    classify_customer_intent,
+    intent_clarification_prompt,
+    needs_patient_verification_question,
+    should_attempt_patient_verification,
+)
+from wa_chat_hub.ai.workflow_engine import (
+    clear_active_workflow,
+    evaluate_workflow_policy,
+    load_active_workflow_state,
+    workflow_message,
+)
 from wa_chat_hub.ai.service import create_ai_suggestion
 from wa_chat_hub.api.vector_search import search_knowledge_base
-from wa_chat_hub.agent_router import build_agent_prompt, persist_agent_route, resolve_agent_route
-from wa_chat_hub.outbound import send_outbound_message
+from wa_chat_hub.agent_router import (
+    apply_intent_route,
+    build_agent_prompt,
+    localized_blocked_reply,
+    persist_agent_route,
+    resolve_agent_route,
+)
+from wa_chat_hub.outbound import send_interakt_template_message, send_outbound_message
 from wa_chat_hub.mcp.event_log import elapsed_ms as mcp_elapsed_ms
 from wa_chat_hub.mcp.event_log import log_mcp_event, now_ms as mcp_now_ms
 from wa_chat_hub.prompts import (
@@ -36,7 +55,10 @@ from wa_chat_hub.prompts import (
     get_multilingual_policy,
     is_account_mcp_tools_enabled,
 )
-from wa_chat_hub.services import append_message
+from wa_chat_hub.services import append_message, conversation_update_lock
+from wa_chat_hub.identity import expire_conversation_verification
+from wa_chat_hub.ai.language import resolve_language_from_history
+from wa_chat_hub.policy import policy_reply, policy_section, provider_endpoint, provider_timeout
 from wa_chat_hub.security import (
     assert_ai_doctype_permission,
     safe_ai_exists,
@@ -60,8 +82,41 @@ AUTOPILOT_MEDIA_BURST_GAP_SECONDS = 90
 AUTOPILOT_MEDIA_SETTLE_SECONDS = 5
 LOW_CONTEXT_INPUT_CHAR_BUDGET = 6500
 LOW_CONTEXT_SYSTEM_CHAR_BUDGET = 4200
+
+
 def _log_ai_timing(event: str, **fields) -> None:
     task_log("ai", event, **fields)
+
+
+
+def _policy_reply_for_route(
+    route,
+    key: str,
+    body_text: str = "",
+    history=None,
+) -> str:
+    channel_account = getattr(route, "channel_account", None)
+    language = resolve_language_from_history(
+        body_text,
+        history,
+        channel_account=channel_account,
+    )
+    return policy_reply(channel_account, key, language_code=language.get("code"))
+
+
+def _route_identity_status(route, key: str) -> str:
+    bundle = getattr(route, "policy_bundle", None)
+    if not bundle:
+        return ""
+    return str((bundle.section("identity_policy").get("statuses") or {}).get(key) or "")
+
+
+def _route_reference_party_type(route, reference_doctype: str) -> str:
+    bundle = getattr(route, "policy_bundle", None)
+    if not bundle:
+        return ""
+    mapping = bundle.section("party_routing_policy").get("party_type_by_reference_doctype") or {}
+    return str(mapping.get(str(reference_doctype or "").strip()) or "").strip()
 
 
 def _inside_append_message() -> bool:
@@ -285,55 +340,50 @@ def process_message(message_id, skip_batch_wait: bool = False):
             )
             return
 
+    expiry_result = expire_conversation_verification(conversation)
+    if expiry_result.get("expired"):
+        frappe.db.commit()
+        task_log(
+            "identity",
+            "verification_expired",
+            conversation=conversation,
+            message=message_id,
+            patient=expiry_result.get("patient"),
+            expired_at=expiry_result.get("expired_at"),
+        )
+
     body_text = str(msg_doc.body or "").strip()
     content_type = str(msg_doc.content_type or "Text").title()
     media_url = str(msg_doc.media_url or "").strip()
     route = resolve_agent_route(conversation)
+    classifier_providers = _load_providers(route.llm_provider)
+    pending_action = load_active_workflow_state(conversation)
+    intent_decision = classify_customer_intent(
+        classifier_providers[0] if classifier_providers else None,
+        body_text,
+        party_type=route.party_type,
+        identity_status=route.identity_status,
+        pending_action=pending_action,
+        channel_account=route.channel_account,
+    )
+    route = apply_intent_route(route, intent_decision)
     persist_agent_route(conversation, route)
     frappe.db.commit()
-
-    route, verification_can_continue = _preverify_matched_patient_route(
-        conversation,
-        route,
-        message_id=message_id,
+    task_log(
+        "intent_classifier",
+        "decision",
+        conversation=conversation,
+        message=message_id,
+        agent=intent_decision.agent,
+        intent=intent_decision.intent,
+        confidence=round(intent_decision.confidence, 3),
+        source=intent_decision.source,
+        proposed_tool=intent_decision.mcp_tool,
+        should_call_mcp=1 if intent_decision.should_call_mcp else 0,
     )
-    if not verification_can_continue:
-        _log_ai_timing(
-            "skip",
-            message=message_id,
-            conversation=conversation,
-            reason="patient_verification_failed_closed",
-            total_sec=elapsed(total_started),
-        )
-        return
 
     if route.auto_reply_mode:
         settings.autopilot_mode = route.auto_reply_mode
-
-    if is_delivery_status_query(body_text):
-        result = build_delivery_status_reply(conversation, body_text)
-        response_text = result.reply
-        mode = _deliver_or_draft_ai_reply(conversation, response_text, settings, message_id) or "duplicate_skip"
-        task_log(
-            "delivery_status",
-            "reply_done",
-            conversation=conversation,
-            message=message_id,
-            mode=mode,
-            patient=result.patient,
-            encounter=result.encounter,
-            shipment=result.shipment,
-            awb=result.awb,
-            parsed=1 if result.parsed else 0,
-        )
-        _log_ai_timing(
-            "total_done",
-            message=message_id,
-            conversation=conversation,
-            mode=f"delivery_status_{mode}",
-            total_sec=elapsed(total_started),
-        )
-        return
 
     context_started = time.monotonic()
     history = _load_recent_conversation_history(conversation)
@@ -356,23 +406,115 @@ def process_message(message_id, skip_batch_wait: bool = False):
             account_mcp_tools,
             get_account_max_tool_calls(prompt_config),
         )
+    verification_result = _attempt_explicit_patient_verification(
+        route,
+        conversation=conversation,
+        message_id=str(message_id),
+        body_text=body_text,
+    )
+    if verification_result is not None:
+        # Release verification/MCP writes before any later provider or outbound call.
+        frappe.db.commit()
+        if not verification_result.get("verified"):
+            response_text = (
+                localized_blocked_reply(route, body_text, history)
+                or intent_clarification_prompt(intent_decision.intent)
+                or _policy_reply_for_route(route, "ai_safe_fallback", body_text, history)
+            )
+            mode = (
+                _deliver_or_draft_ai_reply(
+                    conversation,
+                    response_text,
+                    settings,
+                    message_id,
+                )
+                or "duplicate_skip"
+            )
+            task_log(
+                "identity",
+                "verification_failed",
+                conversation=conversation,
+                message=message_id,
+                intent=intent_decision.intent,
+                reason=verification_result.get("reason"),
+                mode=mode,
+            )
+            return
+
+        route = resolve_agent_route(conversation)
+        route = apply_intent_route(route, intent_decision)
+        if is_account_mcp_tools_enabled(prompt_config):
+            _apply_account_mcp_tool_override(
+                route,
+                account_mcp_tools,
+                get_account_max_tool_calls(prompt_config),
+            )
+        persist_agent_route(conversation, route)
+        if route.auto_reply_mode:
+            settings.autopilot_mode = route.auto_reply_mode
+        frappe.db.commit()
+        task_log(
+            "identity",
+            "verification_completed",
+            conversation=conversation,
+            message=message_id,
+            patient=verification_result.get("patient"),
+            reason=verification_result.get("reason"),
+            evidence="supplied_phone_or_current_number_claim",
+        )
+
+    _apply_configured_intent_tool_narrowing(route)
+
+    if _handle_configured_workflow(
+        conversation=conversation,
+        message_id=str(message_id),
+        body_text=body_text,
+        raw_payload={
+            "raw_payload": getattr(msg_doc, "raw_payload", None),
+            "raw_transport_payload": getattr(msg_doc, "raw_transport_payload", None),
+        },
+        intent_decision=intent_decision,
+        route=route,
+        settings=settings,
+    ):
+        return
+
+    _gate_configured_workflow_tools_for_model(route)
+
+    if needs_patient_verification_question(route, body_text):
+        response_text = (
+            localized_blocked_reply(route, body_text, history)
+            or intent_clarification_prompt(intent_decision.intent)
+            or _policy_reply_for_route(route, "ai_safe_fallback", body_text, history)
+        )
+        mode = _deliver_or_draft_ai_reply(conversation, response_text, settings, message_id) or "duplicate_skip"
+        task_log(
+            "identity",
+            "verification_requested",
+            conversation=conversation,
+            message=message_id,
+            intent=intent_decision.intent,
+            mode=mode,
+        )
+        return
+
 
     media_context = ""
     use_vision_for_image = False
     if media_url and content_type in MEDIA_CONTENT_TYPES:
         try:
-            media_context = _build_recent_media_batch_context(conversation, msg_doc)
+            media_context = _build_recent_media_batch_context(conversation, msg_doc, channel_account)
             if not media_context:
                 if content_type in TRANSCRIPT_CONTENT_TYPES:
-                    media_context = build_transcript_context_for_chat(media_url, content_type, body_text)
+                    media_context = build_transcript_context_for_chat(media_url, content_type, body_text, channel_account)
                 else:
-                    media_context = build_media_context_for_chat(media_url, content_type, body_text)
+                    media_context = build_media_context_for_chat(media_url, content_type, body_text, channel_account)
         except Exception:
             frappe.log_error(frappe.get_traceback(), "WA AI Media Context Failed")
             media_context = f"Customer sent a {content_type} attachment."
-    elif _looks_like_recent_attachment_followup(body_text):
+    elif _looks_like_recent_attachment_followup(body_text, channel_account):
         try:
-            media_context = _build_recent_attachment_followup_context(conversation, msg_doc)
+            media_context = _build_recent_attachment_followup_context(conversation, msg_doc, channel_account)
         except Exception:
             frappe.log_error(frappe.get_traceback(), "WA AI Recent Attachment Context Failed")
             media_context = ""
@@ -395,9 +537,31 @@ def process_message(message_id, skip_batch_wait: bool = False):
             f"(channel account: {channel_account or 'global'}).",
             "WA AI Autopilot Config",
         )
+        _deliver_or_draft_ai_reply(
+            conversation,
+            _policy_reply_for_route(route, "ai_safe_fallback", body_text, history),
+            settings,
+            message_id,
+        )
         return
-
-    known_context = _build_known_conversation_context(conversation)
+    system_prompt = (
+        f"{system_prompt}\n\n"
+        "ROUTING DECISION (advisory; all identity, confirmation, and MCP allowlist rules still apply):\n"
+        f"intent={intent_decision.intent}; confidence={intent_decision.confidence:.2f}; "
+        f"requires_patient_data={1 if intent_decision.requires_patient_data else 0}; "
+        f"missing_fields={','.join(intent_decision.missing_fields) or 'none'}. "
+        "If intent is unclear, ask exactly one concise clarification question. "
+        "Never claim that a write action completed unless the server returned success."
+    )
+    known_context = ""
+    configured_patient_party_type = _route_reference_party_type(route, "Patient")
+    is_patient_route = bool(
+        configured_patient_party_type and route.party_type == configured_patient_party_type
+    )
+    if not is_patient_route or (
+        route.identity_status == _route_identity_status(route, "verified") and route.requires_patient_data
+    ):
+        known_context = _build_known_conversation_context(conversation)
     if known_context:
         system_prompt = f"{system_prompt}\n\n{known_context}"
 
@@ -461,6 +625,12 @@ def process_message(message_id, skip_batch_wait: bool = False):
             total_sec=elapsed(total_started),
         )
         frappe.log_error("No active WA LLM Providers found.", "WA AI Bot Error")
+        _deliver_or_draft_ai_reply(
+            conversation,
+            _policy_reply_for_route(route, "ai_safe_fallback", body_text, history),
+            settings,
+            message_id,
+        )
         return
 
     for provider in providers:
@@ -488,6 +658,7 @@ def process_message(message_id, skip_batch_wait: bool = False):
                     "agent_profile": route.agent_profile,
                     "department": route.department,
                     "identity_status": route.identity_status,
+                    "channel_account": route.channel_account,
                 },
             )
             if not response_text or not str(response_text).strip():
@@ -564,10 +735,20 @@ def process_message(message_id, skip_batch_wait: bool = False):
         "WA AI Fatal Error",
         f"All LLM Providers failed for conversation {conversation}.",
     )
+    fallback_mode = (
+        _deliver_or_draft_ai_reply(
+            conversation,
+            _policy_reply_for_route(route, "ai_safe_fallback", body_text, history),
+            settings,
+            message_id,
+        )
+        or "duplicate_skip"
+    )
     _log_ai_timing(
         "total_failed",
         message=message_id,
         conversation=conversation,
+        fallback_mode=fallback_mode,
         total_sec=elapsed(total_started),
     )
 
@@ -582,14 +763,47 @@ def _apply_account_mcp_tool_override(
     account_max_tool_calls: int,
 ) -> None:
     """Apply account tools without stripping record tools from verified Patients."""
+    bundle = getattr(route, "policy_bundle", None)
+    if not bundle:
+        route.allowed_tool_names = set()
+        route.max_tool_calls = 0
+        return
+    runtime_policy = bundle.section("runtime_policy")
+    identity_policy = bundle.section("identity_policy")
+    routing_policy = bundle.section("party_routing_policy")
+    party_map = routing_policy.get("party_type_by_reference_doctype") or {}
+    patient_party_type = str(party_map.get("Patient") or "").strip()
+    maximum_tool_calls = max(0, int(runtime_policy.get("maximum_tool_calls") or 0))
+    verified_status = str((identity_policy.get("statuses") or {}).get("verified") or "")
+    verification_tool = str(identity_policy.get("verification_tool_name") or "").strip()
     account_tools = {
         str(tool_name).strip()
         for tool_name in (account_mcp_tools or set())
         if str(tool_name).strip()
     }
-    account_limit = max(0, min(5, int(account_max_tool_calls or 0)))
+    account_limit = max(0, min(maximum_tool_calls, int(account_max_tool_calls or 0)))
 
-    if route.party_type == "Patient" and route.identity_status == "Verified":
+    if (
+        patient_party_type and route.party_type == patient_party_type
+        and route.identity_status != verified_status
+        and getattr(route, "requires_patient_data", False)
+    ):
+        # A protected request may expose only the identity-verification tool.
+        route.allowed_tool_names = {
+            tool_name
+            for tool_name in route.allowed_tool_names
+            if verification_tool and tool_name == verification_tool
+        }
+        route.max_tool_calls = 1 if route.allowed_tool_names else 0
+        return
+
+    if patient_party_type and route.party_type == patient_party_type and route.identity_status != verified_status:
+        # Public requests use the Channel Account configured default tools.
+        route.allowed_tool_names = account_tools
+        route.max_tool_calls = account_limit
+        return
+
+    if patient_party_type and route.party_type == patient_party_type and route.identity_status == verified_status:
         route.allowed_tool_names |= account_tools
         route.max_tool_calls = max(int(route.max_tool_calls or 0), account_limit)
         return
@@ -600,64 +814,217 @@ def _apply_account_mcp_tool_override(
     route.max_tool_calls = account_limit
 
 
-def _preverify_matched_patient_route(
-    conversation: str,
+
+def _attempt_explicit_patient_verification(
     route,
     *,
-    message_id: str | None = None,
-):
-    """Verify a uniquely matched Patient before any LLM can produce a reply."""
-    if route.party_type != "Patient" or route.identity_status != "Matched":
-        return route, True
+    conversation: str,
+    message_id: str,
+    body_text: str,
+) -> dict | None:
+    """Execute verification when either accepted evidence option is present."""
+    if not should_attempt_patient_verification(route, body_text):
+        return None
 
-    result = {}
+    bundle = getattr(route, "policy_bundle", None)
+    identity_policy = bundle.section("identity_policy") if bundle else {}
+    tool_name = str(identity_policy.get("verification_tool_name") or "").strip()
+    if tool_name not in route.allowed_tool_names:
+        return {
+            "verified": False,
+            "reason": "verification_tool_unavailable",
+        }
+
+    tool_result = execute_mcp_tool(
+        tool_name,
+        {},
+        allowed_tool_names=route.allowed_tool_names,
+        tool_context={
+            "conversation": conversation,
+            "patient": route.patient,
+            "agent_profile": route.agent_profile,
+            "department": route.department,
+            "identity_status": route.identity_status,
+            "message": message_id,
+        },
+    )
     try:
-        if not route.patient:
-            result = {"verified": False, "reason": "linked_patient_missing"}
-        else:
-            from wa_chat_hub.identity import verify_patient_identity_by_agent
-
-            result = verify_patient_identity_by_agent(
-                patient=route.patient,
-                conversation=conversation,
-            )
+        parsed = frappe.parse_json(tool_result)
     except Exception:
-        result = {"verified": False, "reason": "verification_error"}
-        frappe.log_error(
-            frappe.get_traceback(),
-            "WA Chat Hub Patient Pre-verification Failed",
-        )
+        return {
+            "verified": False,
+            "reason": "verification_tool_error",
+        }
+    if not isinstance(parsed, dict):
+        return {
+            "verified": False,
+            "reason": "verification_tool_invalid_response",
+        }
+    return parsed
 
-    if not result.get("verified"):
-        reason = str(result.get("reason") or "verification_failed")
-        create_ai_suggestion(
-            conversation,
-            "Support Ticket Draft",
-            "Verification failed. Human review required.",
+
+def _apply_configured_intent_tool_narrowing(route) -> None:
+    """A route may narrow an existing allowlist but can never add a tool."""
+    preferred = str(getattr(route, "preferred_mcp_tool", None) or "").strip()
+    if not preferred:
+        return
+    route.allowed_tool_names &= {preferred}
+    route.max_tool_calls = 1 if route.allowed_tool_names else 0
+
+def _gate_configured_workflow_tools_for_model(route) -> None:
+    """Write workflow tools are server-orchestrated and never exposed to the model."""
+    route.allowed_tool_names -= active_workflow_action_tools()
+    if not route.allowed_tool_names:
+        route.max_tool_calls = 0
+
+
+def _handle_configured_workflow(
+    *,
+    conversation: str,
+    message_id: str,
+    body_text: str,
+    raw_payload,
+    intent_decision,
+    route,
+    settings,
+) -> bool:
+    """Advance and execute the configured server-owned workflow atomically."""
+    with conversation_update_lock(conversation):
+        if _already_replied_to_inbound(conversation, message_id):
+            return True
+
+        policy = evaluate_workflow_policy(
+            conversation=conversation,
+            message_id=message_id,
+            body_text=body_text,
+            raw_payload=raw_payload,
+            intent_decision=intent_decision,
+            intent_route=(SimpleNamespace(ai_workflow=route.ai_workflow) if route.ai_workflow else None),
+        )
+        action_tool = str(
+            policy.tool_name or (policy.state or {}).get("action_tool") or ""
+        ).strip()
+        if action_tool and not _workflow_action_is_available(route, action_tool):
+            clear_active_workflow(conversation)
+            frappe.db.commit()
+            task_log(
+                "configured_workflow",
+                "skipped_unavailable",
+                conversation=conversation,
+                message=message_id,
+                workflow=(policy.state or {}).get("workflow"),
+                tool=action_tool,
+            )
+            return False
+
+        if policy.reply and not policy.execute:
+            frappe.db.commit()
+            mode = ""
+            if policy.outbound_template and _should_auto_send(settings):
+                try:
+                    _deliver_ai_template_reply(
+                        conversation,
+                        policy.reply,
+                        policy.outbound_template,
+                    )
+                    mode = "auto_send_template"
+                except Exception:
+                    frappe.log_error(frappe.get_traceback(), "WA AI Workflow Template Send Failed")
+            if not mode:
+                mode = (
+                    _deliver_or_draft_ai_reply(
+                        conversation,
+                        policy.reply,
+                        settings,
+                        message_id,
+                    )
+                    or "duplicate_skip"
+                )
+            task_log(
+                "configured_workflow",
+                "prerequisite_reply",
+                conversation=conversation,
+                message=message_id,
+                workflow=(policy.state or {}).get("workflow"),
+                stage=(policy.state or {}).get("stage"),
+                mode=mode,
+            )
+            return True
+
+        if not policy.execute:
+            return bool(policy.handled)
+
+        workflow_name = str((policy.state or {}).get("workflow") or "")
+        tool_name = str(policy.tool_name or "")
+        success = False
+        if not tool_name or tool_name not in route.allowed_tool_names:
+            clear_active_workflow(conversation)
+            frappe.db.commit()
+            response_text = workflow_message(workflow_name, "unavailable") or _policy_reply_for_route(route, "mcp_action_failed", body_text)
+        else:
+            tool_result = execute_mcp_tool(
+                tool_name,
+                policy.arguments,
+                allowed_tool_names=route.allowed_tool_names,
+                tool_context={
+                    "conversation": conversation,
+                    "patient": route.patient,
+                    "agent_profile": route.agent_profile,
+                    "department": route.department,
+                    "identity_status": route.identity_status,
+                },
+            )
+            try:
+                parsed_tool_result = frappe.parse_json(tool_result)
+            except Exception:
+                parsed_tool_result = {}
+            success = bool(isinstance(parsed_tool_result, dict) and parsed_tool_result.get("success"))
+            if success:
+                response_text = workflow_message(workflow_name, "success") or _policy_reply_for_route(route, "ai_safe_fallback", body_text)
+            else:
+                clear_active_workflow(conversation)
+                frappe.db.commit()
+                response_text = workflow_message(workflow_name, "error") or _policy_reply_for_route(route, "mcp_action_failed", body_text)
+
+        mode = (
+            _deliver_or_draft_ai_reply(
+                conversation,
+                response_text,
+                settings,
+                message_id,
+            )
+            or "duplicate_skip"
         )
         task_log(
-            "patient_verification",
-            "failed_closed",
+            "configured_workflow",
+            "execution_done",
             conversation=conversation,
             message=message_id,
-            patient=route.patient,
-            reason=reason,
+            workflow=workflow_name,
+            tool=tool_name,
+            mode=mode,
+            success=1 if success else 0,
         )
-        frappe.db.commit()
-        return route, False
+        return True
 
-    verified_route = resolve_agent_route(conversation)
-    persist_agent_route(conversation, verified_route)
-    task_log(
-        "patient_verification",
-        "verified",
-        conversation=conversation,
-        message=message_id,
-        patient=verified_route.patient,
-        agent_profile=verified_route.agent_profile,
+
+def _workflow_action_is_available(route, action_tool: str | None) -> bool:
+    """Fail closed unless the configured workflow action is currently callable."""
+    tool_name = str(action_tool or "").strip()
+    if not tool_name or tool_name not in route.allowed_tool_names:
+        return False
+    try:
+        tools = fetch_mcp_tools({tool_name})
+    except Exception:
+        frappe.log_error(
+            frappe.get_traceback(),
+            "WA AI Workflow MCP Availability Check Failed",
+        )
+        return False
+    return any(
+        str((tool.get("function") or {}).get("name") or "").strip() == tool_name
+        for tool in tools
     )
-    frappe.db.commit()
-    return verified_route, True
 
 
 def _deliver_or_draft_ai_reply(
@@ -797,35 +1164,19 @@ def _extract_context_block(context: str, marker: str) -> str:
     return tail
 
 
-def _looks_like_recent_attachment_followup(body: str) -> bool:
+def _looks_like_recent_attachment_followup(body: str, channel_account: str | None) -> bool:
     text = str(body or "").strip().lower()
     if not text:
         return False
-    keywords = (
-        "report",
-        "image",
-        "photo",
-        "pic",
-        "test",
-        "kft",
-        "creatinine",
-        "value",
-        "values",
-        "result",
-        "problem kya",
-        "kya problem",
-        "kya h",
-        "kya hai",
-        "btaoge",
-        "bataoge",
-        "explain",
-        "read",
-        "padh",
+    keywords = tuple(
+        str(keyword).strip().lower()
+        for keyword in policy_section(channel_account, "media_policy").get("attachment_followup_terms") or []
+        if str(keyword).strip()
     )
     return any(keyword in text for keyword in keywords)
 
 
-def _build_recent_attachment_followup_context(conversation: str, msg_doc) -> str:
+def _build_recent_attachment_followup_context(conversation: str, msg_doc, channel_account: str | None) -> str:
     current_creation = getattr(msg_doc, "creation", None)
     filters = {
         "conversation": conversation,
@@ -851,19 +1202,15 @@ def _build_recent_attachment_followup_context(conversation: str, msg_doc) -> str
         row.media_url,
         row.content_type,
         str(row.body or ""),
+        channel_account,
     )
     if not context:
         return ""
-    return (
-        "Customer is asking a follow-up question about the most recent image/report attachment. "
-        "Use the extracted report text below to answer the customer's question. If values look "
-        "abnormal, explain them simply and advise doctor/nephrologist review; do not diagnose or prescribe.\n\n"
-        f"Recent attachment: Chat Message {row.name} sent at {row.creation}\n"
-        f"{context}"
-    )
+    instruction = str(policy_section(channel_account, "media_policy").get("report_summary_prompt") or "").strip()
+    return "\n\n".join(part for part in (instruction, context) if part)
 
 
-def _build_recent_media_batch_context(conversation: str, msg_doc) -> str:
+def _build_recent_media_batch_context(conversation: str, msg_doc, channel_account: str | None) -> str:
     current_creation = getattr(msg_doc, "creation", None)
     if not conversation or not current_creation:
         return ""
@@ -899,9 +1246,9 @@ def _build_recent_media_batch_context(conversation: str, msg_doc) -> str:
         row_body = str(row.body or "")
         try:
             if row_content_type in TRANSCRIPT_CONTENT_TYPES:
-                context = build_transcript_context_for_chat(row.media_url, row_content_type, row_body)
+                context = build_transcript_context_for_chat(row.media_url, row_content_type, row_body, channel_account)
             else:
-                context = build_media_context_for_chat(row.media_url, row_content_type, row_body)
+                context = build_media_context_for_chat(row.media_url, row_content_type, row_body, channel_account)
         except Exception:
             frappe.log_error(frappe.get_traceback(), "WA AI Media Batch Context Item Failed")
             context = f"Customer sent a {row_content_type} attachment."
@@ -1497,6 +1844,39 @@ def _deliver_ai_reply(conversation: str, response_text: str) -> None:
     )
 
 
+def _deliver_ai_template_reply(
+    conversation: str,
+    response_text: str,
+    template: dict,
+) -> None:
+    """Send a configured Interakt quick-reply template and persist its prompt."""
+    convo = safe_ai_get_doc("Chat Conversation", conversation)
+    phone_number = safe_ai_get_value("Chat Contact", convo.contact, "phone_number")
+    reply_to_message = (
+        getattr(frappe.local, "wa_ai_reply_to_message", None)
+        or getattr(frappe.flags, "wa_ai_reply_to_message", None)
+    )
+    outbound = send_interakt_template_message(conversation, template)
+    append_message(
+        {
+            "channel_account": convo.channel_account,
+            "phone_number": phone_number,
+            "direction": "Outbound",
+            "sender_type": "AI",
+            "content_type": "Template",
+            "body": response_text,
+            "delivery_status": outbound.get("delivery_status") or "Sent",
+            "channel_message_id": outbound.get("provider_message_id"),
+            "raw_transport_payload": {
+                **outbound,
+                "source": "ai_configured_workflow",
+                "reply_to_message": reply_to_message,
+            },
+        }
+    )
+    frappe.db.commit()
+
+
 def call_provider(
     provider,
     system_prompt,
@@ -1523,25 +1903,24 @@ def call_provider(
     elif latest_user_text:
         messages.append({"role": "user", "content": latest_user_text})
 
-    is_buopso_vllm = "vllm.buopso.net" in str(provider.base_url or "").lower()
+    channel_account = (tool_context or {}).get("channel_account")
+    resolved_url = provider_endpoint(provider, channel_account)
+    if not resolved_url:
+        raise Exception("Provider endpoint is not configured for this Channel Account.")
     if provider.provider_type in ("OpenAI", "Custom"):
         return call_openai_format(
             provider,
             messages,
-            timeout=15 if is_buopso_vllm else 45,
+            timeout=provider_timeout(channel_account, "chat"),
             allowed_tool_names=allowed_tool_names,
             max_tool_calls=max_tool_calls,
             tool_context=tool_context,
         )
     if provider.provider_type == "Gemini":
-        if not provider.base_url:
-            provider.base_url = (
-                "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-            )
         return call_openai_format(
             provider,
             messages,
-            timeout=45,
+            timeout=provider_timeout(channel_account, "chat"),
             allowed_tool_names=allowed_tool_names,
             max_tool_calls=max_tool_calls,
             tool_context=tool_context,
@@ -1622,6 +2001,7 @@ def execute_mcp_tool(tool_name, arguments_dict, allowed_tool_names=None, tool_co
         )
         return f"Error: Tool {tool_name} not found."
 
+    write_savepoint = None
     try:
         url = tool_meta["url"]
         arguments_dict = dict(arguments_dict or {})
@@ -1665,6 +2045,11 @@ def execute_mcp_tool(tool_name, arguments_dict, allowed_tool_names=None, tool_co
             )
             return response_text
 
+        if str(tool_meta.get("access_mode") or "").lower() == "write":
+            savepoint_name = f"wa_mcp_{secrets.token_hex(12)}"
+            frappe.db.savepoint(savepoint_name)
+            write_savepoint = savepoint_name
+
         fn = frappe.get_attr(url)
         call_arguments = dict(arguments_dict)
         if url == "wa_chat_hub.mcp.configured.execute_configured_tool":
@@ -1682,6 +2067,8 @@ def execute_mcp_tool(tool_name, arguments_dict, allowed_tool_names=None, tool_co
         )
         return json.dumps(res, default=json_handler)
     except Exception as e:
+        if write_savepoint:
+            frappe.db.rollback(save_point=write_savepoint)
         log_mcp_event(
             tool_name=tool_name,
             status="Failed",
@@ -1693,7 +2080,10 @@ def execute_mcp_tool(tool_name, arguments_dict, allowed_tool_names=None, tool_co
             tool_meta=tool_meta,
             tool_context=tool_context,
         )
-        return f"Error executing {tool_name}: {str(e)}"
+        return (
+            f"Error executing {tool_name}: "
+            "The requested action could not be completed safely."
+        )
 
 
 def _max_tokens_payload_key(model_name: str | None) -> str:
@@ -1783,7 +2173,9 @@ def call_openai_format(
     tool_context=None,
 ):
     request_started = time.monotonic()
-    url = provider.base_url or "https://api.openai.com/v1/chat/completions"
+    url = provider_endpoint(provider, (tool_context or {}).get("channel_account"))
+    if not url:
+        raise Exception("Provider endpoint is not configured for this Channel Account.")
     headers = {
         "Authorization": f"Bearer {provider.api_key}",
         "Content-Type": "application/json",
@@ -1861,6 +2253,7 @@ def call_openai_format(
         tool_calls = message["tool_calls"][: max(0, int(max_tool_calls or 0))]
         if not tool_calls:
             return "I’m unable to access the required record safely right now. I’ll connect you with our care team."
+        tool_failed = False
         for tc in tool_calls:
             tool_started = time.monotonic()
             try:
@@ -1873,6 +2266,8 @@ def call_openai_format(
                 allowed_tool_names=allowed_tool_names,
                 tool_context=tool_context,
             )
+            if str(tool_res).startswith("Error"):
+                tool_failed = True
             _log_ai_timing(
                 "tool_done",
                 provider=provider.name,
@@ -1905,11 +2300,27 @@ def call_openai_format(
             status_code=resp.status_code,
             duration_sec=elapsed(followup_started),
         )
+        if resp.status_code != 200 and tool_failed:
+            return (
+                "I could not complete that action safely right now. "
+                "I have kept your request for our care team to assist."
+            )
         resp.raise_for_status()
         data = resp.json()
         follow_choices = data.get("choices") or []
         if not follow_choices:
-            return ""
-        return _strip_model_reasoning((follow_choices[0].get("message") or {}).get("content", "") or "")
+            return (
+                "I could not complete that action safely right now. "
+                "I have kept your request for our care team to assist."
+            ) if tool_failed else ""
+        followup_text = _strip_model_reasoning(
+            (follow_choices[0].get("message") or {}).get("content", "") or ""
+        )
+        if not followup_text and tool_failed:
+            return (
+                "I could not complete that action safely right now. "
+                "I have kept your request for our care team to assist."
+            )
+        return followup_text
 
     return _strip_model_reasoning(message.get("content", "") or "")

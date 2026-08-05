@@ -1,0 +1,104 @@
+{
+  "doctype": "DocType",
+  "name": "WA App Update Log",
+  "module": "WA Chat Hub",
+  "autoname": "hash",
+  "track_changes": 0,
+  "engine": "InnoDB",
+  "field_order": [
+    "update_script",
+    "update_version",
+    "action",
+    "success",
+    "executed_by",
+    "executed_at",
+    "restart_required",
+    "script_snapshot",
+    "result",
+    "error"
+  ],
+  "fields": [
+    {
+      "fieldname": "update_script",
+      "fieldtype": "Data",
+      "label": "Update Script",
+      "read_only": 1,
+      "in_list_view": 1,
+      "search_index": 1
+    },
+    {
+      "fieldname": "update_version",
+      "fieldtype": "Data",
+      "label": "Version",
+      "read_only": 1
+    },
+    {
+      "fieldname": "action",
+      "fieldtype": "Select",
+      "label": "Action",
+      "options": "Created\nEnabled\nReapplied\nDisabled\nDeleted\nMigration\nFailed",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "success",
+      "fieldtype": "Check",
+      "label": "Success",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "executed_by",
+      "fieldtype": "Link",
+      "label": "Executed By",
+      "options": "User",
+      "read_only": 1,
+      "in_list_view": 1,
+      "search_index": 1
+    },
+    {
+      "fieldname": "executed_at",
+      "fieldtype": "Datetime",
+      "label": "Executed At",
+      "read_only": 1,
+      "in_list_view": 1,
+      "search_index": 1
+    },
+    {
+      "fieldname": "restart_required",
+      "fieldtype": "Check",
+      "label": "Manual Restart Required",
+      "read_only": 1
+    },
+    {
+      "fieldname": "script_snapshot",
+      "fieldtype": "Code",
+      "label": "Executed Script Snapshot",
+      "options": "Python",
+      "read_only": 1
+    },
+    {
+      "fieldname": "result",
+      "fieldtype": "Code",
+      "label": "Result",
+      "read_only": 1
+    },
+    {
+      "fieldname": "error",
+      "fieldtype": "Code",
+      "label": "Error",
+      "read_only": 1
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "export": 1,
+      "print": 1,
+      "permlevel": 0
+    }
+  ],
+  "sort_field": "executed_at",
+  "sort_order": "DESC"
+}

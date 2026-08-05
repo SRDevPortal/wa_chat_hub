@@ -8,6 +8,7 @@
  "field_order": [
   "tool_name",
   "is_active",
+  "configuration_version",
   "access_mode",
   "description",
   "server",
@@ -32,6 +33,14 @@
    "fieldtype": "Check",
    "in_list_view": 1,
    "label": "Is Active"
+  },
+  {
+   "default": "1",
+   "description": "Increment only when applying an intentional seed-managed configuration upgrade.",
+   "fieldname": "configuration_version",
+   "fieldtype": "Int",
+   "label": "Configuration Version",
+   "reqd": 1
   },
   {
    "default": "Read",

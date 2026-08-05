@@ -1,0 +1,164 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "field:policy_name",
+ "creation": "2026-08-05 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "policy_name",
+  "is_active",
+  "is_default",
+  "policy_version",
+  "identity_policy",
+  "party_routing_policy",
+  "language_policy",
+  "reply_templates",
+  "patient_creation_policy",
+  "lead_scoring_policy",
+  "media_policy",
+  "provider_policy",
+  "runtime_policy",
+  "permission_policy"
+ ],
+ "fields": [
+  {
+   "fieldname": "policy_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Policy Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Is Active",
+   "search_index": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "is_default",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Default For Migration",
+   "search_index": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "policy_version",
+   "fieldtype": "Int",
+   "label": "Policy Version",
+   "reqd": 1
+  },
+  {
+   "description": "Phone evidence, ownership phrases, verification validity and identity statuses.",
+   "fieldname": "identity_policy",
+   "fieldtype": "Code",
+   "label": "Identity Policy",
+   "options": "JSON"
+  },
+  {
+   "description": "Phone-match precedence and agent type selection by party and identity status.",
+   "fieldname": "party_routing_policy",
+   "fieldtype": "Code",
+   "label": "Party Routing Policy",
+   "options": "JSON"
+  },
+  {
+   "description": "Script ranges, Roman-language markers and detection thresholds.",
+   "fieldname": "language_policy",
+   "fieldtype": "Code",
+   "label": "Language Policy",
+   "options": "JSON"
+  },
+  {
+   "description": "Customer-facing fallback and operational messages keyed by purpose and language.",
+   "fieldname": "reply_templates",
+   "fieldtype": "Code",
+   "label": "Reply Templates",
+   "options": "JSON"
+  },
+  {
+   "description": "Patient and encounter field requirements and missing-data behavior. Never guess clinical demographics.",
+   "fieldname": "patient_creation_policy",
+   "fieldtype": "Code",
+   "label": "Patient Creation Policy",
+   "options": "JSON"
+  },
+  {
+   "description": "Configurable lead scoring terms, weights, bands and disease mappings.",
+   "fieldname": "lead_scoring_policy",
+   "fieldtype": "Code",
+   "label": "Lead Scoring Policy",
+   "options": "JSON"
+  },
+  {
+   "description": "Media prompts and approved clinical rules. Empty clinical rules mean neutral summarization only.",
+   "fieldname": "media_policy",
+   "fieldtype": "Code",
+   "label": "Media Analysis Policy",
+   "options": "JSON"
+  },
+  {
+   "description": "Provider endpoint and task-capability behavior not stored on WA LLM Provider.",
+   "fieldname": "provider_policy",
+   "fieldtype": "Code",
+   "label": "Provider Policy",
+   "options": "JSON"
+  },
+  {
+   "description": "Per-account reply delays, history budgets, timeouts and bounded limits.",
+   "fieldname": "runtime_policy",
+   "fieldtype": "Code",
+   "label": "Runtime Policy",
+   "options": "JSON"
+  },
+  {
+   "description": "Administrator-owned role and record-field allowlists. Code-owned security invariants still apply.",
+   "fieldname": "permission_policy",
+   "fieldtype": "Code",
+   "label": "Permission Policy",
+   "options": "JSON"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-08-05 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "WA Chat Hub",
+ "name": "WA AI Policy Bundle",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "WA Chat Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

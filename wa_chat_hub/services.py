@@ -31,6 +31,7 @@ from wa_chat_hub.prompts import (
     get_conversation_linked_reference,
     set_conversation_crm_lead,
 )
+from wa_chat_hub.policy import get_channel_policy
 from wa_chat_hub.security import (
     WAChatHubSecurityError,
     assert_ai_doctype_permission,
@@ -1089,62 +1090,86 @@ def _link_or_create_master_record(
     except Exception:
         frappe.log_error(frappe.get_traceback(), "WA Chat Hub Identity Reconciliation Failed")
 
+    policy = get_channel_policy(getattr(convo, "channel_account", None))
+    routing_policy = policy.section("party_routing_policy") if policy else {}
+    identity_policy = policy.section("identity_policy") if policy else {}
+    priority = [str(value) for value in routing_policy.get("phone_match_priority") or []]
+    configured_phone_fields = routing_policy.get("phone_fields") or {}
+
     ref_dt, ref_name = get_conversation_linked_reference(convo)
-    if ref_dt == "Patient" and ref_name:
-        _apply_vobiz_patient_routing(conversation, ref_name, getattr(convo, "channel_account", None))
+    if ref_dt and ref_name and routing_policy.get("preserve_existing_reference"):
+        if ref_dt == "Patient":
+            _apply_vobiz_patient_routing(conversation, ref_name, getattr(convo, "channel_account", None))
         return
 
-    patient_matches = _find_indexed_phone_match_names(
-        "Patient",
-        ["mobile", "mobile_no", "phone", "custom_whatsapp_number"],
-        phone_number,
-        limit=2,
-    )
-    if len(patient_matches) > 1:
-        _mark_conversation_patient_ambiguous(convo)
-        return
-    if patient_matches:
+    candidates: dict[str, str] = {}
+    patient_matches: set[str] = set()
+    if "Patient" in priority:
+        patient_fields = [
+            str(fieldname)
+            for fieldname in ((identity_policy.get("phone_fields") or {}).get("Patient") or [])
+            if str(fieldname).strip()
+        ]
+        patient_matches = _find_indexed_phone_match_names(
+            "Patient", patient_fields, phone_number, limit=2
+        )
+        if len(patient_matches) == 1:
+            candidates["Patient"] = next(iter(patient_matches))
+
+    if "Customer" in priority:
+        customer_fields = [
+            str(fieldname)
+            for fieldname in configured_phone_fields.get("Customer") or []
+            if str(fieldname).strip()
+        ]
+        customer_name = _find_by_phone("Customer", customer_fields, phone_number)
+        if customer_name:
+            candidates["Customer"] = customer_name
+
+    existing_crm_lead = get_conversation_crm_lead(convo)
+    if "CRM Lead" in priority and existing_crm_lead and safe_ai_exists("CRM Lead", existing_crm_lead):
+        candidates["CRM Lead"] = existing_crm_lead
+    indexed_lead = _find_existing_lead_by_phone(phone_number)
+    if indexed_lead and indexed_lead[0] in priority:
+        candidates[indexed_lead[0]] = indexed_lead[1]
+
+    selected_type = next((doctype for doctype in priority if doctype in candidates), "")
+    if selected_type == "Patient":
         _link_patient_to_conversation(
             conversation=conversation,
             convo=convo,
             contact=contact,
-            patient_name=next(iter(patient_matches)),
+            patient_name=candidates[selected_type],
             phone_number=phone_number,
             display_name=display_name,
         )
         return
-
-    existing_crm_lead = get_conversation_crm_lead(convo)
-    if existing_crm_lead and safe_ai_exists("CRM Lead", existing_crm_lead):
-        _finalize_crm_lead_after_inbound(
-            conversation,
-            existing_crm_lead,
-            raw_payload=raw_payload,
-            message_name=message_name,
-        )
+    if selected_type == "Patient" or (patient_matches and len(patient_matches) > 1 and priority and priority[0] == "Patient"):
+        _mark_conversation_patient_ambiguous(convo)
         return
-    if ref_dt and ref_name and ref_dt not in {"CRM Lead", "Lead"}:
-        return
-
-    customer_name = _find_by_phone("Customer", ["mobile_no", "phone", "custom_whatsapp_number"], phone_number)
-    if customer_name:
-        contact_updates = {
-            "source_doctype": "Customer",
-            "source_name": customer_name,
-        }
+    if selected_type == "Customer":
+        customer_name = candidates[selected_type]
+        contact_updates = {"source_doctype": selected_type, "source_name": customer_name}
         if display_name and not contact.display_name:
             contact_updates["display_name"] = display_name
         _set_contact_fields(contact, contact_updates)
         _set_conversation_fields(
             convo,
-            {
-                "linked_reference_doctype": "Customer",
-                "linked_reference_name": customer_name,
-            },
+            {"linked_reference_doctype": selected_type, "linked_reference_name": customer_name},
         )
         return
+    if ref_dt and ref_name and ref_dt not in {"CRM Lead", "Lead"}:
+        return
 
-    existing_lead = _find_existing_lead_by_phone(phone_number)
+    existing_lead = (
+        (selected_type, candidates[selected_type])
+        if selected_type in {"CRM Lead", "Lead"}
+        else None
+    )
+    if not policy and not existing_lead:
+        existing_lead = (
+            ("CRM Lead", existing_crm_lead) if existing_crm_lead else indexed_lead
+        )
     if existing_lead:
         lead_doctype, lead_name = existing_lead
     else:
@@ -1571,6 +1596,19 @@ def _find_indexed_phone_match_names(
         return set()
     return matches
 
+
+
+def find_indexed_phone_match_names(
+    doctype: str,
+    phone_fields: list[str],
+    phone_number: str,
+    *,
+    limit: int = 2,
+) -> set[str]:
+    """Public bounded exact phone-key lookup for policy-driven workflows."""
+    return _find_indexed_phone_match_names(
+        doctype, phone_fields, phone_number, limit=limit
+    )
 
 def _find_by_phone(doctype: str, phone_fields: list[str], phone_number: str) -> Optional[str]:
     try:

@@ -4,17 +4,18 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import frappe
+from wa_chat_hub.policy import PolicyBundle, get_channel_policy
 
 
-ROUTING_VERSION = 1
+ROUTING_VERSION = 2
 
 
 @dataclass
 class AgentRoute:
     agent_profile: str | None = None
-    agent_type: str = "General"
-    party_type: str = "Unknown"
-    identity_status: str = "Unverified"
+    agent_type: str = ""
+    party_type: str = ""
+    identity_status: str = ""
     patient: str | None = None
     department: str | None = None
     department_profile: str | None = None
@@ -30,6 +31,14 @@ class AgentRoute:
     max_tool_calls: int = 0
     allowed_tool_names: set[str] = field(default_factory=set)
     allowed_knowledge_bases: set[str] = field(default_factory=set)
+    requires_patient_data: bool = False
+    channel_account: str | None = None
+    policy_bundle: PolicyBundle | None = None
+    intent_route: str | None = None
+    ai_workflow: str | None = None
+    preferred_mcp_tool: str | None = None
+    blocked_reply: str = ""
+    blocked_replies: dict[str, str] = field(default_factory=dict)
 
     @property
     def tools_allowed(self) -> bool:
@@ -38,18 +47,17 @@ class AgentRoute:
 
 def resolve_agent_route(conversation: str | Any) -> AgentRoute:
     convo = frappe.get_doc("Chat Conversation", conversation) if isinstance(conversation, str) else conversation
-    party_type, patient = _resolve_party(convo)
-    identity_status = getattr(convo, "identity_status", None) or "Unverified"
+    channel_account = getattr(convo, "channel_account", None) or None
+    policy = get_channel_policy(channel_account)
+    party_type, patient = _resolve_party(convo, policy)
+    statuses = policy.section("identity_policy").get("statuses") if policy else {}
+    identity_status = getattr(convo, "identity_status", None) or str((statuses or {}).get("unverified") or "")
     department = getattr(convo, "medical_department", None) or None
     department_source = getattr(convo, "department_source", None) or ("conversation" if department else None)
     department_confidence = float(getattr(convo, "department_confidence", None) or (1.0 if department else 0.0))
 
-    requested_type = _agent_type_for_party(party_type, identity_status)
-    agent = _default_agent(requested_type)
-    if not agent and requested_type == "Patient Verification":
-        agent = _default_agent("Patient")
-    if not agent:
-        agent = _default_agent("General")
+    requested_type = _agent_type_for_party(party_type, identity_status, policy)
+    agent = _default_agent(requested_type) if policy and requested_type else None
 
     route = AgentRoute(
         agent_profile=agent.name if agent else None,
@@ -58,6 +66,8 @@ def resolve_agent_route(conversation: str | Any) -> AgentRoute:
         identity_status=identity_status,
         patient=patient,
         department=department,
+        channel_account=channel_account,
+        policy_bundle=policy,
         department_source=department_source,
         department_confidence=department_confidence,
         routing_reason=_routing_reason(party_type, identity_status, bool(agent)),
@@ -70,7 +80,7 @@ def resolve_agent_route(conversation: str | Any) -> AgentRoute:
     route.escalation_policy = (agent.escalation_policy or "").strip()
     route.auto_reply_mode = agent.auto_reply_mode or None
     route.llm_provider = agent.llm_provider or None
-    route.max_tool_calls = max(0, min(5, int(agent.max_tool_calls or 0)))
+    route.max_tool_calls = _bounded_tool_calls(route, agent.max_tool_calls)
     route.allowed_tool_names = _active_child_values(agent.get("allowed_tools"), "mcp_tool")
 
     department_profile = _department_profile(agent.name, department)
@@ -85,10 +95,95 @@ def resolve_agent_route(conversation: str | Any) -> AgentRoute:
             department_profile.get("knowledge_bases"), "knowledge_base"
         )
 
-    if agent.get("require_verified_identity") and identity_status != "Verified":
+    if agent.get("require_verified_identity") and identity_status != _configured_status(policy, "verified"):
         route.allowed_tool_names.clear()
 
     return route
+
+
+def apply_intent_route(route: AgentRoute, decision: Any) -> AgentRoute:
+    """Resolve agent/workflow only from trusted WA AI Intent Route records."""
+    from wa_chat_hub.ai.configuration import load_active_intents, resolve_intent_route
+
+    if not route.policy_bundle:
+        route.requires_patient_data = False
+        route.intent_route = None
+        route.ai_workflow = None
+        route.preferred_mcp_tool = None
+        route.blocked_reply = ""
+        route.blocked_replies = {}
+        _apply_channel_default(route)
+        route.routing_reason = "policy_bundle_missing:channel_default"
+        return route
+    intent_name = str(getattr(decision, "intent", "") or "").strip()
+    definition = load_active_intents().get(intent_name)
+    route.requires_patient_data = bool(definition and definition.requires_patient_data)
+    configured = (
+        resolve_intent_route(
+            definition,
+            channel_account=route.channel_account,
+            party_type=route.party_type,
+            identity_status=route.identity_status,
+        )
+        if definition
+        else None
+    )
+    route.intent_route = configured.name if configured else None
+    route.ai_workflow = configured.ai_workflow if configured else None
+    route.preferred_mcp_tool = configured.preferred_mcp_tool if configured else None
+    route.blocked_reply = (
+        configured.blocked_reply
+        if configured and configured.blocked_reply
+        else (definition.clarification_prompt if definition and route.requires_patient_data else "")
+    )
+    route.blocked_replies = dict(configured.blocked_replies) if configured else {}
+
+    if configured and configured.target_type == "Agent Profile" and configured.agent_profile:
+        agent = frappe.get_doc("WA AI Agent Profile", configured.agent_profile)
+        if agent.get("is_active"):
+            _apply_agent_profile(route, agent)
+            route.routing_reason = f"configured_intent_route:{configured.name}"
+            return route
+
+    # Public/general/new-request routing continues through the Channel Account
+    # prompt and Account MCP Tools. This intentionally does not create a Sales Agent.
+    _apply_channel_default(route)
+    route.routing_reason = (
+        f"configured_intent_route:{configured.name}"
+        if configured
+        else f"intent_route_missing:{intent_name or 'unclassified'}"
+    )
+    return route
+
+
+def localized_blocked_reply(
+    route: AgentRoute,
+    body_text: str | None,
+    history: list[dict[str, Any]] | None = None,
+) -> str:
+    """Resolve a protected-route reply from administrator-configured languages."""
+    from wa_chat_hub.ai.language import resolve_language_from_history
+
+    replies = {
+        str(code).strip(): str(reply).strip()
+        for code, reply in (route.blocked_replies or {}).items()
+        if str(code).strip() and str(reply).strip()
+    }
+    if not replies:
+        return str(route.blocked_reply or "").strip()
+
+    language = resolve_language_from_history(
+        str(body_text or ""),
+        history,
+        channel_account=route.channel_account,
+        policy=route.policy_bundle.section("language_policy") if route.policy_bundle else None,
+    )
+    code = str(language.get("code") or "auto").strip()
+    base_code = code.split("-", 1)[0]
+    for candidate in (code, base_code, "default", "en"):
+        if replies.get(candidate):
+            return replies[candidate]
+    return str(route.blocked_reply or "").strip()
 
 
 def build_agent_prompt(route: AgentRoute) -> str:
@@ -103,23 +198,15 @@ def build_agent_prompt(route: AgentRoute) -> str:
 
 
 def _identity_verification_prompt(route: AgentRoute) -> str:
-    if route.party_type != "Patient":
+    patient_party = _configured_party_type(route.policy_bundle, "Patient")
+    verified_status = _configured_status(route.policy_bundle, "verified")
+    if not patient_party or route.party_type != patient_party:
         return ""
-    if route.identity_status != "Verified":
-        return (
-            "IDENTITY VERIFICATION RULES (mandatory): Do not ask the customer for "
-            "a mobile number, full name, date of birth, email, address, patient ID, "
-            "or any other identity detail. Immediately call verify_patient_identity "
-            "without arguments. Confirm success only when the tool returns "
-            "verified=true. On failure, disclose no patient information and escalate "
-            "to a human for secure verification."
-        )
-    return (
-        "IDENTITY VERIFIED: Do not ask for identity details again. If the customer "
-        "has just completed verification, briefly confirm success and immediately "
-        "continue the most recent unresolved request from the conversation history "
-        "in the same reply. Never ask the customer to wait for verification."
-    )
+    if route.identity_status != verified_status and route.requires_patient_data:
+        return _route_policy_reply(route, "system_identity_verification")
+    if verified_status and route.identity_status == verified_status:
+        return _route_policy_reply(route, "system_identity_verified")
+    return _route_policy_reply(route, "system_public_patient_conversation")
 
 
 def persist_agent_route(conversation: str, route: AgentRoute) -> None:
@@ -137,27 +224,44 @@ def persist_agent_route(conversation: str, route: AgentRoute) -> None:
         frappe.db.set_value("Chat Conversation", conversation, values, update_modified=False)
 
 
-def _resolve_party(convo) -> tuple[str, str | None]:
+def _resolve_party(convo, policy: PolicyBundle | None) -> tuple[str, str | None]:
+    if not policy:
+        return "", None
+    routing = policy.section("party_routing_policy")
+    reference_map = routing.get("party_type_by_reference_doctype") or {}
+    unknown_party = str(routing.get("unknown_party_type") or "").strip()
     patient = getattr(convo, "linked_patient", None)
     if not patient and getattr(convo, "linked_reference_doctype", None) == "Patient":
         patient = getattr(convo, "linked_reference_name", None)
     if patient:
-        return "Patient", patient
-    if getattr(convo, "party_type", None) == "Patient":
-        return "Patient", None
-    if getattr(convo, "linked_crm_lead", None) or getattr(convo, "linked_reference_doctype", None) in {
-        "CRM Lead", "Lead"
-    }:
-        return "Lead", None
-    return getattr(convo, "party_type", None) or "Unknown", None
+        return str(reference_map.get("Patient") or unknown_party), patient
+    statuses = policy.section("identity_policy").get("statuses") or {}
+    ambiguous_status = str(statuses.get("ambiguous") or "").strip()
+    ambiguous_party = str(routing.get("ambiguous_patient_party_type") or "").strip()
+    if ambiguous_status and ambiguous_party and getattr(convo, "identity_status", None) == ambiguous_status:
+        return ambiguous_party, None
+    reference_doctype = getattr(convo, "linked_reference_doctype", None)
+    if getattr(convo, "linked_crm_lead", None):
+        reference_doctype = "CRM Lead"
+    if reference_doctype and reference_map.get(reference_doctype):
+        return str(reference_map.get(reference_doctype)), None
+    stored_party = str(getattr(convo, "party_type", None) or "").strip()
+    allowed_parties = set(str(item) for item in routing.get("allowed_party_types") or [])
+    return (stored_party, None) if stored_party in allowed_parties else (unknown_party, None)
 
 
-def _agent_type_for_party(party_type: str, identity_status: str) -> str:
-    if party_type == "Patient":
-        return "Patient" if identity_status == "Verified" else "Patient Verification"
-    if party_type == "Lead":
-        return "Lead"
-    return "General"
+def _agent_type_for_party(
+    party_type: str,
+    identity_status: str,
+    policy: PolicyBundle | None,
+) -> str:
+    if not policy:
+        return ""
+    mappings = policy.section("party_routing_policy").get("agent_type_by_party_status") or {}
+    party_mapping = mappings.get(party_type) if isinstance(mappings, dict) else None
+    if not isinstance(party_mapping, dict):
+        return ""
+    return str(party_mapping.get(identity_status) or party_mapping.get("default") or "")
 
 
 def _default_agent(agent_type: str):
@@ -169,6 +273,52 @@ def _default_agent(agent_type: str):
         "name",
     )
     return frappe.get_doc("WA AI Agent Profile", name) if name else None
+
+
+def _apply_agent_profile(route: AgentRoute, agent: Any) -> None:
+    route.agent_profile = agent.name
+    route.agent_type = agent.agent_type
+    route.system_prompt = (agent.system_prompt or "").strip()
+    route.medical_guardrail_policy = (agent.medical_guardrail_policy or "").strip()
+    route.escalation_policy = (agent.escalation_policy or "").strip()
+    route.auto_reply_mode = agent.auto_reply_mode or None
+    route.llm_provider = agent.llm_provider or None
+    route.max_tool_calls = _bounded_tool_calls(route, agent.max_tool_calls)
+    route.allowed_tool_names = _active_child_values(agent.get("allowed_tools"), "mcp_tool")
+
+    department_profile = _department_profile(agent.name, route.department)
+    route.department_profile = None
+    route.prompt_overlay = ""
+    route.allowed_knowledge_bases = set()
+    if department_profile:
+        route.department_profile = department_profile.name
+        route.prompt_overlay = (department_profile.prompt_overlay or "").strip()
+        route.auto_reply_mode = department_profile.auto_reply_mode or route.auto_reply_mode
+        route.allowed_tool_names |= _active_child_values(
+            department_profile.get("allowed_tools"), "mcp_tool"
+        )
+        route.allowed_knowledge_bases = _active_child_values(
+            department_profile.get("knowledge_bases"), "knowledge_base"
+        )
+
+    if agent.get("require_verified_identity") and route.identity_status != _configured_status(route.policy_bundle, "verified"):
+        route.allowed_tool_names.clear()
+
+
+def _apply_channel_default(route: AgentRoute) -> None:
+    """Clear profile-specific configuration so account/global settings take over."""
+    route.agent_profile = None
+    route.agent_type = ""
+    route.department_profile = None
+    route.system_prompt = ""
+    route.medical_guardrail_policy = ""
+    route.escalation_policy = ""
+    route.prompt_overlay = ""
+    route.auto_reply_mode = None
+    route.llm_provider = None
+    route.max_tool_calls = 0
+    route.allowed_tool_names = set()
+    route.allowed_knowledge_bases = set()
 
 
 def _department_profile(agent_profile: str, department: str | None):
@@ -194,3 +344,42 @@ def _active_child_values(rows, fieldname: str) -> set[str]:
 def _routing_reason(party_type: str, identity_status: str, configured: bool) -> str:
     suffix = "configured_profile" if configured else "legacy_global_configuration"
     return f"{party_type.lower()}:{identity_status.lower()}:{suffix}"
+
+
+def _bounded_tool_calls(route: AgentRoute, value: Any) -> int:
+    if not route.policy_bundle:
+        return 0
+    runtime = route.policy_bundle.section("runtime_policy")
+    maximum = int(runtime.get("maximum_tool_calls") or 0)
+    if maximum <= 0:
+        return 0
+    return max(0, min(int(value or 0), maximum))
+
+
+def _configured_status(policy: PolicyBundle | None, key: str) -> str:
+    if not policy:
+        return ""
+    return str((policy.section("identity_policy").get("statuses") or {}).get(key) or "")
+
+
+def _configured_party_type(policy: PolicyBundle | None, reference_doctype: str) -> str:
+    if not policy:
+        return ""
+    routing = policy.section("party_routing_policy")
+    return str(
+        (routing.get("party_type_by_reference_doctype") or {}).get(reference_doctype)
+        or ""
+    )
+
+
+def _route_policy_reply(route: AgentRoute, key: str) -> str:
+    bundle = route.policy_bundle
+    if not bundle:
+        return ""
+    value = bundle.section("reply_templates").get(key)
+    if isinstance(value, str):
+        return value.strip()
+    if not isinstance(value, dict):
+        return ""
+    reply = value.get("default")
+    return reply.strip() if isinstance(reply, str) else ""

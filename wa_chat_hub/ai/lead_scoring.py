@@ -11,6 +11,7 @@ from wa_chat_hub.ai.providers import CHAT_CAPABILITY, get_active_llm_provider_ro
 from wa_chat_hub.ai.language import resolve_language_from_history
 from wa_chat_hub.db_retry import with_db_lock_retry
 from wa_chat_hub.prompts import get_conversation_crm_lead
+from wa_chat_hub.policy import get_conversation_policy, provider_endpoint, provider_timeout
 from wa_chat_hub.security import (
     assert_ai_doctype_permission,
     safe_ai_exists,
@@ -131,32 +132,43 @@ def sync_to_linked_lead(conversation: str, result: ScoreResult | None = None) ->
 
 
 def _ai_score(convo, history: List[Dict]) -> ScoreResult:
+    bundle = get_conversation_policy(convo)
+    scoring_policy = bundle.section("lead_scoring_policy") if bundle else {}
+    if not scoring_policy.get("enabled"):
+        return ScoreResult(
+            lead_score=float(getattr(convo, "lead_score", 0) or 0),
+            lead_temperature=str(getattr(convo, "lead_temperature", "") or ""),
+            lead_lan=str(getattr(convo, "lead_lan", "") or ""),
+            source="policy_disabled",
+        )
     inbound = [h for h in history if h.get("direction") == "Inbound" and str(h.get("body") or "").strip()]
     latest_text = inbound[-1]["body"] if inbound else ""
-    lang = resolve_language_from_history(str(latest_text or ""), history)
-    lead_lan = (lang.get("label") or "English").strip()
+    lang = resolve_language_from_history(
+        str(latest_text or ""), history, channel_account=getattr(convo, "channel_account", None)
+    )
+    lead_lan = str(lang.get("label") or "").strip()
 
     providers = _load_active_providers()
     if not providers:
-        return _heuristic_score(convo, history, lead_lan)
+        return _heuristic_score(convo, history, lead_lan, scoring_policy)
 
     prompt = _build_scoring_prompt(convo, history, lead_lan)
     for provider in providers:
         try:
-            score = _call_score_provider(provider, prompt)
+            score = _call_score_provider(provider, prompt, getattr(convo, "channel_account", None))
             if score is None:
                 continue
             score = _clamp(score, 0, 100)
             return ScoreResult(
                 lead_score=score,
-                lead_temperature=_score_to_temperature(score),
+                lead_temperature=_score_to_temperature(score, scoring_policy),
                 lead_lan=lead_lan,
                 source=f"ai:{provider['name']}",
             )
         except Exception:
             frappe.log_error(frappe.get_traceback(), f"Lead Scoring Provider Failed: {provider['name']}")
 
-    return _heuristic_score(convo, history, lead_lan)
+    return _heuristic_score(convo, history, lead_lan, scoring_policy)
 
 
 def _build_scoring_prompt(convo, history: List[Dict], lead_lan: str) -> str:
@@ -199,10 +211,10 @@ def _is_chat_reply_only_provider(row) -> bool:
     return "vllm.buopso.net" in base_url or model.startswith("qwen3:")
 
 
-def _call_score_provider(provider: Dict, prompt: str) -> float | None:
-    url = provider.get("base_url") or "https://api.openai.com/v1/chat/completions"
-    if provider.get("provider_type") == "Gemini" and not provider.get("base_url"):
-        url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+def _call_score_provider(provider: Dict, prompt: str, channel_account: str | None) -> float | None:
+    url = provider_endpoint(provider, channel_account)
+    if not url:
+        return None
     if url.endswith("/") and "chat/completions" not in url:
         url = f"{url}chat/completions"
 
@@ -221,7 +233,7 @@ def _call_score_provider(provider: Dict, prompt: str) -> float | None:
             "Content-Type": "application/json",
         },
         json=payload,
-        timeout=20,
+        timeout=provider_timeout(channel_account, "classification"),
     )
     resp.raise_for_status()
     content = resp.json()["choices"][0]["message"].get("content", "").strip()
@@ -236,34 +248,38 @@ def _call_score_provider(provider: Dict, prompt: str) -> float | None:
         return float(digits) if digits else None
 
 
-def _heuristic_score(convo, history: List[Dict], lead_lan: str) -> ScoreResult:
-    score = 20.0
+def _heuristic_score(convo, history: List[Dict], lead_lan: str, policy: Dict) -> ScoreResult:
+    score = float(policy.get("base_score") or 0)
     inbound_count = len([h for h in history if h.get("direction") == "Inbound" and str(h.get("body") or "").strip()])
-    score += min(30, inbound_count * 3)
-    score += min(15, int(convo.unread_count or 0) * 2)
-    score += {"Low": 0, "Medium": 5, "High": 12, "Urgent": 20}.get(convo.priority, 0)
+    score += min(float(policy.get("inbound_message_cap") or 0), inbound_count * float(policy.get("inbound_message_weight") or 0))
+    score += min(float(policy.get("unread_cap") or 0), int(convo.unread_count or 0) * float(policy.get("unread_weight") or 0))
+    score += float((policy.get("priority_weights") or {}).get(convo.priority) or 0)
 
     joined = " ".join([str(h.get("body") or "") for h in history]).lower()
-    hot_terms = ["price", "cost", "book", "appointment", "consult", "today", "urgent", "buy", "payment"]
-    warm_terms = ["interested", "details", "plan", "treatment", "package"]
-    score += sum(4 for term in hot_terms if term in joined)
-    score += sum(2 for term in warm_terms if term in joined)
+    hot_terms = [str(term).lower() for term in policy.get("hot_terms") or []]
+    warm_terms = [str(term).lower() for term in policy.get("warm_terms") or []]
+    score += sum(float(policy.get("hot_term_weight") or 0) for term in hot_terms if term in joined)
+    score += sum(float(policy.get("warm_term_weight") or 0) for term in warm_terms if term in joined)
 
     score = _clamp(score, 0, 100)
     return ScoreResult(
         lead_score=score,
-        lead_temperature=_score_to_temperature(score),
+        lead_temperature=_score_to_temperature(score, policy),
         lead_lan=lead_lan,
         source="heuristic",
     )
 
 
-def _score_to_temperature(score: float) -> str:
-    if score >= 70:
-        return "Hot"
-    if score >= 40:
-        return "Warm"
-    return "Cold"
+def _score_to_temperature(score: float, policy: Dict) -> str:
+    bands = sorted(
+        (band for band in policy.get("temperature_bands") or [] if isinstance(band, dict)),
+        key=lambda band: float(band.get("minimum") or 0),
+        reverse=True,
+    )
+    for band in bands:
+        if score >= float(band.get("minimum") or 0):
+            return str(band.get("label") or "")
+    return ""
 
 
 def _clamp(value: float, low: float, high: float) -> float:

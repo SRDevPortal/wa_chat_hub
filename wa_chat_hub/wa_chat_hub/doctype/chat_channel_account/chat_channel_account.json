@@ -8,12 +8,14 @@
   "account_name",
   "channel_type",
   "department",
+  "default_medical_department",
   "phone_number",
   "phone_id",
   "waba_id",
   "connector_status",
   "default_team",
   "is_active",
+  "ai_policy_bundle",
   "interakt_config",
   "outbound_pipelines",
   "interakt_api_key",
@@ -56,6 +58,15 @@
    "options": "Department"
   },
   {
+   "description": "Medical Department assigned to new Patients and treatment encounters created from this channel account.",
+   "fieldname": "default_medical_department",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Default Medical Department",
+   "options": "Medical Department",
+   "search_index": 1
+  },
+  {
    "fieldname": "phone_number",
    "fieldtype": "Data",
    "label": "Phone Number"
@@ -90,6 +101,14 @@
    "fieldname": "is_active",
    "fieldtype": "Check",
    "label": "Is Active"
+  },
+  {
+   "search_index": 1,
+   "description": "Versioned business policy for identity, routing, replies, patient creation, scoring, media, providers, runtime and permissions. Without a bundle the account uses normal default-agent behavior and no policy-driven MCP workflow.",
+   "fieldname": "ai_policy_bundle",
+   "fieldtype": "Link",
+   "label": "AI Policy Bundle",
+   "options": "WA AI Policy Bundle"
   },
   {
    "depends_on": "eval:doc.channel_type == 'Interakt'",

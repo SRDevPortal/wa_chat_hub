@@ -53,6 +53,8 @@ def _get_admin_link_cards():
                 _shortcut("WA Channel Pipeline Map", "WA Channel Pipeline Map", icon="branch"),
                 _shortcut("WA Channel Context", "WA Channel Context", icon="file"),
                 _shortcut("WA Chat Hub Settings", "WA Chat Hub Settings", icon="settings"),
+                _shortcut("WA App Update Script", "WA App Update Script", icon="code"),
+                _shortcut("WA App Update Log", "WA App Update Log", icon="activity"),
             ],
         ),
         (
@@ -60,6 +62,9 @@ def _get_admin_link_cards():
             [
                 _shortcut("WA AI Knowledge Base", "WA AI Knowledge Base", icon="book"),
                 _shortcut("WA AI Agent Profile", "WA AI Agent Profile", icon="cpu"),
+                _shortcut("WA AI Intent", "WA AI Intent", icon="list"),
+                _shortcut("WA AI Intent Route", "WA AI Intent Route", icon="branch"),
+                _shortcut("WA AI Workflow", "WA AI Workflow", icon="git-merge"),
                 _shortcut("WA AI Department Profile", "WA AI Department Profile", icon="branch"),
                 _shortcut("WA LLM Provider", "WA LLM Provider", icon="cpu"),
                 _shortcut("WA MCP Server", "WA MCP Server", icon="server"),

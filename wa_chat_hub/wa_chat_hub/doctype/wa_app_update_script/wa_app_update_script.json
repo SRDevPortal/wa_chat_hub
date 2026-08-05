@@ -1,0 +1,169 @@
+{
+  "doctype": "DocType",
+  "name": "WA App Update Script",
+  "module": "WA Chat Hub",
+  "autoname": "field:update_name",
+  "title_field": "update_name",
+  "track_changes": 1,
+  "engine": "InnoDB",
+  "field_order": [
+    "update_name",
+    "update_version",
+    "description",
+    "enabled",
+    "status",
+    "section_scripts",
+    "apply_script",
+    "revert_script",
+    "section_options",
+    "run_migration",
+    "clear_cache_after_execution",
+    "restart_required",
+    "section_last_execution",
+    "last_execution_result",
+    "last_applied_by",
+    "last_applied_at",
+    "last_reverted_by",
+    "last_reverted_at"
+  ],
+  "fields": [
+    {
+      "fieldname": "update_name",
+      "fieldtype": "Data",
+      "label": "Update Name",
+      "reqd": 1,
+      "set_only_once": 1,
+      "unique": 1,
+      "in_list_view": 1,
+      "search_index": 1
+    },
+    {
+      "fieldname": "update_version",
+      "fieldtype": "Data",
+      "label": "Version",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "description",
+      "fieldtype": "Small Text",
+      "label": "Description"
+    },
+    {
+      "default": "0",
+      "fieldname": "enabled",
+      "fieldtype": "Check",
+      "label": "Enabled",
+      "read_only": 1,
+      "in_list_view": 1,
+      "search_index": 1
+    },
+    {
+      "default": "Draft",
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "label": "Status",
+      "options": "Draft\nApplying\nEnabled\nReverting\nDisabled\nFailed",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "section_scripts",
+      "fieldtype": "Section Break",
+      "label": "Update Code"
+    },
+    {
+      "description": "Python code executed when this update is enabled or run again. Set the result variable to store a custom result.",
+      "fieldname": "apply_script",
+      "fieldtype": "Code",
+      "label": "Apply Script",
+      "options": "Python",
+      "reqd": 1
+    },
+    {
+      "description": "Python code executed when this update is disabled or reverted.",
+      "fieldname": "revert_script",
+      "fieldtype": "Code",
+      "label": "Revert Script",
+      "options": "Python",
+      "reqd": 1
+    },
+    {
+      "fieldname": "section_options",
+      "fieldtype": "Section Break",
+      "label": "After Execution"
+    },
+    {
+      "default": "0",
+      "fieldname": "run_migration",
+      "fieldtype": "Check",
+      "label": "Run Site Migration"
+    },
+    {
+      "default": "1",
+      "fieldname": "clear_cache_after_execution",
+      "fieldtype": "Check",
+      "label": "Clear Cache"
+    },
+    {
+      "default": "0",
+      "description": "Informational only. WA Chat Hub will not restart Bench automatically.",
+      "fieldname": "restart_required",
+      "fieldtype": "Check",
+      "label": "Manual Restart Required"
+    },
+    {
+      "collapsible": 1,
+      "fieldname": "section_last_execution",
+      "fieldtype": "Section Break",
+      "label": "Last Execution"
+    },
+    {
+      "fieldname": "last_execution_result",
+      "fieldtype": "Code",
+      "label": "Last Result",
+      "read_only": 1
+    },
+    {
+      "fieldname": "last_applied_by",
+      "fieldtype": "Link",
+      "label": "Last Applied By",
+      "options": "User",
+      "read_only": 1
+    },
+    {
+      "fieldname": "last_applied_at",
+      "fieldtype": "Datetime",
+      "label": "Last Applied At",
+      "read_only": 1
+    },
+    {
+      "fieldname": "last_reverted_by",
+      "fieldtype": "Link",
+      "label": "Last Reverted By",
+      "options": "User",
+      "read_only": 1
+    },
+    {
+      "fieldname": "last_reverted_at",
+      "fieldtype": "Datetime",
+      "label": "Last Reverted At",
+      "read_only": 1
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1,
+      "export": 1,
+      "print": 1,
+      "email": 1,
+      "share": 1,
+      "permlevel": 0
+    }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC"
+}

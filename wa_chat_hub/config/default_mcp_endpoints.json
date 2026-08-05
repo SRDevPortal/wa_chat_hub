@@ -1,0 +1,108 @@
+{
+  "WA MCP Tool Endpoint": [
+    {
+      "tool_name": "create_verified_patient_draft_encounter",
+      "is_active": 1,
+      "configuration_version": 3,
+      "description": "Create a draft Patient Encounter from a configured, server-confirmed WhatsApp workflow. The workflow can reuse or create the linked Patient before inserting the encounter.",
+      "endpoint_url": "wa_chat_hub.mcp.configured.execute_configured_tool",
+      "http_method": "POST",
+      "access_mode": "Write",
+      "parameters_schema": {
+        "type": "object",
+        "properties": {
+          "customer_name": {"type": "string", "minLength": 2, "maxLength": 80},
+          "encounter_reason": {"type": "string"},
+          "customer_confirmed": {"type": "integer", "enum": [1]},
+          "encounter_type": {"type": "string", "enum": ["Followup", "Order", "Appointment"]},
+          "encounter_place": {"type": "string", "enum": ["Online", "OPD"]},
+          "complaints": {"type": "string"},
+          "observations": {"type": "string"},
+          "investigations": {"type": "string"},
+          "diagnosis": {"type": "string"},
+          "notes": {"type": "string"},
+          "instructions": {"type": "string"},
+          "practitioner": {"type": "string"},
+          "appointment": {"type": "string"},
+          "diet_chart": {"type": "string"},
+          "medical_department": {"type": "string"},
+          "company": {"type": "string"},
+          "customer_address": {"type": "string", "minLength": 20},
+          "encounter_date": {"type": "string"},
+          "encounter_time": {"type": "string"}
+        },
+        "required": ["customer_name", "encounter_reason", "customer_confirmed", "customer_address"],
+        "additionalProperties": false
+      },
+      "execution_config": {
+        "action": "insert_doc",
+        "target_doctype": "Patient Encounter",
+        "requires_workflow_authorization": true,
+        "requires_confirmation_field": "customer_confirmed",
+        "required_arguments": ["customer_name", "encounter_reason", "customer_address"],
+        "ignore_links": true,
+        "created_by_agent": "WA Configured Workflow MCP",
+        "resolve_patient": {
+          "enabled": true,
+          "create_if_missing": true,
+          "link_to_conversation": true,
+          "company": {"arg": "company", "link_or_default": "Company"},
+          "global_defaults": {"company": {"source": "context", "path": "company"}},
+          "patient_field_values": {
+            "first_name": {
+              "source": "arg",
+              "path": "customer_name"
+            },
+            "patient_name": {
+              "source": "arg",
+              "path": "customer_name"
+            },
+            "mobile": {"source": "context", "path": "mobile"},
+            "sr_medical_department": {
+              "source": "context",
+              "path": "channel_account_doc.default_medical_department",
+              "doctype": "Medical Department"
+            },
+            "sr_dpt_disease": {
+              "source": "raw_payload",
+              "paths": [
+                "raw_payload.data.customer.traits.sr_lead_disease",
+                "raw_payload.data.customer.traits.disease"
+              ]
+            },
+            "created_by_agent": {"source": "context", "path": "created_by_agent"}
+          }
+        },
+        "field_values": {
+          "sr_encounter_type": "Followup",
+          "sr_encounter_place": {"arg": "encounter_place", "default": "Online", "allowed": ["Online", "OPD"]},
+          "patient": {"context": "patient"},
+          "patient_name": {"patient_field": "patient_name"},
+          "patient_sex": {"patient_field": "sex"},
+          "patient_age": {"patient_field": "sr_patient_age"},
+          "sr_pe_mobile": {"patient_field": "mobile"},
+          "sr_pe_deptt": {"patient_field": "sr_medical_department"},
+          "sr_pe_age": {"patient_field": "sr_patient_age"},
+          "company": {"context": "company"},
+          "status": "Open",
+          "encounter_date": {"date_arg": "encounter_date"},
+          "encounter_time": {"arg": "encounter_time", "default": "nowtime"},
+          "medical_department": {"patient_field": "sr_medical_department"},
+          "practitioner": {"arg": "practitioner"},
+          "pe_practitioner": {"arg": "practitioner"},
+          "appointment": {"arg": "appointment"},
+          "diet_chart": {"arg": "diet_chart"},
+          "sr_encounter_source": {"link_or_none": "SR Lead Source", "value": "WhatsApp"},
+          "sr_sales_type": {"link_or_none": "SR Sales Type", "value": "Whatsapp"},
+          "sr_complaints": {"fallback_args": ["complaints", "encounter_reason"]},
+          "sr_observations": {"arg": "observations"},
+          "sr_investigations": {"arg": "investigations"},
+          "sr_diagnosis": {"arg": "diagnosis"},
+          "sr_notes": {"template": "Draft encounter created from WhatsApp chat: {encounter_reason}\nCustomer address: {customer_address}"},
+          "sr_pe_instruction": {"arg": "instructions"}
+        },
+        "return_fields": ["docstatus", "status", "encounter_date", "encounter_time"]
+      }
+    }
+  ]
+}

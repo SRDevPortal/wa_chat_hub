@@ -1,0 +1,469 @@
+{
+  "WA AI Intent": [
+    {
+      "intent_name": "new_treatment_order_request",
+      "intent_label": "New Treatment / Order Request",
+      "is_active": 1,
+      "priority": 100,
+      "description": "The customer wants to begin treatment, obtain medicine, create a new case, or create a new order. Creation/treatment wording takes priority over incidental tracking wording.",
+      "classifier_examples": "mujhe treatment lena hai mera order ceate krdo\npsoriasis ke liye medicine order kar do\nmera treatment start karna hai\ndawai bhej do\nnew order banao\ndoctor se treatment order create karwa do",
+      "fallback_match": {
+        "contains_any": [
+          "new order",
+          "order create",
+          "order ceate",
+          "order creat",
+          "order banao",
+          "order bnao",
+          "order kar do",
+          "order kr do",
+          "case create",
+          "case banao",
+          "treatment lena",
+          "treatment start",
+          "medicine order",
+          "medicin order",
+          "medicine chahiye",
+          "dawai chahiye",
+          "dawa chahiye",
+          "dawai bhej",
+          "medicine bhej"
+        ]
+      },
+      "confidence_threshold": 0.55,
+      "requires_patient_data": 0,
+      "is_default_fallback": 0,
+      "clarification_prompt": "Please tell me whether you want to start a new treatment request or track an order that was already created."
+    },
+    {
+      "intent_name": "existing_order_status",
+      "intent_label": "Existing Order / Shipment Status",
+      "is_active": 1,
+      "priority": 80,
+      "description": "The customer is locating or tracking an order, parcel, courier, or shipment that already exists, including AWB, dispatch, or delivery status.",
+      "classifier_examples": "mera order kaha hai\norder status kya hai\nawb number se tracking batao\nmedicine dispatch hui kya\ncourier kab aayega\nshipment track karna hai",
+      "fallback_match": {
+        "contains_any": [
+          "order status",
+          "track order",
+          "tracking",
+          "awb",
+          "waybill",
+          "shipment kaha",
+          "shipment kidhar",
+          "shipment status",
+          "delivery status",
+          "parcel kaha",
+          "courier status",
+          "courier kab",
+          "dispatch status",
+          "dispatch hui"
+        ]
+      },
+      "confidence_threshold": 0.6,
+      "requires_patient_data": 1,
+      "is_default_fallback": 0,
+      "clarification_prompt": "Please share whether you want the status of an existing shipment and, if available, its order ID or AWB."
+    },
+    {
+      "intent_name": "patient_record_request",
+      "intent_label": "Patient Record Request",
+      "is_active": 1,
+      "priority": 75,
+      "description": "The customer asks for their stored prescription, clinical history, encounter, diet chart, report, or other patient record.",
+      "classifier_examples": "meri prescription bhejo\nmera clinical history dikhao\nmy diet chart please\nmeri encounter details batao",
+      "fallback_match": {
+        "contains_any": [
+          "meri prescription",
+          "mera prescription",
+          "my prescription",
+          "clinical history",
+          "meri history",
+          "my history",
+          "diet chart",
+          "patient record",
+          "my record",
+          "mera record",
+          "encounter details"
+        ]
+      },
+      "confidence_threshold": 0.6,
+      "requires_patient_data": 1,
+      "is_default_fallback": 0,
+      "clarification_prompt": "Please specify which patient record you want to access."
+    },
+    {
+      "intent_name": "billing_query",
+      "intent_label": "Billing / Invoice Query",
+      "is_active": 1,
+      "priority": 70,
+      "description": "The customer asks about their own invoice, bill, receipt, payment, refund, or outstanding balance.",
+      "classifier_examples": "meri invoice bhejo\nmera payment status kya hai\nmy bill details",
+      "fallback_match": {
+        "contains_any": ["meri invoice", "mera invoice", "my invoice", "mera bill", "my bill", "payment status", "my payment", "meri payment"]
+      },
+      "confidence_threshold": 0.6,
+      "requires_patient_data": 1,
+      "is_default_fallback": 0,
+      "clarification_prompt": "Please specify the invoice, bill, or payment information you need."
+    },
+    {
+      "intent_name": "identity_verification",
+      "intent_label": "Identity Verification",
+      "is_active": 1,
+      "priority": 70,
+      "description": "The customer provides their registered phone number, claims the current chat number, or asks to verify identity for access to patient information.",
+      "classifier_examples": "yahi mera number hai\nthis is my number\nmera registered number 9000000001 hai",
+      "fallback_match": {
+        "contains_any": ["this is my number", "this is the same number", "yahi mera number", "yehi mera number", "registered number"]
+      },
+      "confidence_threshold": 0.6,
+      "requires_patient_data": 1,
+      "is_default_fallback": 0,
+      "clarification_prompt": "Please share your registered phone number or explicitly confirm that this WhatsApp number is yours."
+    },
+    {
+      "intent_name": "greeting_or_general_chat",
+      "intent_label": "Greeting / General Chat",
+      "is_active": 1,
+      "priority": 65,
+      "description": "A greeting, courtesy message, or normal public conversation that does not need stored customer records.",
+      "classifier_examples": "hello\nhi\nnamaste\ngood morning\naapka naam kya hai",
+      "fallback_match": {
+        "full_text_any": ["hi", "hii", "hello", "hey", "namaste", "namaskar", "good morning", "good evening"]
+      },
+      "confidence_threshold": 0.5,
+      "requires_patient_data": 0,
+      "is_default_fallback": 0,
+      "clarification_prompt": "How can I help you today?"
+    },
+    {
+      "intent_name": "existing_patient_care",
+      "intent_label": "Existing Patient Care",
+      "is_active": 1,
+      "priority": 60,
+      "description": "An existing patient asks a question whose answer requires their stored care plan, encounter, prescription, practitioner instruction, or follow-up information.",
+      "classifier_examples": "doctor ne mujhe kya instruction di thi\nmeri current medicine dose batao\nmera follow up kab hai",
+      "fallback_match": {
+        "contains_any": ["meri current medicine", "my current medicine", "doctor instruction", "meri care plan", "my care plan", "mera follow up"]
+      },
+      "confidence_threshold": 0.6,
+      "requires_patient_data": 1,
+      "is_default_fallback": 0,
+      "clarification_prompt": "Please tell me which part of your existing care or follow-up you need help with."
+    },
+    {
+      "intent_name": "existing_appointment_status",
+      "intent_label": "Existing Appointment Details",
+      "is_active": 1,
+      "priority": 72,
+      "description": "The customer asks for the date, time, practitioner, status, change, or cancellation of their own appointment already stored in the system.",
+      "classifier_examples": "meri appointment kab hai\nmy appointment time\nmera booked consultation change karo",
+      "fallback_match": {
+        "contains_any": ["meri appointment", "mera appointment", "my appointment", "appointment status", "appointment kab", "booked consultation"]
+      },
+      "confidence_threshold": 0.6,
+      "requires_patient_data": 1,
+      "is_default_fallback": 0,
+      "clarification_prompt": "Please verify the patient identity before I access an existing appointment."
+    },
+    {
+      "intent_name": "appointment_request",
+      "intent_label": "Appointment Request",
+      "is_active": 1,
+      "priority": 55,
+      "description": "The customer wants to book, change, cancel, or ask about a consultation or appointment. The AI should distinguish a new public booking from a request for stored appointment details.",
+      "classifier_examples": "appointment book karni hai\ndoctor consultation chahiye\nmeri appointment kab hai",
+      "fallback_match": {
+        "contains_any": ["appointment", "consultation book", "doctor booking"]
+      },
+      "confidence_threshold": 0.55,
+      "requires_patient_data": 0,
+      "is_default_fallback": 0,
+      "clarification_prompt": "Would you like to book a new appointment or ask about one already booked?"
+    },
+    {
+      "intent_name": "new_treatment_enquiry",
+      "intent_label": "New Treatment Enquiry",
+      "is_active": 1,
+      "priority": 50,
+      "description": "A prospective customer asks how to start treatment, consult a doctor, or become a patient without yet clearly requesting an order/case action.",
+      "classifier_examples": "treatment kaise start hota hai\ndoctor se consult kaise karu\nmujhe treatment ke bare me baat karni hai",
+      "fallback_match": {
+        "contains_any": ["treatment kaise start", "consult kaise", "treatment enquiry", "treatment inquiry"]
+      },
+      "confidence_threshold": 0.55,
+      "requires_patient_data": 0,
+      "is_default_fallback": 0,
+      "clarification_prompt": "Please tell me which treatment or consultation you are interested in."
+    },
+    {
+      "intent_name": "general_treatment_information",
+      "intent_label": "General Treatment Information",
+      "is_active": 1,
+      "priority": 30,
+      "description": "A public informational question about diseases, treatments, services, pricing, medicines in general, or how the clinic works; no stored patient record is needed.",
+      "classifier_examples": "psoriasis ke treatments kya hain\neczema ka treatment available hai\nconsultation fee kya hai",
+      "fallback_match": {
+        "contains_any": ["psoriasis", "eczema", "vitiligo", "acne", "treatment", "consultation fee", "service price"]
+      },
+      "confidence_threshold": 0.5,
+      "requires_patient_data": 0,
+      "is_default_fallback": 0,
+      "clarification_prompt": "Please tell me what treatment information you would like."
+    },
+    {
+      "intent_name": "medicine_query",
+      "intent_label": "General Medicine Query",
+      "is_active": 1,
+      "priority": 25,
+      "description": "A general question about medicine availability or information that does not ask for the customer's stored prescription or a new order action.",
+      "classifier_examples": "ye medicine available hai\nis dawa ke bare me batao",
+      "fallback_match": {
+        "contains_any": ["medicine available", "dawai available", "dawa ke bare", "medicine information"]
+      },
+      "confidence_threshold": 0.55,
+      "requires_patient_data": 0,
+      "is_default_fallback": 0,
+      "clarification_prompt": "Please share the medicine name and the information you need."
+    },
+    {
+      "intent_name": "human_support",
+      "intent_label": "Human Support",
+      "is_active": 1,
+      "priority": 20,
+      "description": "The customer explicitly asks to speak with a person, agent, doctor, or support team.",
+      "classifier_examples": "human agent se baat karni hai\nsupport person chahiye\ndoctor se baat karao",
+      "fallback_match": {
+        "contains_any": ["human agent", "support person", "person se baat", "agent se baat", "doctor se baat"]
+      },
+      "confidence_threshold": 0.55,
+      "requires_patient_data": 0,
+      "is_default_fallback": 0,
+      "clarification_prompt": "I can hand this conversation to the appropriate team. Please briefly tell me what help you need."
+    },
+    {
+      "intent_name": "unclear",
+      "intent_label": "Unclear",
+      "is_active": 1,
+      "priority": 0,
+      "description": "The customer's intended outcome is ambiguous or there is not enough information to route safely. Ask one concise clarification question.",
+      "classifier_examples": "mera order\nhelp\nye chahiye",
+      "fallback_match": {},
+      "confidence_threshold": 0,
+      "requires_patient_data": 0,
+      "is_default_fallback": 1,
+      "clarification_prompt": "Please tell me whether you need general information, want to start a new request, or want details from an existing patient/order record."
+    },
+    {
+      "intent_name": "other",
+      "intent_label": "Other Public Request",
+      "is_active": 1,
+      "priority": -10,
+      "description": "A clear public request that does not fit another configured intent and does not need stored patient data.",
+      "classifier_examples": "clinic timing kya hai\naap kaha located ho",
+      "fallback_match": {},
+      "confidence_threshold": 0.5,
+      "requires_patient_data": 0,
+      "is_default_fallback": 0,
+      "clarification_prompt": "Please share a little more detail so I can help correctly."
+    }
+  ],
+  "WA AI Workflow": [
+    {
+      "workflow_name": "Treatment Case Creation",
+      "is_active": 1,
+    "workflow_version": 3,
+      "expiry_minutes": 1440,
+      "action_tool": "create_verified_patient_draft_encounter",
+      "definition": {
+        "trigger": {
+          "minimum_confidence": 0.55
+        },
+        "collect": [
+          {
+            "field": "customer_name",
+            "prompt": "Before I collect your address, please share your full name for the treatment case.",
+            "invalid_prompt": "Please share your full name using letters, without phone numbers or address details.",
+            "validation": {
+              "min_length": 2,
+              "max_length": 80,
+            "min_words": 1,
+            "excludes_digit": true,
+            "contains_alpha": true,
+            "pattern": "[^\\d\\r\\n]{2,80}"
+          },
+          "prefill": {
+            "sources": [
+              {
+                "source": "linked_record_fields",
+                "doctype": "CRM Lead",
+                "conversation_link_field": "linked_crm_lead",
+                "value_fields": ["first_name", "last_name"],
+                "combine_value_fields": true
+              },
+              {
+                "source": "linked_record_fields",
+                "doctype": "CRM Lead",
+                "conversation_link_field": "linked_crm_lead",
+                "value_fields": ["lead_name"]
+              },
+              {
+                "source": "phone_match_fields",
+                "doctype": "Contact",
+                "phone_fields": ["mobile_no", "phone"],
+                "value_fields": ["first_name", "last_name"],
+                "combine_value_fields": true,
+                "max_records": 5
+              },
+              {
+                "source": "recent_message_regex",
+                "max_messages": 50,
+                "group": 1,
+                "patterns": [
+                  "(?i)\\bmy\\s+name\\s+is\\s+([a-z][a-z .'-]{1,79}?)(?:\\s+(?:and|aur)\\b|[,.!?]|$)",
+                  "(?i)\\bmera\\s+(?:naam|name)\\s+([a-z][a-z .'-]{1,79}?)(?:\\s+hai\\b|[,.!?]|$)",
+                  "(?:मेरा\\s+नाम|नाम)\\s*[:\\-]?\\s*([^\\d\\r\\n,.;!?।]{2,80}?)(?:\\s+है\\b|[,.!?।]|$)"
+                ]
+              }
+            ]
+          }
+          },
+          {
+            "field": "customer_address",
+            "prompt": "Thank you, {customer_name}. Before I create your treatment case, please share your complete address with house/flat number, area, city, state and PIN code.",
+            "invalid_prompt": "Please share your complete address with house/flat number, area, city, state and six-digit PIN code before I create the treatment case.",
+            "validation": {
+              "min_length": 20,
+              "max_length": 1000,
+              "min_words": 5,
+              "contains_digit": true,
+              "contains_any": ["house", "flat", "plot", "door", "street", "road", "sector", "block", "village", "nagar", "colony", "lane", "floor", "near", "h no", "h.no"],
+              "digit_group_lengths_any": [6]
+            }
+          }
+        ],
+        "confirmation": {
+          "mode": "challenge",
+          "challenge_length": 6,
+          "prompt": "Please confirm that I should create the treatment case for {customer_name} using this address: {customer_address}. Reply with this one-time confirmation code: {confirmation_code}",
+          "invalid_prompt": "For your security, enter the exact one-time confirmation code from my previous message, or cancel this request.",
+          "cancel_phrases": ["cancel", "stop", "nahi", "mat karo", "do not create"]
+        },
+        "arguments": {
+          "customer_name": {"source": "collected", "field": "customer_name"},
+          "encounter_reason": {"source": "origin_message", "default": "Treatment request from WhatsApp"},
+          "customer_confirmed": {"source": "value", "value": 1},
+          "customer_address": {"source": "collected", "field": "customer_address"},
+          "encounter_type": {"source": "value", "value": "Followup"},
+          "encounter_place": {"source": "value", "value": "Online"},
+          "complaints": {"source": "origin_message", "default": "Treatment enquiry from WhatsApp"}
+        },
+        "messages": {
+          "success": "Your treatment case has been created successfully. Our care team can now review the details and guide you further.",
+          "cancelled": "Okay, I have cancelled this treatment-case creation request.",
+          "error": "I could not create the treatment case safely right now. I have noted the request for our care team to assist you.",
+          "unavailable": "I cannot create the treatment case safely on this channel right now. I have kept your request for the care team to assist.",
+          "expired": "The previous confirmation expired for security. Please ask me to create the treatment case again."
+        }
+      }
+    }
+  ],
+  "WA AI Intent Route": [
+    {
+      "route_name": "New Treatment Case Workflow",
+      "is_active": 1,
+      "priority": 200,
+      "intent": "new_treatment_order_request",
+      "data_scope": "Public",
+      "target_type": "Channel Account Default",
+      "ai_workflow": "Treatment Case Creation"
+    },
+    {
+      "route_name": "Verified Existing Shipment",
+      "is_active": 1,
+      "priority": 180,
+      "intent": "existing_order_status",
+      "data_scope": "Protected",
+      "party_type": "Patient",
+      "identity_status": "Verified",
+      "target_type": "Agent Profile",
+      "agent_profile": "Patient Care Agent",
+      "preferred_mcp_tool": "get_verified_patient_shipping_history"
+    },
+    {
+      "route_name": "Protected Verified Patient",
+      "is_active": 1,
+      "priority": 100,
+      "data_scope": "Protected",
+      "party_type": "Patient",
+      "identity_status": "Verified",
+      "target_type": "Agent Profile",
+      "agent_profile": "Patient Care Agent"
+    },
+    {
+      "route_name": "Protected Matched Patient",
+      "configuration_version": 2,
+      "is_active": 1,
+      "priority": 100,
+      "data_scope": "Protected",
+      "party_type": "Patient",
+      "identity_status": "Matched",
+      "target_type": "Agent Profile",
+      "agent_profile": "Patient Verification Agent",
+      "blocked_reply": "Verification is required before I can access your personal information. Please share your registered phone number.",
+      "blocked_replies": {
+        "default": "Verification is required before I can access your personal information. Please share your registered phone number.",
+        "en": "Verification is required before I can access your personal information. Please share your registered phone number.",
+        "hi-latn": "Aapki personal information access karne se pehle verification zaroori hai. Kripya apna registered phone number share karein.",
+        "hi": "आपकी व्यक्तिगत जानकारी देखने से पहले सत्यापन आवश्यक है। कृपया अपना पंजीकृत फोन नंबर साझा करें।",
+        "ta": "உங்கள் தனிப்பட்ட தகவலை அணுகுவதற்கு முன் சரிபார்ப்பு அவசியம். தயவுசெய்து உங்கள் பதிவு செய்யப்பட்ட தொலைபேசி எண்ணைப் பகிரவும்."
+      }
+    },
+    {
+      "route_name": "Protected Unverified Patient",
+      "configuration_version": 2,
+      "is_active": 1,
+      "priority": 100,
+      "data_scope": "Protected",
+      "party_type": "Patient",
+      "identity_status": "Unverified",
+      "target_type": "Agent Profile",
+      "agent_profile": "Patient Verification Agent",
+      "blocked_reply": "Verification is required before I can access your personal information. Please share your registered phone number.",
+      "blocked_replies": {
+        "default": "Verification is required before I can access your personal information. Please share your registered phone number.",
+        "en": "Verification is required before I can access your personal information. Please share your registered phone number.",
+        "hi-latn": "Aapki personal information access karne se pehle verification zaroori hai. Kripya apna registered phone number share karein.",
+        "hi": "आपकी व्यक्तिगत जानकारी देखने से पहले सत्यापन आवश्यक है। कृपया अपना पंजीकृत फोन नंबर साझा करें।",
+        "ta": "உங்கள் தனிப்பட்ட தகவலை அணுகுவதற்கு முன் சரிபார்ப்பு அவசியம். தயவுசெய்து உங்கள் பதிவு செய்யப்பட்ட தொலைபேசி எண்ணைப் பகிரவும்."
+      }
+    },
+    {
+      "route_name": "Protected Ambiguous Patient",
+      "is_active": 1,
+      "priority": 100,
+      "data_scope": "Protected",
+      "party_type": "Patient",
+      "identity_status": "Ambiguous",
+      "target_type": "Agent Profile",
+      "agent_profile": "Patient Verification Agent",
+      "blocked_reply": "This phone number has an ambiguous patient match. Please share your registered phone number so the care team can verify it safely."
+    },
+    {
+      "route_name": "Public Channel Default",
+      "is_active": 1,
+      "priority": 20,
+      "data_scope": "Public",
+      "target_type": "Channel Account Default"
+    },
+    {
+      "route_name": "Protected Safe Default",
+      "is_active": 1,
+      "priority": 10,
+      "data_scope": "Protected",
+      "target_type": "Channel Account Default",
+      "blocked_reply": "I need to verify the relevant patient identity before accessing stored patient information."
+    }
+  ]
+}

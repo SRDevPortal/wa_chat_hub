@@ -32,6 +32,10 @@
   "last_identity_sync_at",
   "pending_patient_request",
   "pending_request_message",
+  "active_ai_workflow",
+  "ai_workflow_state",
+  "workflow_expires_at",
+  "workflow_last_message",
   "verification_started_at",
   "verification_attempts",
   "verification_completed_at",
@@ -240,6 +244,33 @@
    "fieldname": "pending_request_message",
    "fieldtype": "Link",
    "label": "Pending Request Message",
+   "options": "Chat Message",
+   "read_only": 1
+  },
+  {
+   "fieldname": "active_ai_workflow",
+   "fieldtype": "Link",
+   "label": "Active AI Workflow",
+   "options": "WA AI Workflow",
+   "read_only": 1
+  },
+  {
+   "fieldname": "ai_workflow_state",
+   "fieldtype": "Code",
+   "label": "AI Workflow State",
+   "options": "JSON",
+   "read_only": 1
+  },
+  {
+   "fieldname": "workflow_expires_at",
+   "fieldtype": "Datetime",
+   "label": "Workflow Expires At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "workflow_last_message",
+   "fieldtype": "Link",
+   "label": "Workflow Last Message",
    "options": "Chat Message",
    "read_only": 1
   },

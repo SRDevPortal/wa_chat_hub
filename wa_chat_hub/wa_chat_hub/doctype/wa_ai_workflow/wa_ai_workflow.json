@@ -1,0 +1,92 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "field:workflow_name",
+ "creation": "2026-08-04 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "workflow_name",
+  "is_active",
+  "workflow_version",
+  "expiry_minutes",
+  "action_tool",
+  "definition"
+ ],
+ "fields": [
+  {
+   "fieldname": "workflow_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Workflow Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Is Active"
+  },
+  {
+   "default": "1",
+   "fieldname": "workflow_version",
+   "fieldtype": "Int",
+   "label": "Workflow Version",
+   "reqd": 1
+  },
+  {
+   "default": "1440",
+   "description": "Pending state expires after this many minutes.",
+   "fieldname": "expiry_minutes",
+   "fieldtype": "Int",
+   "label": "Expiry Minutes",
+   "reqd": 1
+  },
+  {
+   "description": "Server-executed action after configured fields and confirmation are complete.",
+   "fieldname": "action_tool",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Action MCP Tool",
+   "options": "WA MCP Tool Endpoint",
+   "reqd": 1
+  },
+  {
+   "description": "Ordered collection steps, generic validations, confirmation transport, argument mappings, and reply templates.",
+   "fieldname": "definition",
+   "fieldtype": "Code",
+   "label": "Workflow Definition",
+   "options": "JSON",
+   "reqd": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-04 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "WA Chat Hub",
+ "name": "WA AI Workflow",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "workflow_name",
+ "track_changes": 1
+}

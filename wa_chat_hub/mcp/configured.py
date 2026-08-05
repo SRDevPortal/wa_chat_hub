@@ -8,6 +8,8 @@ from frappe import _
 from frappe.utils import cint, getdate, nowdate, nowtime
 
 from wa_chat_hub.security import assert_ai_doctype_permission, safe_ai_get_doc
+from wa_chat_hub.policy import get_conversation_policy
+from wa_chat_hub.services import find_indexed_phone_match_names
 
 
 def execute_configured_tool(__mcp_tool_name: str | None = None, **kwargs) -> dict[str, Any]:
@@ -27,9 +29,30 @@ def execute_configured_tool(__mcp_tool_name: str | None = None, **kwargs) -> dic
     if action != "insert_doc":
         frappe.throw(_("Unsupported configured MCP action: {0}").format(action))
 
+    # Any configured write endpoint must be server-workflow authorized. This is a
+    # code-owned security invariant and cannot be disabled by editing business config.
+    workflow_authorized = (
+        str(endpoint.get("access_mode") or "").strip().lower() == "write"
+        or bool(config.get("requires_workflow_authorization"))
+        or bool(frappe.db.exists("WA AI Workflow", {"action_tool": tool_name}))
+    )
+    if workflow_authorized:
+        from wa_chat_hub.ai.workflow_engine import validate_workflow_execution
+
+        validate_workflow_execution(
+            str(kwargs.get("conversation") or "").strip(),
+            tool_name,
+            kwargs,
+        )
+
     confirmation_field = str(config.get("requires_confirmation_field") or "").strip()
     if confirmation_field and not cint(kwargs.get(confirmation_field)):
         frappe.throw(_("Customer confirmation is required before running this MCP."))
+
+    for required_argument in config.get("required_arguments") or []:
+        fieldname = str(required_argument or "").strip()
+        if fieldname and not str(kwargs.get(fieldname) or "").strip():
+            frappe.throw(_("{0} is required before running this MCP.").format(fieldname))
 
     target_doctype = str(config.get("target_doctype") or "").strip()
     if not target_doctype:
@@ -65,6 +88,14 @@ def execute_configured_tool(__mcp_tool_name: str | None = None, **kwargs) -> dic
         ignore_links=bool(config.get("ignore_links", True)),
     )
 
+    if workflow_authorized:
+        from wa_chat_hub.ai.workflow_engine import complete_workflow_execution
+
+        complete_workflow_execution(
+            str(kwargs.get("conversation") or "").strip(),
+            tool_name,
+        )
+
     response = {
         "success": True,
         "doctype": target_doctype,
@@ -86,6 +117,12 @@ def _resolve_or_create_patient_from_chat(config: dict[str, Any], args: dict[str,
         frappe.throw(_("Conversation context is required."))
 
     convo = safe_ai_get_doc("Chat Conversation", conversation)
+    bundle = get_conversation_policy(convo)
+    patient_creation_policy = bundle.section("patient_creation_policy") if bundle else {}
+    identity_policy = bundle.section("identity_policy") if bundle else {}
+    if not patient_creation_policy:
+        frappe.throw(_("Patient creation policy is not configured for this Channel Account."))
+
     linked_patient = (
         getattr(convo, "linked_patient", None)
         or (
@@ -102,6 +139,10 @@ def _resolve_or_create_patient_from_chat(config: dict[str, Any], args: dict[str,
         frappe.throw(_("Patient does not match this conversation."))
 
     contact = getattr(convo, "contact", None)
+    channel_account = str(getattr(convo, "channel_account", None) or "").strip()
+    channel_account_doc = None
+    if channel_account and frappe.db.exists("Chat Channel Account", channel_account):
+        channel_account_doc = safe_ai_get_doc("Chat Channel Account", channel_account)
     phone_number = ""
     if contact and frappe.db.exists("Chat Contact", contact):
         phone_number = frappe.db.get_value("Chat Contact", contact, "phone_number") or contact
@@ -114,17 +155,19 @@ def _resolve_or_create_patient_from_chat(config: dict[str, Any], args: dict[str,
     if lead_name and frappe.db.exists("CRM Lead", lead_name):
         lead_doc = safe_ai_get_doc("CRM Lead", lead_name)
         first_name = lead_doc.get("first_name") or lead_doc.get("lead_name") or lead_doc.get("name") or ""
-        phone_number = phone_number or lead_doc.get("mobile_no") or lead_doc.get("phone") or ""
+        phone_number = lead_doc.get("mobile_no") or lead_doc.get("phone") or phone_number or ""
         department = department or lead_doc.get("sr_medical_department") or lead_doc.get("department")
         disease = lead_doc.get("sr_lead_disease")
     elif lead_name and frappe.db.exists("Lead", lead_name):
         lead_doc = safe_ai_get_doc("Lead", lead_name)
         first_name = lead_doc.get("first_name") or lead_doc.get("lead_name") or lead_doc.get("name") or ""
-        phone_number = phone_number or lead_doc.get("mobile_no") or lead_doc.get("phone") or ""
+        phone_number = lead_doc.get("mobile_no") or lead_doc.get("phone") or phone_number or ""
 
     patient_context = {
         "conversation": conversation,
         "conversation_doc": convo,
+        "channel_account": channel_account,
+        "channel_account_doc": channel_account_doc,
         "contact": contact,
         "phone_number": phone_number,
         "mobile": _last10(phone_number) or str(phone_number or "").strip(),
@@ -138,16 +181,27 @@ def _resolve_or_create_patient_from_chat(config: dict[str, Any], args: dict[str,
     }
 
     mobile_last10 = _last10(str(patient_context.get("mobile") or phone_number))
-    if mobile_last10:
-        existing_patient = frappe.db.get_value(
-            "Patient",
-            {"mobile": ["like", f"%{mobile_last10}%"]},
-            "name",
+    assert_ai_doctype_permission("Patient", "read")
+    existing_contact = _existing_contact_for_phone(mobile_last10)
+    contact_patient = _patient_linked_to_contact(existing_contact)
+    existing_patient = _existing_patient_for_phone(mobile_last10, identity_policy)
+    if existing_patient and contact_patient and existing_patient != contact_patient:
+        frappe.throw(
+            _("The phone number is linked to conflicting Patient records. Manual review is required.")
         )
-        if existing_patient:
-            return existing_patient
+    resolved_patient = existing_patient or contact_patient
+    if resolved_patient:
+        if existing_contact:
+            _link_existing_contact_to_patient(existing_contact, resolved_patient)
+        _link_patient_to_conversation(
+            config,
+            convo=convo,
+            chat_contact=contact,
+            patient=resolved_patient,
+        )
+        return resolved_patient
 
-    if not config.get("create_if_missing"):
+    if not config.get("create_if_missing") or not patient_creation_policy.get("create_if_missing"):
         frappe.throw(_("No patient is linked to this conversation."))
 
     mobile = str(patient_context.get("mobile") or "").strip()
@@ -162,31 +216,157 @@ def _resolve_or_create_patient_from_chat(config: dict[str, Any], args: dict[str,
     assert_ai_doctype_permission("Patient", "write")
     patient_doc = frappe.new_doc("Patient")
     patient_field_values = config.get("patient_field_values")
-    if isinstance(patient_field_values, dict):
-        for fieldname, spec in patient_field_values.items():
-            _set_if(patient_doc, fieldname, _resolve_value(spec, args, patient_context))
-    else:
-        _set_if(patient_doc, "first_name", str(patient_context.get("first_name") or "").strip() or f"WhatsApp {mobile}")
-        _set_if(patient_doc, "patient_name", str(patient_context.get("first_name") or "").strip() or f"WhatsApp {mobile}")
-        _set_if(patient_doc, "mobile", mobile)
-        _set_if(patient_doc, "status", config.get("status") or "Active")
-        _set_if(patient_doc, "sex", config.get("default_sex") or "Male")
-        _set_if(patient_doc, "sr_medical_department", _resolve_value(config.get("medical_department"), args, patient_context))
-        _set_if(patient_doc, "sr_dpt_disease", disease)
-        _set_if(patient_doc, "created_by_agent", tool_label(config))
+    if not isinstance(patient_field_values, dict) or not patient_field_values:
+        frappe.throw(_("patient_field_values must be configured for patient creation."))
+    for fieldname, spec in patient_field_values.items():
+        _set_if(patient_doc, fieldname, _resolve_value(spec, args, patient_context))
+    for fieldname, value in (patient_creation_policy.get("demographic_defaults") or {}).items():
+        if patient_doc.meta.has_field(fieldname) and patient_doc.get(fieldname) in (None, ""):
+            patient_doc.set(fieldname, value)
+    required_fields = {
+        str(fieldname).strip()
+        for fieldname in patient_creation_policy.get("required_patient_fields") or []
+        if str(fieldname).strip()
+    }
+    required_fields.update(
+        str(field.fieldname)
+        for field in patient_doc.meta.fields
+        if field.reqd and str(field.fieldname or "").strip()
+    )
+    missing_fields = sorted(
+        fieldname
+        for fieldname in required_fields
+        if (patient_doc.get(fieldname) if patient_doc.meta.has_field(fieldname) else patient_context.get(fieldname)) in (None, "")
+    )
+    if missing_fields:
+        frappe.throw(
+            _("Patient creation is missing configured fields: {0}").format(", ".join(missing_fields))
+        )
+    if existing_contact:
+        patient_doc.flags.allow_existing_contact_reuse = existing_contact
+
     patient_doc.insert(ignore_permissions=True, ignore_links=True)
 
-    if config.get("link_to_conversation"):
-        try:
-            frappe.db.set_value("Chat Conversation", convo.name, "linked_patient", patient_doc.name)
-            frappe.db.set_value("Chat Conversation", convo.name, "party_type", "Patient")
-            if contact and frappe.db.exists("Chat Contact", contact):
-                frappe.db.set_value("Chat Contact", contact, "linked_patient", patient_doc.name)
-        except Exception:
-            frappe.log_error(frappe.get_traceback(), "WA Configured MCP Patient Link Failed")
+    if existing_contact:
+        _link_existing_contact_to_patient(existing_contact, patient_doc.name)
 
+    _link_patient_to_conversation(
+        config,
+        convo=convo,
+        chat_contact=contact,
+        patient=patient_doc.name,
+    )
     return patient_doc.name
 
+
+def _existing_patient_for_phone(mobile_last10: str | None, identity_policy: dict[str, Any]) -> str | None:
+    digits = _last10(str(mobile_last10 or ""))
+    if not digits:
+        return None
+    phone_fields = [
+        str(fieldname)
+        for fieldname in ((identity_policy.get("phone_fields") or {}).get("Patient") or [])
+        if str(fieldname).strip()
+    ]
+    matches = sorted(find_indexed_phone_match_names("Patient", phone_fields, digits, limit=2))
+    if len(matches) > 1:
+        frappe.throw(
+            _("Multiple Patient records use this phone number. Manual review is required.")
+        )
+    return matches[0] if matches else None
+
+
+def _existing_contact_for_phone(mobile_last10: str | None) -> str | None:
+    digits = _last10(str(mobile_last10 or ""))
+    if not digits:
+        return None
+    matches = sorted(
+        find_indexed_phone_match_names("Contact", ["mobile_no", "phone"], digits, limit=2)
+    )
+    if len(matches) > 1:
+        frappe.throw(
+            _("Multiple Contact records use this phone number. Manual review is required.")
+        )
+    return matches[0] if matches else None
+
+
+def _patient_linked_to_contact(contact_name: str | None) -> str | None:
+    if not contact_name:
+        return None
+    contact_doc = safe_ai_get_doc("Contact", contact_name)
+    patients = sorted(
+        {
+            str(row.link_name)
+            for row in (contact_doc.get("links") or [])
+            if row.link_doctype == "Patient"
+            and row.link_name
+            and frappe.db.exists("Patient", row.link_name)
+        }
+    )
+    if len(patients) > 1:
+        frappe.throw(
+            _("The existing Contact is linked to multiple Patients. Manual review is required.")
+        )
+    return patients[0] if patients else None
+
+
+def _link_patient_to_conversation(
+    config: dict[str, Any],
+    *,
+    convo,
+    chat_contact: str | None,
+    patient: str,
+) -> None:
+    if not config.get("link_to_conversation"):
+        return
+    frappe.db.set_value("Chat Conversation", convo.name, "linked_patient", patient)
+    frappe.db.set_value("Chat Conversation", convo.name, "party_type", "Patient")
+    if chat_contact and frappe.db.exists("Chat Contact", chat_contact):
+        linked = frappe.db.get_value("Chat Contact", chat_contact, "linked_patient")
+        if linked and linked != patient:
+            frappe.throw(
+                _("The WhatsApp contact is already linked to a different Patient.")
+            )
+        frappe.db.set_value("Chat Contact", chat_contact, "linked_patient", patient)
+
+
+def _link_existing_contact_to_patient(contact_name: str, patient_name: str) -> None:
+    if not contact_name or not patient_name:
+        return
+    contact_doc = safe_ai_get_doc("Contact", contact_name)
+    stale_links = []
+    valid_patients = set()
+    for row in list(contact_doc.get("links") or []):
+        if row.link_doctype != "Patient" or not row.link_name:
+            continue
+        if frappe.db.exists("Patient", row.link_name):
+            valid_patients.add(str(row.link_name))
+        else:
+            stale_links.append(row)
+
+    conflicting_patients = valid_patients - {patient_name}
+    if conflicting_patients:
+        frappe.throw(
+            _(
+                "The existing Contact is linked to a different Patient. "
+                "Manual review is required."
+            )
+        )
+
+    changed = False
+    for row in stale_links:
+        contact_doc.remove(row)
+        changed = True
+
+    if patient_name not in valid_patients:
+        contact_doc.append(
+            "links",
+            {"link_doctype": "Patient", "link_name": patient_name},
+        )
+        changed = True
+
+    if changed:
+        contact_doc.save(ignore_permissions=True)
 
 def _apply_global_defaults(defaults: dict[str, Any] | None, args: dict[str, Any], context: dict[str, Any]) -> None:
     if not isinstance(defaults, dict):

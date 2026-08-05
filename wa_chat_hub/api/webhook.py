@@ -177,6 +177,12 @@ def receive_interakt():
         channel_account = _resolve_interakt_channel_account(payload, raw_body)
         payload["channel_account"] = channel_account
         webhook_type = payload.get("type")
+        if webhook_type == "message_api_clicked":
+            _verify_interakt_state_change_signature(
+                get_interakt_account(channel_account),
+                raw_body,
+            )
+            payload["_wa_state_change_signature_verified"] = True
 
         queue = _interakt_webhook_queue(payload)
         job_id = _interakt_webhook_job_id(channel_account, payload, raw_body)
@@ -274,6 +280,11 @@ def _process_interakt_payload(payload: dict, raw_body: bytes | None = None):
     webhook_type = payload.get("type")
     started = time.monotonic()
 
+    if webhook_type == "message_api_clicked":
+        if not payload.get("_wa_state_change_signature_verified"):
+            frappe.throw(_("Unsigned Interakt state-changing event was rejected."))
+        return _process_interakt_quick_reply(payload, routing)
+
     if webhook_type == "message_received":
         event = adapter.normalize_inbound(payload)
         normalized_phone = normalize_phone(event.phone_number)
@@ -363,7 +374,11 @@ def _interakt_webhook_queue(payload: dict) -> str:
 def _interakt_webhook_job_id(channel_account: str, payload: dict, raw_body: bytes) -> str:
     webhook_type = str(payload.get("type") or "unknown")
     message_id = _interakt_payload_message_id(payload)
-    if message_id:
+    if webhook_type == "message_api_clicked":
+        # Click webhooks often reuse the original outbound template message id.
+        # Hash the individual event so separate buttons/clicks are not deduplicated.
+        token = f"{channel_account}:{webhook_type}:{hashlib.sha256(raw_body or b'').hexdigest()}"
+    elif message_id:
         token = f"{channel_account}:{webhook_type}:{message_id}"
     else:
         token = f"{channel_account}:{webhook_type}:{hashlib.sha256(raw_body or b'').hexdigest()}"
@@ -564,6 +579,64 @@ def _verify_interakt_signature(account, raw_body: bytes) -> None:
             ).format(account.name)
         )
 
+
+
+def _verify_interakt_state_change_signature(account, raw_body: bytes) -> None:
+    """Require HMAC even when ordinary status-webhook verification is optional."""
+    secret = account.get_password("interakt_webhook_secret")
+    received = _get_interakt_signature_header()
+    if not secret or not received or not _interakt_signature_matches(secret, raw_body, received):
+        frappe.throw(_("A valid Interakt webhook signature is required for button actions."))
+
+
+def _process_interakt_quick_reply(payload: dict, routing: dict) -> dict:
+    data = payload.get("data") or {}
+    message = data.get("message") if isinstance(data.get("message"), dict) else {}
+    event = data.get("event") if isinstance(data.get("event"), dict) else {}
+    click_type = str(
+        message.get("click_type")
+        or message.get("clickType")
+        or event.get("click_type")
+        or event.get("clickType")
+        or ""
+    ).strip().upper()
+    # CTA clicks navigate away and never authorize an ERP action.
+    if click_type not in {"QR", "QUICK_REPLY", "QUICK REPLY"}:
+        return {"ignored": True, "reason": "non_quick_reply_click"}
+
+    phone_number = normalize_phone(extract_interakt_customer_phone(data.get("customer") or {}, payload))
+    if not phone_number:
+        return {"ignored": True, "reason": "missing_customer_phone"}
+    button_text = str(
+        message.get("button_text")
+        or message.get("buttonText")
+        or event.get("button_text")
+        or event.get("buttonText")
+        or "Button reply"
+    ).strip()
+    canonical = json.dumps(payload, ensure_ascii=True, sort_keys=True, default=str)
+    click_id = "interakt-click-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
+
+    set_ai_security_context(channel_account=payload.get("channel_account") or "")
+    _assert_webhook_message_write_permissions()
+    result = append_message(
+        {
+            "channel_account": payload["channel_account"],
+            "phone_number": phone_number,
+            "display_name": _extract_interakt_customer_name(data.get("customer") or {}),
+            "direction": "Inbound",
+            "sender_type": "Customer",
+            "content_type": "Text",
+            "body": button_text,
+            "channel_message_id": click_id,
+            "provider_event_id": click_id,
+            "delivery_status": "Received",
+            "raw_payload": payload,
+            "raw_transport_payload": payload,
+            "channel_department": routing.get("channel_department"),
+        }
+    )
+    return {"quick_reply": True, **result}
 
 def _create_interakt_outbound_from_webhook(payload, delivery_status):
     data = payload.get("data") or {}

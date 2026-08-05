@@ -44,7 +44,15 @@
     "version_archive_batch_size",
     "enable_version_archival",
     "section_account_prompts",
-    "account_prompt_maps"
+    "account_prompt_maps",
+    "section_app_updates",
+    "enable_app_update_system",
+    "app_update_system_initialized",
+    "active_app_update_count",
+    "last_app_update_result",
+    "new_app_update",
+    "manage_app_updates",
+    "view_app_update_logs"
   ],
   "fields": [
     {
@@ -275,6 +283,55 @@
       "fieldtype": "Table",
       "label": "Account Prompt Maps",
       "options": "WA Channel Account Prompt Map"
+    },
+    {
+      "collapsible": 1,
+      "description": "Create approved Python apply/revert updates and manage their lifecycle without editing app files manually.",
+      "fieldname": "section_app_updates",
+      "fieldtype": "Section Break",
+      "label": "App Updates"
+    },
+    {
+      "default": "1",
+      "fieldname": "enable_app_update_system",
+      "fieldtype": "Check",
+      "label": "Enable App Update System"
+    },
+    {
+      "default": "0",
+      "fieldname": "app_update_system_initialized",
+      "fieldtype": "Check",
+      "hidden": 1,
+      "label": "App Update System Initialized",
+      "read_only": 1
+    },
+    {
+      "fieldname": "active_app_update_count",
+      "fieldtype": "Int",
+      "label": "Active Updates",
+      "read_only": 1
+    },
+    {
+      "fieldname": "last_app_update_result",
+      "fieldtype": "Small Text",
+      "label": "Latest Update Activity",
+      "read_only": 1
+    },
+    {
+      "depends_on": "eval:doc.enable_app_update_system",
+      "fieldname": "new_app_update",
+      "fieldtype": "Button",
+      "label": "New App Update"
+    },
+    {
+      "fieldname": "manage_app_updates",
+      "fieldtype": "Button",
+      "label": "Manage App Updates"
+    },
+    {
+      "fieldname": "view_app_update_logs",
+      "fieldtype": "Button",
+      "label": "View Update Logs"
     }
   ],
   "permissions": [
