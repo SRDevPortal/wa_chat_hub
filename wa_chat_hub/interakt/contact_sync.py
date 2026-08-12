@@ -82,6 +82,10 @@ def push_contact_to_interakt(
         pipeline_map_row.get("sr_lead_pipeline"),
     )
 
+    # Profile creation can write to MariaDB. Commit before the external request
+    # so Interakt latency never holds application row locks open.
+    frappe.db.commit()
+
     try:
         result = track_user(channel_account, payload)
     except Exception as exc:

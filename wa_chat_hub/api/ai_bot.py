@@ -15,6 +15,7 @@ from frappe.utils.synchronization import filelock
 
 from wa_chat_hub.ai.ocr_summary import (
     GENERIC_MEDIA_BODIES,
+    apply_prompt_priority_to_media_context,
     build_media_context_for_chat,
 )
 from wa_chat_hub.ai.providers import CHAT_CAPABILITY, get_active_llm_provider_rows
@@ -544,6 +545,7 @@ def process_message(message_id, skip_batch_wait: bool = False):
             message_id,
         )
         return
+    active_agent_system_prompt = system_prompt
     system_prompt = (
         f"{system_prompt}\n\n"
         "ROUTING DECISION (advisory; all identity, confirmation, and MCP allowlist rules still apply):\n"
@@ -566,7 +568,11 @@ def process_message(message_id, skip_batch_wait: bool = False):
         system_prompt = f"{system_prompt}\n\n{known_context}"
 
     if media_context:
-        system_prompt = f"{system_prompt}\n\n{media_context}"
+        media_context = apply_prompt_priority_to_media_context(
+            media_context,
+            active_agent_system_prompt,
+            channel_account,
+        )
 
     kb_result_count = 0
     if last_user_query:
@@ -1206,8 +1212,7 @@ def _build_recent_attachment_followup_context(conversation: str, msg_doc, channe
     )
     if not context:
         return ""
-    instruction = str(policy_section(channel_account, "media_policy").get("report_summary_prompt") or "").strip()
-    return "\n\n".join(part for part in (instruction, context) if part)
+    return context
 
 
 def _build_recent_media_batch_context(conversation: str, msg_doc, channel_account: str | None) -> str:
@@ -1620,11 +1625,7 @@ def _build_latest_user_turn(msg_doc, media_context: str, skip_text: bool) -> str
     if skip_text:
         return ""
     body = _meaningful_body(str(msg_doc.body or ""), str(msg_doc.content_type or "Text").title())
-    if body:
-        return body
-    if media_context:
-        return media_context
-    return ""
+    return "\n\n".join(part for part in (body, media_context) if part)
 
 
 def _polish_autopilot_reply(text: str) -> str:

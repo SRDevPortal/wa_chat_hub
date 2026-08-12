@@ -857,7 +857,7 @@ def repair_inbound_pending_statuses() -> None:
 
 def build_erp_actions() -> Dict[str, Dict[str, str]]:
     return {
-        "lead": {"label": "Create Lead", "doctype": "Lead"},
+        "lead": {"label": "Create CRM Lead", "doctype": "CRM Lead"},
         "encounter": {"label": "Create Encounter", "doctype": "Patient Encounter"},
         "support_ticket": {"label": "Create Support Ticket", "doctype": "Issue"},
         "patient": {"label": "Link/Create Patient", "doctype": "Patient"},

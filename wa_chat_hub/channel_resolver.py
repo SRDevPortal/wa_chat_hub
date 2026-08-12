@@ -51,16 +51,17 @@ def ensure_interakt_contact_for_reference(
     *,
     pipeline: str | None = None,
     allow_unmapped: bool = False,
+    pipeline_map_row: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Sync Chat Contact to Interakt (CRM Lead, Patient, etc.)."""
     from wa_chat_hub.interakt.contact_sync import push_contact_to_interakt
 
-    pipeline_map_row = None
-    try:
-        pipeline_map_row = get_pipeline_map(channel_account=channel_account)
-    except Exception:
-        if allow_unmapped:
-            pipeline_map_row = {}
+    if pipeline_map_row is None:
+        try:
+            pipeline_map_row = get_pipeline_map(channel_account=channel_account)
+        except Exception:
+            if allow_unmapped:
+                pipeline_map_row = {}
 
     return push_contact_to_interakt(
         channel_account,
@@ -171,7 +172,6 @@ def get_or_create_mapped_patient_conversation(patient) -> dict[str, Any]:
         patient,
         pipeline_row["chat_channel_account"],
         pipeline_map=pipeline_row["name"],
-        pipeline=pipeline_row.get("sr_lead_pipeline"),
     )
 
 
@@ -180,7 +180,6 @@ def get_or_create_patient_conversation_for_channel_account(
     channel_account: str,
     *,
     pipeline_map: str | None = None,
-    pipeline: str | None = None,
 ) -> dict[str, Any]:
     account = safe_ai_get_doc("Chat Channel Account", channel_account)
     if not account.is_active or account.channel_type != "Interakt":
@@ -191,8 +190,10 @@ def get_or_create_patient_conversation_for_channel_account(
         channel_account,
         contact,
         patient,
-        pipeline=pipeline,
-        allow_unmapped=not pipeline_map,
+        allow_unmapped=True,
+        pipeline_map_row={
+            "sr_medical_department": patient.get("sr_medical_department"),
+        },
     )
 
     conversation, created = _get_or_create_reference_conversation(

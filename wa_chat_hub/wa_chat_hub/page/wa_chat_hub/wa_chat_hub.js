@@ -257,7 +257,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
                 <div class="wa-card wa-context-dependent">
                     <div class="wa-card-title">ERP Actions</div>
                     <div class="wa-action-list">
-                        <button class="btn btn-default btn-sm" id="wa-create-lead">Create Lead</button>
+                        <button class="btn btn-default btn-sm" id="wa-create-crm-lead">Create CRM Lead</button>
                         <button class="btn btn-default btn-sm" id="wa-create-issue">Create Support Ticket</button>
                     </div>
                 </div>
@@ -333,7 +333,11 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
             type: 'POST',
             args: args,
         }),
-        createLead: (conversation) => frappe.call('wa_chat_hub.api.actions.create_lead_from_conversation', { conversation }),
+        createCRMLead: (conversation) => frappe.call({
+            method: 'wa_chat_hub.api.actions.create_crm_lead_from_conversation',
+            type: 'POST',
+            args: { conversation },
+        }),
         createIssue: (conversation) => frappe.call('wa_chat_hub.api.actions.create_issue_from_conversation', { conversation }),
         getAutopilotStatus: () => frappe.call('wa_chat_hub.api.settings.get_autopilot_status'),
         setAutopilotEnabled: (enabled) => frappe.call('wa_chat_hub.api.settings.set_autopilot_enabled', { enabled: enabled ? 1 : 0 }),
@@ -1356,6 +1360,9 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         const v = data.conversation || {};
         const attribution = data.attribution || {};
         const windowMeta = renderMessagingWindowMeta(data.messaging_window);
+        const linkedCRMLead = v.linked_crm_lead || (
+            v.linked_reference_doctype === 'CRM Lead' ? v.linked_reference_name : null
+        );
         const displayName = c.display_name || c.phone_number || 'Thread';
         const displayPhone = formatPhoneNumber(c.phone_number);
         $('#wa-context-card').html(`
@@ -1366,7 +1373,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
             </div>
             <div class="wa-meta-row"><span>Name</span><strong>${formatMetaValue(c.display_name)}</strong></div>
             <div class="wa-meta-row"><span>Phone</span><strong>${formatMetaValue(displayPhone)}</strong></div>
-            <div class="wa-meta-row"><span>Lead</span><strong>${formatMetaValue(c.linked_lead)}</strong></div>
+            <div class="wa-meta-row"><span>CRM Lead</span><strong>${formatMetaValue(linkedCRMLead)}</strong></div>
             <div class="wa-meta-row"><span>Patient</span><strong>${formatMetaValue(c.linked_patient)}</strong></div>
             <div class="wa-meta-row"><span>Assigned</span><strong>${formatMetaValue(v.assigned_to)}</strong></div>
             <div class="wa-meta-row"><span>Department</span><strong>${formatMetaValue(v.department)}</strong></div>
@@ -1376,6 +1383,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         $('#wa-thread-avatar').text(getAvatarText({contact_display_name: displayName}));
         $('#wa-thread-title').text(displayName);
         $('#wa-thread-subtitle').text(`${v.department || 'No department'} - ${v.status || 'Open'}`);
+        $('#wa-create-crm-lead').prop('disabled', !!linkedCRMLead).toggle(!linkedCRMLead);
     }
 
     function renderAttribution(attribution) {
@@ -1499,6 +1507,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         $('#wa-context-card').html('<div class="wa-empty">Select a conversation to view context.</div>');
         $('#wa-ai-output').text('No AI output yet.');
         $('#wa-composer-body').val('');
+        $('#wa-create-crm-lead').prop('disabled', false).show();
         closeContextDrawer();
         clearActiveMessagesPollTimer();
         resizeComposer();
@@ -2324,10 +2333,12 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         openInteraktTemplateDialog();
     });
 
-    $('#wa-create-lead').on('click', function() {
+    $('#wa-create-crm-lead').on('click', function() {
         if (!currentConversation) return;
-        api.createLead(currentConversation).then(r => {
-            frappe.show_alert({message: `Lead created: ${(r.message.result || {}).name}`, indicator: 'green'});
+        api.createCRMLead(currentConversation).then(r => {
+            const result = (r.message && r.message.result) || {};
+            const action = result.created ? 'created' : 'linked';
+            frappe.show_alert({message: `CRM Lead ${action}: ${result.name || ''}`, indicator: 'green'});
             loadConversation(currentConversation);
         });
     });

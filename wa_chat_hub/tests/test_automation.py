@@ -297,3 +297,7 @@ class TestAutomatedPatientTemplate(FrappeTestCase):
 
         self.assertEqual(result["conversation"], "CONV-0001")
         self.assertTrue(ensure_contact.call_args.kwargs["allow_unmapped"])
+        self.assertEqual(
+            ensure_contact.call_args.kwargs["pipeline_map_row"],
+            {"sr_medical_department": None},
+        )

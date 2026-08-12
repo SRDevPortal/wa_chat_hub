@@ -139,7 +139,6 @@ def resolve_patient_route(patient_doc, fallback_channel_account: str | None = No
             patient_doc,
             pipeline_row["chat_channel_account"],
             pipeline_map=pipeline_row.get("name"),
-            pipeline=pipeline_row.get("sr_lead_pipeline"),
         )
         route["routing_source"] = (
             "Default Pipeline Map" if pipeline_row.get("is_default") else "Department Map"
