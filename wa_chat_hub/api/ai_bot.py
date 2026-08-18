@@ -501,7 +501,10 @@ def process_message(message_id, skip_batch_wait: bool = False):
 
 
     media_context = ""
-    use_vision_for_image = False
+    # Give the reply model the actual image as well as OCR text. OCR persistence
+    # and CRM note updates are deliberately not a prerequisite for understanding
+    # the current customer message.
+    use_vision_for_image = _should_use_direct_vision(media_url, content_type)
     if media_url and content_type in MEDIA_CONTENT_TYPES:
         try:
             media_context = _build_recent_media_batch_context(conversation, msg_doc, channel_account)
@@ -1429,6 +1432,11 @@ def _is_media_message(doc) -> bool:
     content_type = str(_doc_value(doc, "content_type", "Text") or "Text").title()
     media_url = str(_doc_value(doc, "media_url", None) or "").strip()
     return bool(content_type in MEDIA_CONTENT_TYPES and media_url)
+
+
+def _should_use_direct_vision(media_url: str | None, content_type: str | None) -> bool:
+    """Images must reach the reply model even when OCR/note persistence fails."""
+    return bool(str(media_url or "").strip() and str(content_type or "").title() == "Image")
 
 
 def _autopilot_batching_enabled(settings) -> bool:

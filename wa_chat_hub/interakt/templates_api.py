@@ -141,14 +141,36 @@ def resolve_approved_template(
             ).format(match.get("name") or template_name, variable_count, len(body_values))
         )
 
-    resolved_name = (match.get("name") or template_name).strip()
-    if resolved_name == template_name:
-        return template
-    return {
+    resolved = {
         **template,
-        "template_name": resolved_name,
-        "configured_template_name": template_name,
+        "template_name": (match.get("name") or template_name).strip(),
     }
+    if resolved["template_name"] != template_name:
+        resolved["configured_template_name"] = template_name
+
+    header_format = str(match.get("header_format") or "").strip().upper()
+    if header_format in {"IMAGE", "VIDEO", "DOCUMENT"}:
+        supplied_header_values = template.get("header_values") or []
+        media_url = str(
+            template.get("header_media_url")
+            or (supplied_header_values[0] if supplied_header_values else "")
+            or match.get("header_media_url")
+            or ""
+        ).strip()
+        if not media_url:
+            frappe.throw(
+                _("WhatsApp template '{0}' requires a {1} header, but Interakt returned no media URL.").format(
+                    match.get("name") or template_name,
+                    header_format.lower(),
+                )
+            )
+        resolved["header_values"] = [media_url]
+        resolved["header_media_url"] = media_url
+        resolved["header_format"] = header_format
+        if header_format == "DOCUMENT" and not resolved.get("file_name"):
+            resolved["file_name"] = match.get("header_media_file_name")
+
+    return resolved
 
 
 def find_approved_template(
@@ -424,6 +446,11 @@ def _normalize_row_keys(row: Dict[str, Any]) -> Dict[str, Any]:
         "variablePresent": "variable_present",
         "bodyVariableCount": "body_variable_count",
         "headerVariableCount": "header_variable_count",
+        "headerFormat": "header_format",
+        "headerType": "header_type",
+        "headerHandle": "header_handle",
+        "headerHandleFileUrl": "header_handle_file_url",
+        "headerHandleFileName": "header_handle_file_name",
     }
     for src, dest in mapping.items():
         if src in row and dest not in out:
@@ -484,6 +511,7 @@ def _normalize_templates(raw_items: List[Dict[str, Any]]) -> List[Dict[str, Any]
         has_variables = _row_has_variables(row, body_vars, header_vars, variable_present)
         body_variables = _extract_variable_slots(body_preview, body_vars, "body")
         header_variables = _extract_variable_slots(header_preview, header_vars, "header")
+        header_media = _extract_header_media_metadata(row)
 
         templates.append(
             {
@@ -499,6 +527,7 @@ def _normalize_templates(raw_items: List[Dict[str, Any]]) -> List[Dict[str, Any]
                 "header_variable_count": header_vars,
                 "body_variables": body_variables,
                 "header_variables": header_variables,
+                **header_media,
                 "variable_present": variable_present,
                 "has_variables": has_variables,
                 "source": "api",
@@ -508,6 +537,54 @@ def _normalize_templates(raw_items: List[Dict[str, Any]]) -> List[Dict[str, Any]
 
     templates.sort(key=lambda item: (item.get("display_name") or item.get("name") or "").lower())
     return templates
+
+
+def _extract_header_media_metadata(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Preserve Interakt's stored template-header media for send-time defaults."""
+    header_format = str(
+        row.get("header_format") or row.get("header_type") or ""
+    ).strip().upper()
+    media_url = str(
+        row.get("header_handle_file_url")
+        or row.get("header_media_url")
+        or ""
+    ).strip()
+    file_name = str(row.get("header_handle_file_name") or "").strip()
+
+    header_handle = row.get("header_handle")
+    if not media_url:
+        if isinstance(header_handle, str):
+            media_url = header_handle.strip()
+        elif isinstance(header_handle, list) and header_handle:
+            media_url = str(header_handle[0] or "").strip()
+
+    components = row.get("components")
+    if isinstance(components, list):
+        for component in components:
+            if not isinstance(component, dict):
+                continue
+            component = _normalize_row_keys(component)
+            if str(component.get("type") or "").strip().upper() != "HEADER":
+                continue
+            header_format = str(
+                component.get("format") or component.get("header_format") or header_format
+            ).strip().upper()
+            example = component.get("example") or {}
+            if not media_url and isinstance(example, dict):
+                handles = example.get("header_handle") or example.get("headerHandle") or []
+                if isinstance(handles, str):
+                    media_url = handles.strip()
+                elif isinstance(handles, list) and handles:
+                    media_url = str(handles[0] or "").strip()
+            break
+
+    requires_media = header_format in {"IMAGE", "VIDEO", "DOCUMENT"}
+    return {
+        "header_format": header_format,
+        "requires_header_media": requires_media,
+        "header_media_url": media_url if requires_media else "",
+        "header_media_file_name": file_name if requires_media else "",
+    }
 
 
 def _extract_languages(row: Dict[str, Any]) -> List[str]:

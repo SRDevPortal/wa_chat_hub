@@ -2162,6 +2162,12 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
                     options: '',
                 },
                 {
+                    fieldname: 'header_media_html',
+                    fieldtype: 'HTML',
+                    label: '',
+                    options: '',
+                },
+                {
                     fieldname: 'preview',
                     fieldtype: 'Small Text',
                     label: __('Message Preview'),
@@ -2256,9 +2262,24 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
             const headerHtml = headerSlots.length
                 ? buildInteraktVariableSectionHtml(__('Configure Header Variable'), headerSlots, 'header', mapOptions)
                 : '';
+            const storedHeaderMediaUrl = safeMediaUrl(selected.header_media_url || '');
+            const headerFormat = String(selected.header_format || '').toUpperCase();
+            const headerPreviewUrl = storedHeaderMediaUrl
+                ? `/api/method/wa_chat_hub.api.runtime.get_interakt_template_header_media?conversation=${encodeURIComponent(currentConversation)}&template_name=${encodeURIComponent(selected.name || '')}&language_code=${encodeURIComponent(selected.language_code || 'en')}`
+                : '';
+            const headerMediaHtml = selected.requires_header_media
+                ? `<div class="wa-tpl-var-section"><div class="wa-tpl-var-title">${__('Template Header Media')}</div>${
+                    headerPreviewUrl
+                        ? (headerFormat === 'IMAGE'
+                            ? `<img src="${escapeHtml(headerPreviewUrl)}" alt="${__('Template header image')}" style="display:block;max-width:100%;max-height:180px;object-fit:contain;border-radius:8px;margin-top:8px">`
+                            : `<a href="${escapeHtml(headerPreviewUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(selected.header_media_file_name || __('Open header media'))}</a>`)
+                        : `<div class="text-danger">${__('Interakt did not return the required header media URL.')}</div>`
+                }</div>`
+                : '';
 
             setVariableSectionHtml(dialog.fields_dict.body_variables_html, bodyHtml);
             setVariableSectionHtml(dialog.fields_dict.header_variables_html, headerHtml);
+            setVariableSectionHtml(dialog.fields_dict.header_media_html, headerMediaHtml);
             bindTemplateVariableEvents(selected);
             applyTemplatePreviewWithVariables(dialog, selected);
         }
@@ -2271,6 +2292,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         dialog.get_primary_btn().prop('disabled', true);
         setVariableSectionHtml(dialog.fields_dict.body_variables_html, '');
         setVariableSectionHtml(dialog.fields_dict.header_variables_html, '');
+        setVariableSectionHtml(dialog.fields_dict.header_media_html, '');
         if (templateField.$input) {
             templateField.$input.prop('disabled', true);
         }

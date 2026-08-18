@@ -3,10 +3,12 @@ from __future__ import annotations
 import base64
 from datetime import datetime
 from io import BytesIO
+import json
 import mimetypes
 import os
 import re
 import tempfile
+import time
 from typing import Dict, Optional
 
 import frappe
@@ -26,6 +28,7 @@ from wa_chat_hub.security import (
     assert_ai_doctype_permission,
     safe_ai_get_doc,
     safe_ai_get_value,
+    safe_ai_insert,
     safe_ai_save,
 )
 
@@ -154,6 +157,13 @@ def process_attachment_for_lead_summary(
     body_hint = str(payload.get("body") or "").strip()
     extracted = _extract_text_from_media(media_url, content_type)
     summary = _summarize_report_text(extracted, body_hint, content_type)
+    _persist_ocr_result(
+        convo=convo,
+        crm_lead=crm_lead,
+        message_name=message_name,
+        extracted=extracted,
+        summary=summary,
+    )
     note_block = _build_sr_lead_notes_block(
         content_type=content_type,
         message_name=message_name,
@@ -162,6 +172,68 @@ def process_attachment_for_lead_summary(
         summary=summary,
     )
     _append_to_lead_notes("CRM Lead", crm_lead, note_block)
+
+
+def _persist_ocr_result(
+    *,
+    convo,
+    crm_lead: str,
+    message_name: str,
+    extracted: str,
+    summary: str,
+) -> str | None:
+    """Persist extraction before touching the concurrently updated CRM Lead."""
+    try:
+        attachment_file = safe_ai_get_value("Chat Message", message_name, "attachment_file")
+        existing = None
+        if attachment_file:
+            existing = safe_ai_get_value(
+                "WA Lead OCR Result",
+                {"lead": crm_lead, "conversation": convo.name, "file": attachment_file},
+                "name",
+            )
+        values = {
+            "raw_text": (extracted or "")[:12000],
+            "extracted_json": json.dumps(
+                {"message": str(message_name), "summary": summary or ""},
+                ensure_ascii=False,
+            )[:12000],
+            "ocr_provider": "Configured Vision Provider",
+            "confidence": 100 if extracted else 0,
+            "status": "Applied" if extracted else "Failed",
+            "error": "" if extracted else "No readable text or visual classification was extracted.",
+        }
+        if existing:
+            result_doc = safe_ai_get_doc("WA Lead OCR Result", existing)
+            result_doc.update(values)
+            safe_ai_save(result_doc)
+            return result_doc.name
+
+        result_doc = frappe.get_doc(
+            {
+                "doctype": "WA Lead OCR Result",
+                "lead": crm_lead,
+                "file": attachment_file,
+                "conversation": convo.name,
+                "channel_context": getattr(convo, "channel_context", None),
+                "channel_account": getattr(convo, "channel_account", None),
+                "pipeline": _lead_pipeline(crm_lead),
+                **values,
+            }
+        )
+        safe_ai_insert(result_doc)
+        return result_doc.name
+    except WAChatHubSecurityError:
+        return None
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "WA OCR Result Persistence Failed")
+        return None
+
+
+def _lead_pipeline(crm_lead: str) -> str | None:
+    if not crm_lead or not frappe.get_meta("CRM Lead").has_field("sr_lead_pipeline"):
+        return None
+    return safe_ai_get_value("CRM Lead", crm_lead, "sr_lead_pipeline")
 
 
 def _build_sr_lead_notes_block(
@@ -235,15 +307,25 @@ def _resolve_notes_fieldname(doctype: str) -> Optional[str]:
 
 def _append_to_lead_notes(doctype: str, name: str, note_block: str) -> None:
     try:
-        lead_doc = safe_ai_get_doc(doctype, name)
         notes_field = _resolve_notes_fieldname(doctype)
-        if notes_field:
-            existing = str(getattr(lead_doc, notes_field, "") or "").strip()
-            merged = f"{existing}\n\n{note_block}".strip() if existing else note_block
-            if len(merged) > SR_LEAD_NOTES_MAX_LEN:
-                merged = _trim_notes_to_limit(existing, note_block, SR_LEAD_NOTES_MAX_LEN)
-            setattr(lead_doc, notes_field, merged)
-            safe_ai_save(lead_doc)
+        lead_doc = None
+        for attempt in range(3):
+            lead_doc = safe_ai_get_doc(doctype, name)
+            if notes_field:
+                existing = str(getattr(lead_doc, notes_field, "") or "").strip()
+                merged = f"{existing}\n\n{note_block}".strip() if existing else note_block
+                if len(merged) > SR_LEAD_NOTES_MAX_LEN:
+                    merged = _trim_notes_to_limit(existing, note_block, SR_LEAD_NOTES_MAX_LEN)
+                setattr(lead_doc, notes_field, merged)
+            try:
+                if notes_field:
+                    safe_ai_save(lead_doc)
+                break
+            except frappe.TimestampMismatchError:
+                if attempt == 2:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+                continue
         assert_ai_doctype_permission("Comment", "write")
         lead_doc.add_comment("Comment", note_block)
     except WAChatHubSecurityError:
