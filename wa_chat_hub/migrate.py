@@ -54,45 +54,18 @@ def _background_queue_available(queue: str) -> bool:
 
 
 def after_migrate() -> None:
-    """Run WA Chat Hub data and workspace migrations after schema synchronization."""
+    """Refresh the workspace after schema synchronization.
+
+    Schema setup and data backfills belong in versioned patches so they run once
+    per site instead of on every ``bench migrate``.
+    """
     try:
         from wa_chat_hub.setup_workspace import run as setup_workspace
 
         setup_workspace()
     except Exception:
         _safe_log_error("WA Chat Hub Workspace Sync Failed")
-    ensure_lead_scoring_fields()
-    ensure_chat_message_indexes()
-    ensure_app_update_indexes()
     ensure_app_update_setting()
-    backfill_channel_account_medical_departments()
-    migrate_conversation_crm_lead_links()
-    try:
-        from wa_chat_hub.security import ensure_default_ai_doctype_permissions
-        from wa_chat_hub.setup_agents import (
-            backfill_conversation_identities,
-            ensure_crm_lead_account_mcp_tool,
-            ensure_default_agent_profiles,
-            ensure_verification_agent_tool,
-        )
-
-        ensure_default_ai_doctype_permissions()
-        ensure_default_agent_profiles()
-        ensure_verification_agent_tool()
-        ensure_crm_lead_account_mcp_tool()
-        from wa_chat_hub.setup_ai_routing import seed_default_ai_routing
-        from wa_chat_hub.setup_ai_routing import ensure_default_route_blocked_replies
-        from wa_chat_hub.setup_ai_routing import ensure_default_policy_assignment
-
-        seed_default_ai_routing()
-        ensure_default_policy_assignment()
-        ensure_default_route_blocked_replies()
-        backfill_conversation_identities()
-    except Exception:
-        _safe_log_error("WA Chat Hub Agent Setup Failed")
-    backfill_indexed_phone_keys()
-    backfill_messaging_windows()
-
 
 
 def backfill_indexed_phone_keys() -> None:
