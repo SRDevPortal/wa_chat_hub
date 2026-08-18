@@ -1,17 +1,14 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Dict, List
 
 import frappe
-import requests
 
-from wa_chat_hub.ai.providers import CHAT_CAPABILITY, get_active_llm_provider_rows, get_provider_secret
 from wa_chat_hub.ai.language import resolve_language_from_history
 from wa_chat_hub.db_retry import with_db_lock_retry
 from wa_chat_hub.prompts import get_conversation_crm_lead
-from wa_chat_hub.policy import get_conversation_policy, provider_endpoint, provider_timeout
+from wa_chat_hub.policy import get_conversation_policy
 from wa_chat_hub.security import (
     assert_ai_doctype_permission,
     safe_ai_exists,
@@ -58,7 +55,7 @@ def recompute_conversation_metrics(conversation: str) -> ScoreResult:
         order_by="creation asc",
         limit_page_length=40,
     )
-    score_result = _ai_score(convo, history)
+    score_result = _policy_score(convo, history)
     return score_result
 
 
@@ -131,7 +128,7 @@ def sync_to_linked_lead(conversation: str, result: ScoreResult | None = None) ->
     )
 
 
-def _ai_score(convo, history: List[Dict]) -> ScoreResult:
+def _policy_score(convo, history: List[Dict]) -> ScoreResult:
     bundle = get_conversation_policy(convo)
     scoring_policy = bundle.section("lead_scoring_policy") if bundle else {}
     if not scoring_policy.get("enabled"):
@@ -148,107 +145,10 @@ def _ai_score(convo, history: List[Dict]) -> ScoreResult:
     )
     lead_lan = str(lang.get("label") or "").strip()
 
-    providers = _load_active_providers()
-    if not providers:
-        return _heuristic_score(convo, history, lead_lan, scoring_policy)
-
-    prompt = _build_scoring_prompt(convo, history, lead_lan)
-    for provider in providers:
-        try:
-            score = _call_score_provider(provider, prompt, getattr(convo, "channel_account", None))
-            if score is None:
-                continue
-            score = _clamp(score, 0, 100)
-            return ScoreResult(
-                lead_score=score,
-                lead_temperature=_score_to_temperature(score, scoring_policy),
-                lead_lan=lead_lan,
-                source=f"ai:{provider['name']}",
-            )
-        except Exception:
-            frappe.log_error(frappe.get_traceback(), f"Lead Scoring Provider Failed: {provider['name']}")
-
-    return _heuristic_score(convo, history, lead_lan, scoring_policy)
+    return _policy_rule_score(convo, history, lead_lan, scoring_policy)
 
 
-def _build_scoring_prompt(convo, history: List[Dict], lead_lan: str) -> str:
-    trimmed = []
-    for row in history[-12:]:
-        text = str(row.get("body") or "").strip()
-        if not text:
-            continue
-        trimmed.append(f"{row.get('direction')}: {text[:240]}")
-
-    transcript = "\n".join(trimmed) or "No usable transcript."
-    return (
-        "You are a CRM lead scoring assistant.\n"
-        "Score this WhatsApp conversation from 0 to 100 for conversion readiness.\n"
-        "Return only JSON: {\"score\": number}.\n"
-        "Signals: buying intent, urgency, appointment intent, detailed responses, follow-up behavior.\n"
-        "Conversation metadata:\n"
-        f"- Priority: {convo.priority}\n"
-        f"- Status: {convo.status}\n"
-        f"- Unread count: {convo.unread_count}\n"
-        f"- Detected language: {lead_lan}\n\n"
-        f"Transcript:\n{transcript}"
-    )
-
-
-def _load_active_providers() -> List[Dict]:
-    result = []
-    for row in get_active_llm_provider_rows(CHAT_CAPABILITY, limit=5):
-        if _is_chat_reply_only_provider(row):
-            continue
-        provider = get_provider_secret(row)
-        if provider and provider.get("api_key"):
-            result.append(provider)
-    return result
-
-
-def _is_chat_reply_only_provider(row) -> bool:
-    base_url = str(row.get("base_url") or "").strip().lower()
-    model = str(row.get("model_name") or "").strip().lower()
-    return "vllm.buopso.net" in base_url or model.startswith("qwen3:")
-
-
-def _call_score_provider(provider: Dict, prompt: str, channel_account: str | None) -> float | None:
-    url = provider_endpoint(provider, channel_account)
-    if not url:
-        return None
-    if url.endswith("/") and "chat/completions" not in url:
-        url = f"{url}chat/completions"
-
-    payload = {
-        "model": provider.get("model_name"),
-        "messages": [
-            {"role": "system", "content": "Return strict JSON with key score only."},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0,
-    }
-    resp = requests.post(
-        url,
-        headers={
-            "Authorization": f"Bearer {provider.get('api_key')}",
-            "Content-Type": "application/json",
-        },
-        json=payload,
-        timeout=provider_timeout(channel_account, "classification"),
-    )
-    resp.raise_for_status()
-    content = resp.json()["choices"][0]["message"].get("content", "").strip()
-    if not content:
-        return None
-
-    try:
-        parsed = json.loads(content)
-        return float(parsed.get("score"))
-    except Exception:
-        digits = "".join(ch for ch in content if ch.isdigit() or ch == ".")
-        return float(digits) if digits else None
-
-
-def _heuristic_score(convo, history: List[Dict], lead_lan: str, policy: Dict) -> ScoreResult:
+def _policy_rule_score(convo, history: List[Dict], lead_lan: str, policy: Dict) -> ScoreResult:
     score = float(policy.get("base_score") or 0)
     inbound_count = len([h for h in history if h.get("direction") == "Inbound" and str(h.get("body") or "").strip()])
     score += min(float(policy.get("inbound_message_cap") or 0), inbound_count * float(policy.get("inbound_message_weight") or 0))
@@ -266,7 +166,7 @@ def _heuristic_score(convo, history: List[Dict], lead_lan: str, policy: Dict) ->
         lead_score=score,
         lead_temperature=_score_to_temperature(score, policy),
         lead_lan=lead_lan,
-        source="heuristic",
+        source="policy",
     )
 
 

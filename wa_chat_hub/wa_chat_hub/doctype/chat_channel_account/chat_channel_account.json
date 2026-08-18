@@ -9,6 +9,7 @@
   "channel_type",
   "department",
   "default_medical_department",
+  "enable_patient_department_routing",
   "phone_number",
   "phone_id",
   "waba_id",
@@ -65,6 +66,14 @@
    "label": "Default Medical Department",
    "options": "Medical Department",
    "search_index": 1
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.channel_type == 'Interakt'",
+   "description": "When enabled, Patients without an explicit Vobiz user channel mapping may initiate WhatsApp through this account by matching Default Medical Department.",
+   "fieldname": "enable_patient_department_routing",
+   "fieldtype": "Check",
+   "label": "Enable Patient Department Routing"
   },
   {
    "fieldname": "phone_number",
