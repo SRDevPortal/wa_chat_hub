@@ -9,6 +9,11 @@ import requests
 from frappe import _
 
 from wa_chat_hub.connector.registry import get_adapter
+from wa_chat_hub.delivery_outcomes import (
+    PatientTemplateDeliveryError,
+    PatientTemplateNotSentError,
+    PatientTemplateOutcomeUnknownError,
+)
 from wa_chat_hub.messaging.windows import evaluate_send_permission
 from wa_chat_hub.security import safe_ai_get_doc
 from wa_chat_hub.task_logger import elapsed, task_log
@@ -193,8 +198,13 @@ def build_interakt_template_payload(conversation: str, template: Dict[str, Any])
 
 
 def send_interakt_template_message(conversation: str, template: Dict[str, Any]) -> Dict[str, Any]:
-    outbound = build_interakt_template_payload(conversation, template)
-    account = safe_ai_get_doc("Chat Channel Account", outbound["channel_account"])
+    try:
+        outbound = build_interakt_template_payload(conversation, template)
+        account = safe_ai_get_doc("Chat Channel Account", outbound["channel_account"])
+    except PatientTemplateDeliveryError:
+        raise
+    except Exception as exc:
+        raise PatientTemplateNotSentError(str(exc), retryable=False) from exc
     return send_interakt_message(account, outbound)
 
 
@@ -202,7 +212,7 @@ def send_interakt_message(account, outbound: Dict[str, Any]) -> Dict[str, Any]:
     url = account.interakt_base_url or "https://api.interakt.ai/v1/public/message/"
     api_key = account.get_password("interakt_api_key")
     if not api_key:
-        frappe.throw("Interakt API Key is not configured", title="Missing Interakt API Key")
+        raise PatientTemplateNotSentError("Interakt API Key is not configured", retryable=False)
 
     headers = {
         "Authorization": f"Basic {api_key}",
@@ -210,7 +220,10 @@ def send_interakt_message(account, outbound: Dict[str, Any]) -> Dict[str, Any]:
     }
     started = time.monotonic()
     task_log("interakt", "request_start", channel_account=account.name)
-    response = requests.post(url, headers=headers, json=outbound["payload"], timeout=20)
+    try:
+        response = requests.post(url, headers=headers, json=outbound["payload"], timeout=20)
+    except requests.RequestException as exc:
+        raise PatientTemplateOutcomeUnknownError(str(exc)) from exc
     task_log(
         "interakt",
         "request_done",
@@ -224,12 +237,17 @@ def send_interakt_message(account, outbound: Dict[str, Any]) -> Dict[str, Any]:
             f"Interakt API Error {response.status_code}: {detail}\nPayload: {frappe.as_json(outbound['payload'])}",
             "Interakt Message API Failure",
         )
-        frappe.throw(
+        raise PatientTemplateNotSentError(
             _extract_interakt_error_message(response.status_code, detail),
-            title=_("Interakt Send Failed"),
+            retryable=response.status_code in {408, 429} or response.status_code >= 500,
         )
 
-    result = response.json() if response.content else {}
+    try:
+        result = response.json() if response.content else {}
+    except ValueError as exc:
+        raise PatientTemplateOutcomeUnknownError(
+            _("Interakt accepted the request but returned an unreadable response.")
+        ) from exc
     provider_message_id = None
     if isinstance(result, dict):
         result_value = result.get("result")

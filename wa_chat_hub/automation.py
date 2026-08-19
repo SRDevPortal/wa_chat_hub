@@ -7,6 +7,11 @@ from frappe import _
 from frappe.utils import cstr
 
 from wa_chat_hub.channel_resolver import get_or_create_patient_conversation_for_channel_account
+from wa_chat_hub.delivery_outcomes import (
+    PatientTemplateDeliveryError,
+    PatientTemplateNotSentError,
+    PatientTemplateOutcomeUnknownError,
+)
 from wa_chat_hub.interakt.templates_api import resolve_approved_template
 from wa_chat_hub.messaging.channel_map import get_pipeline_map, get_pipeline_map_for_patient
 from wa_chat_hub.outbound import send_interakt_template_message
@@ -31,74 +36,93 @@ def send_patient_template(
     template_name = cstr(template_name).strip()
     event_key = cstr(event_key).strip()
     if not patient:
-        frappe.throw(_("Patient is required for an automated WhatsApp template."))
+        raise PatientTemplateNotSentError(_("Patient is required for an automated WhatsApp template."))
     if not template_name:
-        frappe.throw(_("Template name is required for an automated WhatsApp template."))
+        raise PatientTemplateNotSentError(_("Template name is required for an automated WhatsApp template."))
     if not event_key:
-        frappe.throw(_("Event key is required for an automated WhatsApp template."))
+        raise PatientTemplateNotSentError(_("Event key is required for an automated WhatsApp template."))
 
     original_user = frappe.session.user
     try:
         set_service_user_context(operation="patient_notification_template")
-        patient_doc = safe_ai_get_doc("Patient", patient)
-        route = resolve_patient_route(
-            patient_doc,
-            fallback_channel_account=cstr(fallback_channel_account).strip() or None,
-        )
-        frappe.db.commit()
-        conversation = route["conversation"]
-        channel_account = route["channel_account"]
-        account = safe_ai_get_doc("Chat Channel Account", channel_account)
-        if not account.is_active:
-            frappe.throw(_("WhatsApp channel account {0} is disabled.").format(channel_account))
-        if account.channel_type != "Interakt":
-            frappe.throw(
-                _("Automated patient templates require an Interakt channel account; {0} uses {1}.").format(
-                    channel_account,
-                    account.channel_type,
+        try:
+            patient_doc = safe_ai_get_doc("Patient", patient)
+            route = resolve_patient_route(
+                patient_doc,
+                fallback_channel_account=cstr(fallback_channel_account).strip() or None,
+            )
+            frappe.db.commit()
+            conversation = route["conversation"]
+            channel_account = route["channel_account"]
+            account = safe_ai_get_doc("Chat Channel Account", channel_account)
+            if not account.is_active:
+                raise PatientTemplateNotSentError(
+                    _("WhatsApp channel account {0} is disabled.").format(channel_account)
                 )
+            if account.channel_type != "Interakt":
+                raise PatientTemplateNotSentError(
+                    _("Automated patient templates require an Interakt channel account; {0} uses {1}.").format(
+                        channel_account,
+                        account.channel_type,
+                    )
+                )
+
+            template = {
+                "template_name": template_name,
+                "language_code": cstr(language_code).strip() or "en",
+                "body_values": [cstr(value) for value in (body_values or [])],
+                "body_preview": cstr(body_preview).strip(),
+                "callback_data": event_key,
+                "template_category": "UTILITY",
+            }
+            template = resolve_approved_template(channel_account, template)
+        except PatientTemplateDeliveryError:
+            raise
+        except Exception as exc:
+            raise PatientTemplateNotSentError(cstr(exc), retryable=False) from exc
+
+        try:
+            outbound = send_interakt_template_message(conversation, template)
+        except PatientTemplateDeliveryError:
+            raise
+        except Exception as exc:
+            raise PatientTemplateOutcomeUnknownError(cstr(exc)) from exc
+        if not outbound.get("sent"):
+            raise PatientTemplateNotSentError(
+                _("Interakt did not confirm that the template was sent."),
+                retryable=False,
             )
 
-        template = {
-            "template_name": template_name,
-            "language_code": cstr(language_code).strip() or "en",
-            "body_values": [cstr(value) for value in (body_values or [])],
-            "body_preview": cstr(body_preview).strip(),
-            "callback_data": event_key,
-            "template_category": "UTILITY",
-        }
-        template = resolve_approved_template(channel_account, template)
-        outbound = send_interakt_template_message(conversation, template)
-        if not outbound.get("sent"):
-            frappe.throw(_("Interakt did not confirm that the template was sent."))
-
-        contact = safe_ai_get_doc("Chat Contact", route["contact"])
-        provider_message_id = outbound.get("provider_message_id")
-        message_result = append_message(
-            {
-                "channel_account": channel_account,
-                "phone_number": contact.phone_number,
-                "direction": "Outbound",
-                "sender_type": "System",
-                "content_type": "Template",
-                "body": template.get("body_preview") or f"Template: {template['template_name']}",
-                "delivery_status": outbound.get("delivery_status") or "Sent",
-                "channel_message_id": provider_message_id,
-                "provider_message_id": provider_message_id,
-                "provider_event_id": event_key,
-                "provider_name": "Interakt",
-                "dedupe_key": event_key,
-                "raw_transport_payload": {
-                    **outbound,
-                    "template_name": template.get("template_name"),
-                    "configured_template_name": template.get("configured_template_name"),
-                    "language_code": template.get("language_code"),
-                    "body_values": template.get("body_values"),
-                    "body_preview": template.get("body_preview"),
-                },
-                "template_category": template["template_category"],
-            }
-        )
+        try:
+            contact = safe_ai_get_doc("Chat Contact", route["contact"])
+            provider_message_id = outbound.get("provider_message_id")
+            message_result = append_message(
+                {
+                    "channel_account": channel_account,
+                    "phone_number": contact.phone_number,
+                    "direction": "Outbound",
+                    "sender_type": "System",
+                    "content_type": "Template",
+                    "body": template.get("body_preview") or f"Template: {template['template_name']}",
+                    "delivery_status": outbound.get("delivery_status") or "Sent",
+                    "channel_message_id": provider_message_id,
+                    "provider_message_id": provider_message_id,
+                    "provider_event_id": event_key,
+                    "provider_name": "Interakt",
+                    "dedupe_key": event_key,
+                    "raw_transport_payload": {
+                        **outbound,
+                        "template_name": template.get("template_name"),
+                        "configured_template_name": template.get("configured_template_name"),
+                        "language_code": template.get("language_code"),
+                        "body_values": template.get("body_values"),
+                        "body_preview": template.get("body_preview"),
+                    },
+                    "template_category": template["template_category"],
+                }
+            )
+        except Exception as exc:
+            raise PatientTemplateOutcomeUnknownError(cstr(exc)) from exc
         return {
             "conversation": conversation,
             "message": message_result.get("message"),
@@ -109,7 +133,6 @@ def send_patient_template(
         }
     finally:
         frappe.set_user(original_user)
-
 
 def resolve_patient_route(patient_doc, fallback_channel_account: str | None = None) -> dict[str, Any]:
     existing = find_existing_patient_route(patient_doc.name)
