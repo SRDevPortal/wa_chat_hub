@@ -28,12 +28,22 @@ def create_lead_from_conversation():
     doc = frappe.get_doc({
         "doctype": "Lead",
         "lead_name": payload.get("lead_name") or contact.display_name or contact.phone_number,
+        "first_name": payload.get("lead_name") or contact.display_name or contact.phone_number,
         "mobile_no": contact.phone_number,
-        "source": payload.get("source") or "WhatsApp",
+        "status": "Open",
     })
+    meta = frappe.get_meta("Lead")
+    if meta.has_field("whatsapp_no"):
+        doc.whatsapp_no = contact.phone_number
+    if meta.has_field("shipkia_lead_source"):
+        doc.shipkia_lead_source = "WhatsApp Inbound"
+    if meta.has_field("shipkia_first_contact_channel"):
+        doc.shipkia_first_contact_channel = "WhatsApp"
     doc.insert(ignore_permissions=True)
 
     contact.linked_lead = doc.name
+    contact.source_doctype = "Lead"
+    contact.source_name = doc.name
     contact.save(ignore_permissions=True)
     convo.linked_reference_doctype = "Lead"
     convo.linked_reference_name = doc.name
@@ -69,27 +79,3 @@ def create_issue_from_conversation():
     convo.linked_reference_name = doc.name
     convo.save(ignore_permissions=True)
     return {"success": True, "result": {"doctype": "Issue", "name": doc.name, "contact": contact.name}}
-
-
-@frappe.whitelist(methods=["POST"])
-def create_patient_encounter_from_conversation():
-    payload = _load_payload()
-    conversation = payload.get("conversation")
-    patient = payload.get("patient")
-    if not conversation:
-        frappe.throw(_("conversation is required"))
-    if not patient:
-        frappe.throw(_("patient is required"))
-
-    ensure_can_read_conversation(conversation)
-    doc = frappe.get_doc({
-        "doctype": "Patient Encounter",
-        "patient": patient,
-    })
-    doc.insert(ignore_permissions=True)
-
-    convo = frappe.get_doc("Chat Conversation", conversation)
-    convo.linked_reference_doctype = "Patient Encounter"
-    convo.linked_reference_name = doc.name
-    convo.save(ignore_permissions=True)
-    return {"success": True, "result": {"doctype": "Patient Encounter", "name": doc.name}}

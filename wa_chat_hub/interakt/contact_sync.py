@@ -1,4 +1,4 @@
-"""Push ERP contacts to Interakt with pipeline + medical department traits."""
+"""Push ShipKia lead and WhatsApp contact records to Interakt."""
 
 from __future__ import annotations
 
@@ -112,8 +112,11 @@ def push_contact_to_interakt(
 
 
 def push_reference_to_interakt(reference_doc, channel_account: Optional[str] = None) -> Dict[str, Any]:
-    """Push a Patient or CRM Lead to Interakt using pipeline map routing."""
+    """Push a CRM Lead to Interakt using pipeline map routing."""
     doctype = reference_doc.doctype
+    if doctype != "CRM Lead":
+        frappe.throw(_("Unsupported doctype for Interakt push: {0}").format(doctype))
+
     phone = _phone_from_reference(reference_doc)
     normalized = normalize_phone(phone)
     if not normalized:
@@ -121,14 +124,9 @@ def push_reference_to_interakt(reference_doc, channel_account: Optional[str] = N
 
     if channel_account:
         pipeline_map_row = get_pipeline_map(channel_account=channel_account)
-    elif doctype == "Patient":
-        pipeline_map_row = get_pipeline_map(medical_department=reference_doc.get("sr_medical_department"))
-        channel_account = pipeline_map_row["chat_channel_account"]
-    elif doctype == "CRM Lead":
+    else:
         pipeline_map_row = get_pipeline_map(pipeline=reference_doc.get("sr_lead_pipeline"))
         channel_account = pipeline_map_row["chat_channel_account"]
-    else:
-        frappe.throw(_("Unsupported doctype for Interakt push: {0}").format(doctype))
 
     contact_name = get_or_create_contact(
         phone_number=normalized,
@@ -139,8 +137,6 @@ def push_reference_to_interakt(reference_doc, channel_account: Optional[str] = N
         contact_name,
         {"source_doctype": doctype, "source_name": reference_doc.name},
     )
-    if doctype == "Patient" and frappe.get_meta("Chat Contact").has_field("linked_patient"):
-        safe_ai_set_value("Chat Contact", contact_name, "linked_patient", reference_doc.name)
 
     return push_contact_to_interakt(
         channel_account,
@@ -151,7 +147,7 @@ def push_reference_to_interakt(reference_doc, channel_account: Optional[str] = N
 
 
 def push_pipeline_map_contacts(pipeline_map_name: str) -> Dict[str, Any]:
-    """Bulk push Patients, CRM Leads, and chat contacts for one pipeline map row."""
+    """Bulk push CRM Leads and chat contacts for one pipeline map row."""
     row = safe_ai_get_doc("WA Channel Pipeline Map", pipeline_map_name)
     if not row.is_active:
         frappe.throw(_("Pipeline map {0} is not active.").format(pipeline_map_name))
@@ -159,14 +155,6 @@ def push_pipeline_map_contacts(pipeline_map_name: str) -> Dict[str, Any]:
     pipeline_map_row = row.as_dict()
     channel_account = row.chat_channel_account
     stats = {"pushed": 0, "failed": 0, "skipped": 0, "errors": []}
-
-    for patient_name in _patient_names_for_map(row):
-        _push_one(
-            stats,
-            lambda pn=patient_name: push_reference_to_interakt(
-                safe_ai_get_doc("Patient", pn), channel_account
-            ),
-        )
 
     if safe_ai_exists("DocType", "CRM Lead"):
         for lead_name in _crm_lead_names_for_map(row):
@@ -221,7 +209,7 @@ def push_conversation_contact(conversation: str) -> Optional[Dict[str, Any]]:
 
     contact_doc = safe_ai_get_doc("Chat Contact", convo.contact)
     reference_doc = resolve_reference_for_contact(contact_doc)
-    if not reference_doc and convo.linked_reference_doctype in ("Patient", "CRM Lead") and convo.linked_reference_name:
+    if not reference_doc and convo.linked_reference_doctype == "CRM Lead" and convo.linked_reference_name:
         if safe_ai_exists(convo.linked_reference_doctype, convo.linked_reference_name):
             reference_doc = safe_ai_get_doc(convo.linked_reference_doctype, convo.linked_reference_name)
 
@@ -234,12 +222,9 @@ def push_conversation_contact(conversation: str) -> Optional[Dict[str, Any]]:
 
 
 def resolve_reference_for_contact(contact_doc) -> Any:
-    if getattr(contact_doc, "linked_patient", None) and safe_ai_exists("Patient", contact_doc.linked_patient):
-        return safe_ai_get_doc("Patient", contact_doc.linked_patient)
-
     source_dt = contact_doc.source_doctype
     source_name = contact_doc.source_name
-    if source_dt in ("Patient", "CRM Lead") and source_name and safe_ai_exists(source_dt, source_name):
+    if source_dt == "CRM Lead" and source_name and safe_ai_exists(source_dt, source_name):
         return safe_ai_get_doc(source_dt, source_name)
 
     if getattr(contact_doc, "linked_lead", None) and safe_ai_exists("CRM Lead", contact_doc.linked_lead):
@@ -253,32 +238,18 @@ def resolve_reference_for_contact(contact_doc) -> Any:
 def _enrich_traits_from_pipeline_map(traits: Dict[str, Any], pipeline_map_row: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(traits or {})
     pipeline = pipeline_map_row.get("sr_lead_pipeline")
-    department = pipeline_map_row.get("sr_medical_department")
     if pipeline:
         out.setdefault("sr_lead_pipeline", pipeline)
-    if department:
-        out.setdefault("sr_medical_department", department)
     return {k: v for k, v in out.items() if v not in (None, "")}
 
 
 def _build_interakt_tags(pipeline_map_row: Dict[str, Any]) -> List[str]:
     tags = []
-    for key in ("sr_lead_pipeline", "sr_medical_department"):
+    for key in ("sr_lead_pipeline",):
         value = pipeline_map_row.get(key)
         if value:
             tags.append(str(value)[:50])
     return tags[:10]
-
-
-def _patient_names_for_map(row) -> List[str]:
-    if not row.sr_medical_department or not safe_ai_exists("DocType", "Patient"):
-        return []
-    if not frappe.get_meta("Patient").has_field("sr_medical_department"):
-        return []
-    filters = {"sr_medical_department": row.sr_medical_department}
-    if frappe.get_meta("Patient").has_field("mobile"):
-        filters["mobile"] = ["is", "set"]
-    return safe_ai_get_all("Patient", filters=filters, pluck="name", limit_page_length=0)
 
 
 def _crm_lead_names_for_map(row) -> List[str]:
@@ -311,11 +282,7 @@ def _chat_contact_names_for_channel(channel_account: str) -> List[str]:
 
 def _phone_from_reference(doc) -> Optional[str]:
     meta = frappe.get_meta(doc.doctype)
-    fields = (
-        ["mobile", "mobile_no", "phone", "custom_whatsapp_number"]
-        if doc.doctype == "Patient"
-        else ["mobile_no", "phone", "mobile", "whatsapp_number", "whatsapp_no", "custom_whatsapp_number"]
-    )
+    fields = ["mobile_no", "phone", "mobile", "whatsapp_number", "whatsapp_no", "custom_whatsapp_number"]
     for fieldname in fields:
         if meta.has_field(fieldname) and doc.get(fieldname):
             return doc.get(fieldname)
@@ -323,7 +290,7 @@ def _phone_from_reference(doc) -> Optional[str]:
 
 
 def _display_name_from_reference(doc) -> str:
-    for fieldname in ("patient_name", "lead_name", "full_name", "first_name"):
+    for fieldname in ("lead_name", "full_name", "first_name", "contact_name"):
         if doc.get(fieldname):
             return doc.get(fieldname)
     return doc.name

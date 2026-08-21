@@ -19,7 +19,7 @@ frappe.pages['wa-chat-hub-settings'].on_page_load = function(wrapper) {
             </div>
             <div class="wa-settings-card">
                 <h3>Knowledge Base</h3>
-                <p>Add SOPs, FAQs, treatment-safe response guidance, department playbooks, and external references.</p>
+                <p>Add SOPs, FAQs, ShipKia sales guidance, support playbooks, and external references.</p>
             </div>
             <div class="wa-settings-card">
                 <h3>MCP Servers</h3>

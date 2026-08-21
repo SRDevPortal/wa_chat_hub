@@ -421,6 +421,12 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
                 frappe.get_traceback(),
                 "WA Chat Hub Inbound Link Failed",
             )
+        try:
+            from wa_chat_hub.shipkia_qualification import capture_and_schedule_qualification
+
+            capture_and_schedule_qualification(conversation=conversation, message_name=message.name)
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "ShipKia Lead Qualification Schedule Failed")
 
     attachment_file = None
     try:
@@ -469,11 +475,6 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
             schedule_autopilot_for_message(message.name)
         except Exception:
             frappe.log_error(frappe.get_traceback(), "WA AI Autopilot Schedule Failed")
-    if direction == "Inbound":
-        try:
-            _enqueue_lead_scoring(conversation)
-        except Exception:
-            frappe.log_error(frappe.get_traceback(), "Lead Scoring Enqueue Failed")
     frappe.publish_realtime(
         "wa_chat_new_message",
         {
@@ -673,9 +674,7 @@ def repair_inbound_pending_statuses() -> None:
 def build_erp_actions() -> Dict[str, Dict[str, str]]:
     return {
         "lead": {"label": "Create Lead", "doctype": "Lead"},
-        "encounter": {"label": "Create Encounter", "doctype": "Patient Encounter"},
         "support_ticket": {"label": "Create Support Ticket", "doctype": "Issue"},
-        "patient": {"label": "Link/Create Patient", "doctype": "Patient"},
     }
 
 
@@ -703,7 +702,7 @@ def _link_or_create_master_record(
     raw_payload: Optional[Dict[str, Any]] = None,
     message_name: Optional[str] = None,
 ) -> None:
-    """Attach inbound chat to existing Patient/Customer else create a Lead."""
+    """Attach inbound ShipKia chat to an existing customer or lead, else create a Lead."""
     if not phone_number:
         return
 
@@ -711,43 +710,9 @@ def _link_or_create_master_record(
     contact = safe_ai_get_doc("Chat Contact", contact_name)
     _sanitize_contact_links(contact)
     _sanitize_conversation_links(convo)
-    _normalize_existing_lead_link(convo)
-    existing_crm_lead = get_conversation_crm_lead(convo)
-    if existing_crm_lead and safe_ai_exists("CRM Lead", existing_crm_lead):
-        _finalize_crm_lead_after_inbound(
-            conversation,
-            existing_crm_lead,
-            raw_payload=raw_payload,
-            message_name=message_name,
-        )
-        return
-    ref_dt, ref_name = get_conversation_linked_reference(convo)
-    if ref_dt and ref_name and ref_dt not in {"CRM Lead", "Lead"}:
-        return
-
-    patient_name = _find_by_phone("Patient", ["mobile", "mobile_no", "phone", "custom_whatsapp_number"], phone_number)
-    if patient_name:
-        contact_updates = {
-            "linked_patient": patient_name,
-            "source_doctype": "Patient",
-            "source_name": patient_name,
-        }
-        if display_name and not contact.display_name:
-            contact_updates["display_name"] = display_name
-        _set_contact_fields(contact, contact_updates)
-        _set_conversation_fields(
-            convo,
-            {
-                "linked_reference_doctype": "Patient",
-                "linked_reference_name": patient_name,
-            },
-        )
-        try:
-            from wa_chat_hub.interakt.contact_sync import enqueue_push_for_conversation
-
-            enqueue_push_for_conversation(conversation)
-        except Exception:
-            frappe.log_error(frappe.get_traceback(), "Interakt Contact Push Enqueue Failed")
+    ref_dt = getattr(convo, "linked_reference_doctype", None)
+    ref_name = getattr(convo, "linked_reference_name", None)
+    if ref_dt and ref_name and ref_dt not in {"Customer", "Lead", "CRM Lead"}:
         return
 
     customer_name = _find_by_phone("Customer", ["mobile_no", "phone", "custom_whatsapp_number"], phone_number)
@@ -768,7 +733,10 @@ def _link_or_create_master_record(
         )
         return
 
-    existing_lead = _find_existing_lead_by_phone(phone_number)
+    if ref_dt == "Lead" and ref_name and safe_ai_exists("Lead", ref_name):
+        existing_lead = ("Lead", ref_name)
+    else:
+        existing_lead = _find_existing_lead_by_phone(phone_number)
     if existing_lead:
         lead_doctype, lead_name = existing_lead
     else:
@@ -793,27 +761,17 @@ def _link_or_create_master_record(
         contact_updates["display_name"] = display_name
     _set_contact_fields(contact, contact_updates)
 
-    if lead_doctype == "CRM Lead":
-        set_conversation_crm_lead(convo, lead_name)
-    else:
-        convo.linked_reference_doctype = lead_doctype
-        convo.linked_reference_name = lead_name
+    convo.linked_reference_doctype = lead_doctype
+    convo.linked_reference_name = lead_name
+    assert_ai_doctype_permission("Chat Conversation", "read")
+    if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
+        convo.linked_crm_lead = None
     conversation_updates = {
         "linked_reference_doctype": convo.linked_reference_doctype,
         "linked_reference_name": convo.linked_reference_name,
     }
-    assert_ai_doctype_permission("Chat Conversation", "read")
     if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
         conversation_updates["linked_crm_lead"] = getattr(convo, "linked_crm_lead", None)
-
-    if lead_doctype == "CRM Lead":
-        _finalize_crm_lead_after_inbound(
-            conversation,
-            lead_name,
-            raw_payload=raw_payload,
-            message_name=message_name,
-            convo=convo,
-        )
 
     _set_conversation_fields(convo, conversation_updates)
 
@@ -1010,7 +968,10 @@ def _create_lead_for_inbound(
             if platform_value:
                 payload["sr_lead_platform"] = platform_value
 
-        if doctype == "CRM Lead":
+        if doctype == "Lead":
+            if meta.has_field("status") and not payload.get("status"):
+                payload["status"] = "Open"
+        elif doctype == "CRM Lead":
             if meta.has_field("status") and not payload.get("status"):
                 payload["status"] = _default_crm_lead_status()
 
@@ -1103,8 +1064,6 @@ def _get_lead_pipeline_fieldname(lead_doctype: str) -> Optional[str]:
 
 def _preferred_lead_doctype() -> Optional[str]:
     try:
-        if safe_ai_exists("DocType", "CRM Lead"):
-            return "CRM Lead"
         if safe_ai_exists("DocType", "Lead"):
             return "Lead"
     except WAChatHubSecurityError:
@@ -1113,19 +1072,14 @@ def _preferred_lead_doctype() -> Optional[str]:
 
 
 def _find_existing_lead_by_phone(phone_number: str) -> Optional[tuple[str, str]]:
-    for doctype in ("CRM Lead", "Lead"):
-        try:
-            exists = safe_ai_exists("DocType", doctype)
-        except WAChatHubSecurityError:
-            continue
-        if not exists:
-            continue
-        if doctype == "CRM Lead":
-            found = _find_primary_crm_lead_by_phone(phone_number)
-        else:
-            found = _find_by_phone(doctype, ["mobile_no", "phone", "custom_whatsapp_number"], phone_number)
-        if found:
-            return doctype, found
+    try:
+        if not safe_ai_exists("DocType", "Lead"):
+            return None
+    except WAChatHubSecurityError:
+        return None
+    found = _find_by_phone("Lead", ["mobile_no", "phone", "whatsapp_no", "custom_whatsapp_number"], phone_number)
+    if found:
+        return "Lead", found
     return None
 
 
@@ -1202,22 +1156,11 @@ def _sanitize_contact_links(contact) -> None:
             contact.linked_lead = None
             changed = True
 
-    linked_patient = getattr(contact, "linked_patient", None)
-    if linked_patient:
-        try:
-            patient_exists = not safe_ai_exists("DocType", "Patient") or safe_ai_exists("Patient", linked_patient)
-        except WAChatHubSecurityError:
-            patient_exists = True
-        if not patient_exists:
-            contact.linked_patient = None
-            changed = True
-
     if changed:
         _set_contact_fields(
             contact,
             {
                 "linked_lead": getattr(contact, "linked_lead", None),
-                "linked_patient": getattr(contact, "linked_patient", None),
             },
         )
 

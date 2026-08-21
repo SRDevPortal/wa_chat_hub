@@ -77,16 +77,15 @@ def build_media_context_for_chat(
         if extracted:
             lines.append(f"Attachment OCR / visual classification:\n{extracted[:3500]}")
             lines.append(
-                "Use this classification before replying. If it is a medical report, say report received "
-                "and move to doctor/team review. If it is a skin/body photo, prescription photo, chat "
-                "screenshot, bill/payment screenshot, random/non-medical image, or unclear photo, do not "
-                "call it a report; acknowledge the actual image type and ask the next relevant question."
+                "Use this classification before replying. Treat it as ShipKia sales/support context: "
+                "rate card, shipment sheet, invoice, order details, chat screenshot, or other document. "
+                "Do not invent exact rates from the attachment; continue the ShipKia workflow and offer "
+                "a callback for exact/final pricing."
             )
         else:
             lines.append(
-                "No readable text or reliable visual classification could be extracted. Do not call this "
-                "a report by default. Acknowledge the image/photo and ask the customer what it shows or "
-                "request a clearer photo if clinically relevant."
+                "No readable text or reliable visual classification could be extracted. Acknowledge the "
+                "image/document and ask the customer to type the shipping requirement or resend a clearer file."
             )
     else:
         lines.append(f"Attachment URL: {media_url[:200]}")
@@ -165,16 +164,16 @@ def _normalize_summary_sections(summary: str) -> str:
     """Ensure summary uses expected section headers for sr_lead_notes."""
     if not summary:
         return (
-            "Report summary:\n"
+            "ShipKia summary:\n"
             "• No readable text extracted from attachment.\n\n"
             "Suggested follow-up:\n"
-            "• Ask patient to resend a clearer photo or PDF of the report."
+            "• Ask customer to resend a clearer file or type the shipping details."
         )
 
     required_headers = (
-        "Report summary:",
-        "Key findings:",
-        "Abnormal values:",
+        "ShipKia summary:",
+        "Key details:",
+        "Missing details:",
         "Suggested follow-up:",
     )
     lowered = summary.lower()
@@ -182,14 +181,14 @@ def _normalize_summary_sections(summary: str) -> str:
         return summary
 
     return (
-        "Report summary:\n"
+        "ShipKia summary:\n"
         f"• {summary.replace(chr(10), chr(10) + '• ')}\n\n"
-        "Key findings:\n"
-        "• See report summary above.\n\n"
-        "Abnormal values:\n"
-        "• Not explicitly flagged.\n\n"
+        "Key details:\n"
+        "• See attachment summary above.\n\n"
+        "Missing details:\n"
+        "• Confirm any missing business, route, weight, payment, RTO, current rate, or callback details.\n\n"
         "Suggested follow-up:\n"
-        "• Review attachment and confirm clinically."
+        "• Continue the ShipKia sales/support workflow concisely."
     )
 
 
@@ -345,13 +344,12 @@ def _extract_with_openai_vision(
                             "text": (
                                 "Classify this WhatsApp attachment first, then extract useful text. "
                                 "Return concise plain text with these fields:\n"
-                                "Image type: one of medical report, prescription, skin/body photo, "
-                                "payment/bill screenshot, chat/app screenshot, medicine/product photo, "
-                                "non-medical/random image, unclear.\n"
-                                "Medical relevance: short reason.\n"
+                                "Image type: one of rate card, invoice/bill, order sheet, shipment sheet, "
+                                "payment screenshot, chat/app screenshot, product/package photo, random image, unclear.\n"
+                                "ShipKia relevance: short reason.\n"
                                 "Readable text: key readable text only.\n"
-                                "Reply guidance: how a healthcare coordinator should acknowledge it. "
-                                "Do not assume every image is a report."
+                                "Reply guidance: how a ShipKia sales/support agent should acknowledge it. "
+                                "Do not assume every image is a rate card."
                             ),
                         },
                         {"type": "image_url", "image_url": {"url": image_url}},
@@ -425,51 +423,15 @@ def _heuristic_report_summary(extracted_text: str) -> str:
     if not text:
         return ""
 
-    lowered = text.lower()
-    if "kidney function" not in lowered and "kft" not in lowered and "creatinine" not in lowered:
-        return "Report summary:\n• OCR text extracted, but automatic report interpretation is limited.\n\nKey findings:\n• Review extracted report text manually.\n\nAbnormal values:\n• Not automatically identified.\n\nSuggested follow-up:\n• Ask doctor/team to review the attachment and confirm clinically."
-
-    checks = [
-        ("Blood Urea", "mg/dL", 15, 40),
-        ("Serum Creatinine", "mg/dL", 0.6, 1.2),
-        ("BUN / Creatinine Ratio", "", 10, 20),
-        ("Uric Acid", "mg/dL", 3.5, 7.2),
-        ("Sodium", "mEq/L", 135, 145),
-        ("Potassium", "mEq/L", 3.5, 5.0),
-        ("Chloride", "mEq/L", 98, 106),
-        ("Bicarbonate", "mEq/L", 22, 28),
-        ("Calcium", "mg/dL", 8.6, 10.2),
-        ("Phosphorus", "mg/dL", 2.5, 4.5),
-    ]
-    abnormal = []
-    for label, unit, low, high in checks:
-        value = _find_nearby_number(text, label)
-        if value is None:
-            continue
-        if value < low:
-            abnormal.append(f"{label}: {value:g} {unit}".strip() + f" (low; ref {low:g}-{high:g})")
-        elif value > high:
-            abnormal.append(f"{label}: {value:g} {unit}".strip() + f" (high; ref {low:g}-{high:g})")
-
-    if "reduced egfr" in lowered or "significantly reduced egfr" in lowered:
-        abnormal.append("eGFR: report impression says significantly reduced")
-    if "metabolic acidosis" in lowered:
-        abnormal.append("Report impression mentions metabolic acidosis")
-    if "renal impairment" in lowered:
-        abnormal.append("Report impression says findings are consistent with significant renal impairment")
-
-    key_findings = abnormal[:8] if abnormal else ["Kidney function report text extracted; doctor review advised."]
     return (
-        "Report summary:\n"
-        "• KFT/kidney function report received and OCR text was readable.\n"
-        "• Report impression suggests renal/kidney function concern; clinical correlation is needed.\n\n"
-        "Key findings:\n"
-        + "\n".join(f"• {item}" for item in key_findings)
-        + "\n\nAbnormal values:\n"
-        + ("\n".join(f"• {item}" for item in abnormal) if abnormal else "• Not automatically identified.")
-        + "\n\nSuggested follow-up:\n"
-        "• Doctor/nephrologist review is advisable, especially because creatinine/urea/electrolytes appear abnormal.\n"
-        "• Ask patient for current symptoms, BP/diabetes history, urine output/swelling, and any previous creatinine reports."
+        "ShipKia summary:\n"
+        "• Attachment OCR text was extracted for sales/support review.\n\n"
+        "Key details:\n"
+        f"• {text[:500]}\n\n"
+        "Missing details:\n"
+        "• Confirm business/store name, monthly shipments, current aggregator, route, weight, payment mode, current rates/RTO, or callback time if not already shared.\n\n"
+        "Suggested follow-up:\n"
+        "• Continue the ShipKia workflow; for exact/final rates, offer a ShipKia team callback."
     )
 
 
@@ -496,17 +458,17 @@ def _summarize_with_model(provider: Dict, extracted_text: str) -> str:
     if base_url.endswith("/") and "chat/completions" not in base_url:
         base_url = f"{base_url}chat/completions"
     prompt = (
-        "Summarize this medical report for CRM lead notes. "
+        "Summarize this ShipKia WhatsApp attachment OCR for lead notes. "
         "Return ONLY plain text using exactly these section headers and bullet lines:\n"
-        "Report summary:\n"
-        "• <1-3 short bullets>\n\n"
-        "Key findings:\n"
-        "• <bullets>\n\n"
-        "Abnormal values:\n"
-        "• <bullets or 'None noted'>\n\n"
+        "ShipKia summary:\n"
+        "• <1-3 short bullets about the attachment>\n\n"
+        "Key details:\n"
+        "• <business, shipment, rate, route, weight, payment, RTO, callback, or 'None noted'>\n\n"
+        "Missing details:\n"
+        "• <details needed for ShipKia sales/support, or 'None noted'>\n\n"
         "Suggested follow-up:\n"
-        "• <bullets as questions, no diagnosis or prescriptions>\n\n"
-        f"Report text:\n{extracted_text[:10000]}"
+        "• <one concise ShipKia next step>\n\n"
+        f"Attachment text:\n{extracted_text[:10000]}"
     )
     try:
         resp = requests.post(

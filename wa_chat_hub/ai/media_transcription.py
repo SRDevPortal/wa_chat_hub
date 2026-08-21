@@ -62,8 +62,7 @@ def build_transcript_context_for_chat(
         if visual_summary or transcript:
             lines.append(
                 "Use the visible video content first. Use the spoken transcript only if it is "
-                "clearly relevant. Ask a focused follow-up question about the visible concern; "
-                "do not say the message was unclear when visible content is available."
+                "clearly relevant. Ask one focused ShipKia sales/support follow-up question."
             )
         else:
             has_visible_frames = video_has_visible_frames(media_url)
@@ -71,10 +70,8 @@ def build_transcript_context_for_chat(
                 lines.append("The video file has visible frames, but no local vision-description model is active.")
             lines.append(
                 "The video was received successfully, but no usable voice transcript could be "
-                "generated. Do not say 'isme clearly kuch samajh nahi aa raha' and do not ask "
-                "the customer to resend the same video as the first response. Reply in Hindi/Hinglish: "
-                "video mil gaya hai, isme voice/text clear nahi hai, doctor/review team ko forward "
-                "kar rahe hain, and ask for patient name, age, symptoms, and a clear photo if available."
+                "generated. Reply in Hindi/Hinglish as ShipKia: video mil gaya hai, ShipKia team "
+                "context review kar legi. Ask the customer to type the shipping requirement if needed."
             )
     elif transcript:
         lines.append(
@@ -298,10 +295,10 @@ def describe_video_frames_locally(media_url: str) -> str:
         details.append("Small darker or patchy spots are visible in the sampled frames.")
 
     if len(details) == 1 and avg_skin >= 0.25:
-        details.append("No obvious printed report/text is visible; treat this as a visual skin/body concern.")
+        details.append("No obvious shipment text is visible; treat this as general ShipKia media context.")
 
     details.append(
-        "This is not a diagnosis. Ask about itching, pain/burning, swelling, discharge, fever, duration, and whether it is spreading; advise doctor/dermatology review if severe or worsening."
+        "Use this only as visible media context for ShipKia sales/support. Ask the customer to type the shipping requirement if business, route, weight, or rate details are unclear."
     )
     return " ".join(details)[:2000]
 
@@ -698,16 +695,16 @@ def _build_transcript_notes_block(
 def _normalize_summary_sections(summary: str, content_type: str) -> str:
     if not summary:
         return (
-            "Report summary:\n"
+            "ShipKia summary:\n"
             f"- No {content_type.lower()} transcript generated.\n\n"
             "Suggested follow-up:\n"
             "- Ask customer to resend the media or type the details."
         )
 
     required_headers = (
-        "Report summary:",
-        "Key findings:",
-        "Abnormal values:",
+        "ShipKia summary:",
+        "Key details:",
+        "Missing details:",
         "Suggested follow-up:",
     )
     lowered = summary.lower()
@@ -715,14 +712,14 @@ def _normalize_summary_sections(summary: str, content_type: str) -> str:
         return summary
 
     return (
-        "Report summary:\n"
+        "ShipKia summary:\n"
         f"- {summary.replace(chr(10), chr(10) + '- ')}\n\n"
-        "Key findings:\n"
+        "Key details:\n"
         "- See transcript summary above.\n\n"
-        "Abnormal values:\n"
-        "- None noted unless the customer mentioned medical values explicitly.\n\n"
+        "Missing details:\n"
+        "- Note any missing business, route, weight, payment mode, current rate, RTO, or callback details.\n\n"
         "Suggested follow-up:\n"
-        "- Review transcript and confirm details with the customer."
+        "- Continue the ShipKia sales/support workflow concisely."
     )
 
 
@@ -920,16 +917,16 @@ def _summarize_transcript_with_model(provider: Dict, transcript: str, content_ty
     if base_url.endswith("/") and "chat/completions" not in base_url:
         base_url = f"{base_url}chat/completions"
     prompt = (
-        f"Summarize this WhatsApp {content_type.lower()} transcript for CRM lead notes. "
+        f"Summarize this WhatsApp {content_type.lower()} transcript for ShipKia lead notes. "
         "Return ONLY plain text using exactly these section headers and bullet lines:\n"
-        "Report summary:\n"
-        "- <1-3 short bullets about what the customer said>\n\n"
-        "Key findings:\n"
-        "- <important symptoms, requests, appointment/payment/order details, or 'None noted'>\n\n"
-        "Abnormal values:\n"
-        "- None noted unless the customer mentioned medical values explicitly\n\n"
+        "ShipKia summary:\n"
+        "- <1-3 short bullets about the customer's shipping requirement>\n\n"
+        "Key details:\n"
+        "- <business/store, monthly shipments, aggregator, route, weight, payment mode, current rates/RTO, or 'None noted'>\n\n"
+        "Missing details:\n"
+        "- <missing details needed for ShipKia sales/support, or 'None noted'>\n\n"
         "Suggested follow-up:\n"
-        "- <safe operational follow-up questions, no diagnosis or prescriptions>\n\n"
+        "- <one concise ShipKia sales/support next step>\n\n"
         f"Transcript:\n{transcript[:10000]}"
     )
     try:

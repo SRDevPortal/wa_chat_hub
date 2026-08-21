@@ -22,7 +22,7 @@ from wa_chat_hub.services import append_message, build_erp_actions, conversation
 from wa_chat_hub.services import normalize_phone
 from wa_chat_hub.task_logger import elapsed, task_log
 
-CHAT_HUB_SCOPE_DOCTYPES = {"CRM Lead", "Lead", "Patient", "Patient Encounter"}
+CHAT_HUB_SCOPE_DOCTYPES = {"CRM Lead", "Lead"}
 MEDIA_PROXY_MAX_BYTES = 20 * 1024 * 1024
 MEDIA_PROXY_CONTENT_TYPES = {"Image", "Video", "Audio", "Document", "Sticker"}
 
@@ -219,9 +219,7 @@ def _conversation_list_filters(
         filters["channel_account"] = channel_account
     if reference_doctype and frappe.get_meta("Chat Conversation").has_field("linked_reference_doctype"):
         reference_doctype = str(reference_doctype).strip()
-        if reference_doctype == "Patient":
-            filters["linked_reference_doctype"] = ["in", ["Patient", "Patient Encounter"]]
-        elif reference_doctype == "CRM Lead":
+        if reference_doctype == "CRM Lead":
             filters["linked_reference_doctype"] = ["in", ["CRM Lead", "Lead"]]
         else:
             filters["linked_reference_doctype"] = reference_doctype
@@ -364,28 +362,6 @@ def _matching_reference_conversation_names(query: str, base_filters: dict) -> se
                     **base_filters,
                     "linked_reference_doctype": "CRM Lead",
                     "linked_reference_name": ["in", lead_names],
-                },
-                pluck="name",
-                limit_page_length=200,
-            ):
-                names.add(row)
-
-    if frappe.db.exists("DocType", "Patient"):
-        patient_meta = frappe.get_meta("Patient")
-        patient_or = [["patient_name", "like", q_like], ["name", "like", q_like]]
-        if patient_meta.has_field("sr_patient_id"):
-            patient_or.append(["sr_patient_id", "like", q_like])
-        for fieldname in ("mobile", "mobile_no", "phone"):
-            if patient_meta.has_field(fieldname):
-                patient_or.append([fieldname, "like", q_like])
-        patient_names = frappe.get_all("Patient", or_filters=patient_or, pluck="name", limit_page_length=100)
-        if patient_names:
-            for row in frappe.get_all(
-                "Chat Conversation",
-                filters={
-                    **base_filters,
-                    "linked_reference_doctype": "Patient",
-                    "linked_reference_name": ["in", patient_names],
                 },
                 pluck="name",
                 limit_page_length=200,
@@ -794,13 +770,6 @@ def _conversation_for_reference(
         if conv:
             return conv
 
-    if reference_doctype == "Patient Encounter":
-        patient = frappe.db.get_value("Patient Encounter", reference_name, "patient")
-        if patient:
-            conv = _conversation_for_reference("Patient", patient)
-            if conv:
-                return conv
-
     return frappe.db.get_value(
         "Chat Conversation",
         {
@@ -909,7 +878,7 @@ def get_conversation_for_reference(reference_doctype, reference_name):
         return {"success": True, "conversation": created, "created": True}
 
     message = _("No WhatsApp conversation found for this record.")
-    if reference_doctype in ("Patient", "Patient Encounter", "CRM Lead"):
+    if reference_doctype == "CRM Lead":
         doc = _load_reference_doc(reference_doctype, reference_name)
         if doc and not _reference_has_phone(doc):
             message = _("Add a mobile number on this record to open WhatsApp chat.")
@@ -922,11 +891,6 @@ def get_conversation_for_reference(reference_doctype, reference_name):
 
 
 def _load_reference_doc(reference_doctype: str, reference_name: str):
-    if reference_doctype == "Patient Encounter":
-        patient = frappe.db.get_value("Patient Encounter", reference_name, "patient")
-        if patient and frappe.db.exists("Patient", patient):
-            return frappe.get_doc("Patient", patient)
-        return None
     if frappe.db.exists(reference_doctype, reference_name):
         return frappe.get_doc(reference_doctype, reference_name)
     return None
@@ -942,21 +906,6 @@ def _try_create_conversation_for_reference(reference_doctype: str, reference_nam
                 return None
             return get_or_create_mapped_lead_conversation(lead)["conversation"]
 
-        patient_name = reference_name
-        if reference_doctype == "Patient Encounter":
-            patient_name = frappe.db.get_value("Patient Encounter", reference_name, "patient")
-            if not patient_name:
-                return None
-
-        if reference_doctype in ("Patient", "Patient Encounter") and patient_name and frappe.db.exists(
-            "Patient", patient_name
-        ):
-            from wa_chat_hub.channel_resolver import get_or_create_mapped_patient_conversation
-
-            patient = frappe.get_doc("Patient", patient_name)
-            if not _reference_has_phone(patient):
-                return None
-            return get_or_create_mapped_patient_conversation(patient)["conversation"]
     except frappe.ValidationError:
         raise
     except Exception:
@@ -1041,37 +990,6 @@ def _find_existing_conversation_by_phone(phone_number: str) -> str | None:
 
 
 @frappe.whitelist()
-def get_existing_conversation_for_patient(patient):
-    if not patient:
-        frappe.throw(_("patient is required"))
-    if not frappe.db.exists("Patient", patient):
-        frappe.throw(_("Patient {0} not found").format(patient))
-
-    linked = _conversation_for_reference("Patient", patient)
-    if linked:
-        ensure_can_read_conversation(linked)
-        return {"success": True, "conversation": linked, "matched_by": "reference"}
-
-    doc = frappe.get_doc("Patient", patient)
-    phone_numbers = _reference_phone_numbers(doc)
-    for phone_number in phone_numbers:
-        conversation = _find_existing_conversation_by_phone(phone_number)
-        if conversation:
-            ensure_can_read_conversation(conversation)
-            return {
-                "success": True,
-                "conversation": conversation,
-                "matched_by": "phone",
-                "phone_number": phone_number,
-            }
-
-    message = _("No existing WhatsApp chat found for this Patient number.")
-    if not phone_numbers:
-        message = _("Add a mobile number on this Patient to open WhatsApp chat.")
-    return {"success": False, "conversation": None, "message": message}
-
-
-@frappe.whitelist()
 def get_reference_chat_statuses(reference_doctype, reference_names=None):
     if not REFERENCE_CHAT_STATUS_ENABLED:
         return {"success": True, "result": {}}
@@ -1142,29 +1060,6 @@ def get_reference_chat_statuses(reference_doctype, reference_names=None):
             reference_lookup.get(row.linked_reference_name, row.linked_reference_name),
             row,
         )
-
-    if reference_doctype == "Patient Encounter":
-        encounter_patient = {}
-        for enc in frappe.get_all(
-            "Patient Encounter",
-            filters={"name": ["in", allowed_names]},
-            fields=["name", "patient"],
-        ):
-            if enc.patient:
-                encounter_patient[enc.patient] = enc.name
-
-        if encounter_patient:
-            for row in frappe.get_all(
-                "Chat Conversation",
-                filters={
-                    "linked_reference_doctype": "Patient",
-                    "linked_reference_name": ["in", list(encounter_patient)],
-                },
-                fields=["name", "linked_reference_name", "unread_count", "modified"],
-            ):
-                encounter = encounter_patient.get(row.linked_reference_name)
-                if encounter:
-                    _accumulate_reference_chat_status(conv_stats, encounter, row)
 
     for name in names:
         stats = conv_stats.get(name)

@@ -19,29 +19,40 @@ from wa_chat_hub.security import (
 
 
 HOT_TERMS = {
-    "urgent",
-    "emergency",
-    "serious",
-    "pain",
-    "blood",
-    "creatinine",
-    "kidney",
-    "dialysis",
-    "report",
-    "appointment",
-    "consult",
+    "rate",
+    "rates",
+    "price",
+    "pricing",
+    "courier",
+    "shipping",
+    "shipment",
+    "orders",
+    "monthly",
+    "cod",
+    "prepaid",
+    "pickup",
+    "delivery",
+    "rto",
+    "callback",
     "call",
+    "shiprocket",
+    "delhivery",
 }
-MEDIUM_TERMS = {"problem", "issue", "symptom", "medicine", "treatment", "doctor", "help", "test"}
-DISEASE_HINTS = {
-    "kidney": "Kidney Related Problem",
-    "creatinine": "Kidney Related Problem",
-    "dialysis": "Kidney Related Problem",
-    "stone": "Kidney Stone",
-    "urine": "Urinary Problem",
-    "skin": "Skin Related Problem",
-    "acne": "Skin Related Problem",
-    "eczema": "Skin Related Problem",
+MEDIUM_TERMS = {
+    "d2c",
+    "b2c",
+    "brand",
+    "store",
+    "business",
+    "aggregator",
+    "weight",
+    "pincode",
+    "zone",
+    "surface",
+    "express",
+    "ndr",
+    "tracking",
+    "support",
 }
 
 
@@ -57,7 +68,7 @@ def on_chat_message_after_insert(doc, method=None):
     try:
         auto_update_lead_from_conversation(lead_name, conversation=conversation)
     except Exception:
-        frappe.log_error(frappe.get_traceback(), "WA Lead AI Auto Update Failed")
+        frappe.log_error(frappe.get_traceback(), "WA ShipKia Lead AI Auto Update Failed")
 
 
 def auto_update_lead_from_conversation(lead_name: str, conversation: str | None = None) -> dict[str, Any]:
@@ -71,7 +82,7 @@ def auto_update_lead_from_conversation(lead_name: str, conversation: str | None 
 
     text = _build_lead_text(lead, conversation)
     scoring = _score_text(text)
-    extraction = _extract_medical_details(text)
+    extraction = _extract_shipkia_details(text)
     applied = _apply_to_lead(lead, scoring, extraction)
 
     if applied:
@@ -79,7 +90,7 @@ def auto_update_lead_from_conversation(lead_name: str, conversation: str | None 
             lead=lead,
             conversation=conversation,
             context=context,
-            insight_type="Scoring",
+            insight_type="ShipKia Scoring",
             output={**scoring, **extraction},
             applied_fields=applied,
             input_snapshot=text[:5000],
@@ -99,7 +110,13 @@ def _get_context_for_lead(lead):
 
 def _build_lead_text(lead, conversation: str | None = None) -> str:
     parts = []
-    for fieldname in ("sr_lead_message", "sr_lead_notes", "sr_lead_disease", "wa_ai_extracted_summary"):
+    for fieldname in (
+        "sr_lead_message",
+        "sr_lead_notes",
+        "wa_ai_extracted_summary",
+        "shipkia_followup_notes",
+        "shipkia_shipping_requirement_notes",
+    ):
         if lead.get(fieldname):
             parts.append(str(lead.get(fieldname)))
 
@@ -121,19 +138,19 @@ def _score_text(text: str) -> dict[str, Any]:
     hot_hits = sorted(term for term in HOT_TERMS if term in normalized)
     medium_hits = sorted(term for term in MEDIUM_TERMS if term in normalized)
 
-    score = min(100, 35 + len(hot_hits) * 10 + len(medium_hits) * 5)
+    score = min(100, 30 + len(hot_hits) * 9 + len(medium_hits) * 5)
     if score >= 70:
         band = "Hot"
-        next_action = "Call and schedule consultation"
+        next_action = "Sales callback with starting-rate guidance"
     elif score >= 45:
         band = "Medium"
-        next_action = "Follow up and collect missing details"
+        next_action = "Collect missing shipping details"
     else:
         band = "Low"
-        next_action = "Send nurture message"
+        next_action = "Send concise ShipKia follow-up"
 
-    reason_terms = hot_hits[:5] or medium_hits[:5]
-    reason = "Matched signals: " + ", ".join(reason_terms) if reason_terms else "Limited urgency or medical intent signals found"
+    reason_terms = hot_hits[:6] or medium_hits[:6]
+    reason = "Matched ShipKia signals: " + ", ".join(reason_terms) if reason_terms else "Limited shipping intent shared yet"
     return {
         "score": score,
         "score_band": band,
@@ -143,24 +160,17 @@ def _score_text(text: str) -> dict[str, Any]:
     }
 
 
-def _extract_medical_details(text: str) -> dict[str, Any]:
-    normalized = text.lower()
-    disease = None
-    for keyword, value in DISEASE_HINTS.items():
-        if keyword in normalized:
-            disease = value
-            break
-
-    symptoms = _extract_sentence_matches(text, ["pain", "problem", "symptom", "swelling", "blood", "urine", "fever"])
-    report_findings = _extract_sentence_matches(text, ["creatinine", "urea", "egfr", "report", "test", "scan", "ultrasound"])
+def _extract_shipkia_details(text: str) -> dict[str, Any]:
     summary = _compact_summary(text)
+    route = _extract_sentence_matches(text, ["pickup", "delivery", "from", "to", "pincode", "pin code", "zone"])
+    rate_context = _extract_sentence_matches(text, ["rate", "price", "pricing", "cod", "prepaid", "rto", "weight"])
+    business_context = _extract_sentence_matches(text, ["business", "store", "brand", "d2c", "b2c", "orders", "monthly", "aggregator"])
 
     return {
-        "disease": disease,
         "summary": summary,
-        "symptoms": symptoms,
-        "report_findings": report_findings,
-        "medical_confidence": 80 if disease else 45,
+        "shipping_route_context": route,
+        "rate_context": rate_context,
+        "business_context": business_context,
     }
 
 
@@ -177,23 +187,20 @@ def _apply_to_lead(lead, scoring: dict[str, Any], extraction: dict[str, Any]) ->
         "wa_ai_last_scored_on": now_datetime(),
         "wa_ai_review_status": "Pending Review",
         "wa_ai_extracted_summary": extraction["summary"],
-        "wa_ai_extracted_symptoms": extraction["symptoms"],
-        "wa_ai_extracted_report_findings": extraction["report_findings"],
-        "wa_ai_medical_confidence": extraction["medical_confidence"],
         "wa_ai_last_extracted_on": now_datetime(),
     }
     for fieldname, value in field_map.items():
         if meta.has_field(fieldname):
             updates[fieldname] = value
 
-    if extraction.get("disease") and meta.has_field("sr_lead_disease") and not lead.get("sr_lead_disease"):
-        updates["sr_lead_disease"] = extraction["disease"]
-
-    if extraction.get("summary") and meta.has_field("sr_lead_notes"):
-        existing_notes = lead.get("sr_lead_notes") or ""
-        ai_line = f"AI Summary: {extraction['summary']}"
-        if ai_line not in existing_notes:
-            updates["sr_lead_notes"] = _append_note(existing_notes, ai_line)
+    notes = _build_shipkia_note(extraction)
+    for notes_field in ("shipkia_followup_notes", "sr_lead_notes"):
+        if notes and meta.has_field(notes_field):
+            existing_notes = lead.get(notes_field) or ""
+            ai_line = f"ShipKia AI Summary: {notes}"
+            if ai_line not in existing_notes:
+                updates[notes_field] = _append_note(existing_notes, ai_line)
+            break
 
     if not updates:
         return []
@@ -202,7 +209,24 @@ def _apply_to_lead(lead, scoring: dict[str, Any], extraction: dict[str, Any]) ->
     return sorted(updates)
 
 
-def _create_insight(lead, conversation, context, insight_type: str, output: dict[str, Any], applied_fields: list[str], input_snapshot: str):
+def _build_shipkia_note(extraction: dict[str, Any]) -> str:
+    parts = [
+        extraction.get("business_context"),
+        extraction.get("shipping_route_context"),
+        extraction.get("rate_context"),
+    ]
+    return " | ".join(str(part).strip() for part in parts if str(part or "").strip()) or extraction.get("summary", "")
+
+
+def _create_insight(
+    lead,
+    conversation,
+    context,
+    insight_type: str,
+    output: dict[str, Any],
+    applied_fields: list[str],
+    input_snapshot: str,
+):
     convo = safe_ai_get_doc("Chat Conversation", conversation) if conversation else None
     doc = frappe.get_doc(
         {
@@ -213,7 +237,7 @@ def _create_insight(lead, conversation, context, insight_type: str, output: dict
             "channel_account": convo.channel_account if convo else None,
             "pipeline": lead.get("sr_lead_pipeline"),
             "insight_type": insight_type,
-            "confidence": output.get("confidence") or output.get("medical_confidence"),
+            "confidence": output.get("confidence"),
             "input_snapshot": input_snapshot,
             "output_json": json.dumps(output, default=str),
             "applied_fields": ", ".join(applied_fields),

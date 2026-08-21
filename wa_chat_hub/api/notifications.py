@@ -8,7 +8,7 @@ NOTIFICATION_SERVICE_ENABLED = False
 
 
 def _disabled_counts():
-    return {"all": 0, "crm_leads": 0, "patients": 0, "ai_replies": 0}
+    return {"all": 0, "crm_leads": 0, "ai_replies": 0}
 
 
 def _cache_key(prefix, **kwargs):
@@ -67,11 +67,6 @@ def _category_condition(category, conv_alias="c", msg_alias="m"):
         if _has_column("Chat Conversation", "linked_reference_doctype"):
             lead_conditions.append(f"{conv_alias}.linked_reference_doctype in ('CRM Lead', 'Lead')")
         conditions.append("(" + " or ".join(lead_conditions or ["1 = 0"]) + ")")
-    elif category == "patients":
-        if _has_column("Chat Conversation", "linked_reference_doctype"):
-            conditions.append(f"{conv_alias}.linked_reference_doctype in ('Patient', 'Patient Encounter')")
-        else:
-            conditions.append("1 = 0")
     elif category == "ai_replies":
         conditions.append(f"{msg_alias}.direction = 'Outbound'")
         conditions.append(f"{msg_alias}.sender_type = 'AI'")
@@ -99,11 +94,6 @@ def _unread_count_for_category(category=None):
         if _has_column("Chat Conversation", "linked_reference_doctype"):
             lead_conditions.append("c.linked_reference_doctype in ('CRM Lead', 'Lead')")
         conditions.append("(" + " or ".join(lead_conditions or ["1 = 0"]) + ")")
-    elif category == "patients":
-        if _has_column("Chat Conversation", "linked_reference_doctype"):
-            conditions.append("c.linked_reference_doctype in ('Patient', 'Patient Encounter')")
-        else:
-            conditions.append("1 = 0")
 
     count = frappe.db.sql(
         f"""
@@ -118,12 +108,10 @@ def _unread_count_for_category(category=None):
 
 def _unread_counts_by_category():
     if not _doctype_ready("Chat Conversation", ["status", "unread_count"]):
-        return {"all": 0, "crm_leads": 0, "patients": 0}
+        return {"all": 0, "crm_leads": 0}
 
     conditions = ["c.status != 'Closed'", conversation_access_sql_condition("c")]
     crm_condition = "1 = 0"
-    patient_condition = "1 = 0"
-
     if _has_column("Chat Conversation", "linked_crm_lead") or _has_column(
         "Chat Conversation", "linked_reference_doctype"
     ):
@@ -134,15 +122,11 @@ def _unread_counts_by_category():
             lead_conditions.append("c.linked_reference_doctype in ('CRM Lead', 'Lead')")
         crm_condition = "(" + " or ".join(lead_conditions or ["1 = 0"]) + ")"
 
-    if _has_column("Chat Conversation", "linked_reference_doctype"):
-        patient_condition = "c.linked_reference_doctype in ('Patient', 'Patient Encounter')"
-
     row = frappe.db.sql(
         f"""
         select
             coalesce(sum(c.unread_count), 0) as all_count,
-            coalesce(sum(case when {crm_condition} then c.unread_count else 0 end), 0) as crm_leads_count,
-            coalesce(sum(case when {patient_condition} then c.unread_count else 0 end), 0) as patients_count
+            coalesce(sum(case when {crm_condition} then c.unread_count else 0 end), 0) as crm_leads_count
         from `tabChat Conversation` c
         where {" and ".join(conditions)}
         """,
@@ -151,7 +135,6 @@ def _unread_counts_by_category():
     return {
         "all": int(row.all_count or 0),
         "crm_leads": int(row.crm_leads_count or 0),
-        "patients": int(row.patients_count or 0),
     }
 
 
@@ -208,14 +191,13 @@ def get_notification_counts():
         value = {
             "all": unread_counts["all"] + ai_replies,
             "crm_leads": unread_counts["crm_leads"],
-            "patients": unread_counts["patients"],
             "ai_replies": ai_replies,
         }
         _cache_set(key, value)
         return value
     except Exception:
         frappe.log_error(frappe.get_traceback(), "Navbar Notification Count Error")
-        return {"all": 0, "crm_leads": 0, "patients": 0, "ai_replies": 0}
+        return {"all": 0, "crm_leads": 0, "ai_replies": 0}
 
 
 @frappe.whitelist()

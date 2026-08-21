@@ -13,7 +13,7 @@ frappe.ui.form.on("WA Channel Pipeline Map", {
 	refresh(frm) {
 		frm.set_intro(
 			__(
-				"One row per Interakt Chat Channel Account. Default SR Lead Pipeline applies to every new CRM Lead. Medical Department is for Patient Open Chat and Interakt contact sync — not Chat Conversation Department (use Chat Channel Account → Department for that)."
+				"One row per Interakt Chat Channel Account. Default SR Lead Pipeline applies to every new ShipKia lead/contact sync."
 			),
 			"blue"
 		);
@@ -42,7 +42,7 @@ frappe.ui.form.on("WA Channel Pipeline Map", {
 function sync_contacts_to_interakt(frm) {
 	frappe.confirm(
 		__(
-			"Push patients (this Medical Department), CRM leads (this pipeline), and chat contacts on this Interakt account to Interakt?"
+			"Push CRM leads and chat contacts on this Interakt account to Interakt?"
 		),
 		() => {
 			frappe.call({

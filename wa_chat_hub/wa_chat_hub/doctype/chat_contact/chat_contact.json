@@ -53,7 +53,8 @@
   {
    "fieldname": "linked_patient",
    "fieldtype": "Data",
-   "label": "Linked Patient"
+   "hidden": 1,
+   "label": "Legacy Linked Reference"
   }
  ],
  "links": [],

@@ -37,7 +37,7 @@ def run():
         from wa_chat_hub.api.vector_search import search_knowledge_base
 
         print("vector_search_import: OK")
-        print("kb_search_sample:", len(search_knowledge_base("appointment", top_k=1)))
+        print("kb_search_sample:", len(search_knowledge_base("shipping rates", top_k=1)))
     except Exception as exc:
         print("vector_search_import: FAIL", exc)
 

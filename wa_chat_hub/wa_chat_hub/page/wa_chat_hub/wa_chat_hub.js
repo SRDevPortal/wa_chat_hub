@@ -473,9 +473,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
             $('#wa-reference-filter-label').text('');
             return;
         }
-        const label = selectedReferenceDoctype === 'Patient'
-            ? __('Patients')
-            : selectedReferenceDoctype;
+        const label = selectedReferenceDoctype;
         $('#wa-reference-filter-label').text(__('Showing {0} chats', [label]));
         $('#wa-reference-filter-clear').toggleClass('hidden', referenceFilterLocked);
         $bar.removeClass('hidden');
@@ -1246,7 +1244,6 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
             <div class="wa-meta-row"><span>Name</span><strong>${formatMetaValue(c.display_name)}</strong></div>
             <div class="wa-meta-row"><span>Phone</span><strong>${formatMetaValue(displayPhone)}</strong></div>
             <div class="wa-meta-row"><span>Lead</span><strong>${formatMetaValue(c.linked_lead)}</strong></div>
-            <div class="wa-meta-row"><span>Patient</span><strong>${formatMetaValue(c.linked_patient)}</strong></div>
             <div class="wa-meta-row"><span>Assigned</span><strong>${formatMetaValue(v.assigned_to)}</strong></div>
             <div class="wa-meta-row"><span>Department</span><strong>${formatMetaValue(v.department)}</strong></div>
             ${windowMeta}
@@ -1880,7 +1877,6 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
             {value: 'contact.display_name', label: __('Contact name')},
             {value: 'contact.phone_number', label: __('Phone number')},
             {value: 'contact.linked_lead', label: __('Linked lead')},
-            {value: 'contact.linked_patient', label: __('Linked patient')},
             {value: 'conversation.department', label: __('Department')},
             {value: 'conversation.assigned_to', label: __('Assigned to')},
         ];
@@ -1894,7 +1890,6 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
             'contact.display_name': contact.display_name,
             'contact.phone_number': contact.phone_number,
             'contact.linked_lead': contact.linked_lead,
-            'contact.linked_patient': contact.linked_patient,
             'conversation.department': conversation.department,
             'conversation.assigned_to': conversation.assigned_to,
         };

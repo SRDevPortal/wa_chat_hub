@@ -43,12 +43,11 @@
    "label": "SR Lead Source"
   },
   {
-   "description": "Must match Patient sr_medical_department for Open Chat from Patient list.",
+   "description": "Legacy field retained for existing records. Not used by ShipKia WhatsApp agent.",
    "fieldname": "sr_medical_department",
    "fieldtype": "Data",
-   "in_list_view": 1,
-   "in_standard_filter": 1,
-   "label": "Medical Department"
+   "hidden": 1,
+   "label": "Legacy Department"
   },
   {
    "default": "1",

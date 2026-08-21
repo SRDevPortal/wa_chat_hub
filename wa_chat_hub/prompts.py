@@ -15,7 +15,6 @@ from wa_chat_hub.security import (
 
 PROMPT_FIELDS = (
     "system_prompt",
-    "medical_guardrail_policy",
     "escalation_policy",
     "multilingual_reply_policy",
 )
@@ -24,9 +23,14 @@ CONVERSATION_MEMORY_POLICY = """
 Conversation memory rule:
 - Before replying, first use the recent chat history, not only the latest user message.
 - Continue naturally from previous user messages and previous assistant replies.
-- Respect corrections from the user. If the user already said they want message-only support, do not offer a callback or consultation arrangement again unless they ask for it.
-- Do not repeat questions, requests for reports, or offers that were already answered in the recent conversation.
-- If reports, symptoms, history, preferences, or constraints were already shared, use them in the next reply.
+- Respect corrections from the user. If the user already said they want message-only support, do not offer a callback again unless they ask for it.
+- Do not repeat questions or offers that were already answered in the recent conversation.
+- If the customer does not provide the requested information, do not ask the exact same question a second time; acknowledge and move on or offer the best next step.
+- If the customer asks for onboarding, signup, registration, account creation, or an onboarding link, give this exact URL: https://auth.shipkia.com/signup
+- Keep ShipKia sales flow simple: welcome first without asking for rate inputs; collect pickup city/PIN, delivery city/PIN, weight, and payment type only after the customer asks for rates.
+- Do not ask business type, current aggregator, current rate, RTO, or monthly shipments before giving a rate when the customer is asking for rates.
+- After giving a useful answer or rate, ask for extra lead details softly and optionally, with permission language; never make it feel mandatory.
+- If business type, store name, current aggregator, monthly shipments, pickup/delivery route, weight, payment mode, current rates, RTO, callback time, preferences, or constraints were already shared, use them in the next reply.
 - The conversation must feel continuous, natural, and human-like.
 """.strip()
 
@@ -53,7 +57,7 @@ def get_effective_prompt_config(channel_account: Optional[str] = None) -> Any:
 
 def build_system_prompt_from_config(config: Any) -> str:
     parts = []
-    for fieldname in PROMPT_FIELDS[:3]:
+    for fieldname in ("system_prompt", "escalation_policy"):
         value = (getattr(config, fieldname, None) or "").strip()
         if value:
             parts.append(value)
@@ -95,7 +99,7 @@ def set_conversation_crm_lead(convo, lead_name: str) -> None:
 
 
 def get_conversation_linked_reference(convo) -> tuple[Optional[str], Optional[str]]:
-    """Return (doctype, name) for Patient, Customer, CRM Lead, or other legacy links."""
+    """Return the linked ShipKia lead/customer reference when available."""
     crm_lead = get_conversation_crm_lead(convo)
     if crm_lead:
         return "CRM Lead", crm_lead

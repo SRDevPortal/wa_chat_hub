@@ -37,7 +37,7 @@ DEFAULT_AI_DOCTYPE_PERMISSIONS = (
     ("WA Lead AI Insight", 1, 1, 0, "Store AI lead scoring/extraction insight output."),
     ("File", 1, 1, 0, "Read/write media attachments managed by WA Chat Hub."),
     ("Customer", 1, 0, 0, "Read customer phone/name for WhatsApp contact sync."),
-    ("Lead", 1, 0, 0, "Read lead phone/name for WhatsApp contact sync."),
+    ("Lead", 1, 1, 0, "Read/update ERPNext leads linked to WhatsApp conversations."),
     ("CRM Lead", 1, 1, 0, "Read/create/update CRM leads linked to WhatsApp conversations."),
     ("CRM Lead Status", 1, 0, 0, "Read default CRM lead status for inbound lead creation."),
     ("CRM Lead Source", 1, 1, 0, "Resolve/create CRM lead source values such as WhatsApp."),

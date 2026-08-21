@@ -23,12 +23,10 @@ fixtures = [
 
 doctype_list_js = {
     "CRM Lead": "public/js/reference_open_chat_list.js",
-    "Patient": "public/js/reference_open_chat_list.js",
-    "Patient Encounter": "public/js/reference_open_chat_list.js",
 }
 
 doctype_js = {
-    "Patient": "public/js/patient_chat_button.js",
+    "Lead": "public/js/lead_chat_popup.js",
 }
 
 permission_query_conditions = {
@@ -47,7 +45,21 @@ doc_events = {
     "Chat Message": {
         "after_insert": [
             "wa_chat_hub.api.ai_bot.on_message_received",
-            "wa_chat_hub.lead_ai.on_chat_message_after_insert",
+        ],
+    },
+}
+
+ignore_links_on_delete = [
+    "ShipKia Bot QA Finding",
+]
+
+scheduler_events = {
+    "cron": {
+        "* * * * *": [
+            "wa_chat_hub.shipkia_qualification.process_pending_qualifications",
+        ],
+        "0 */3 * * *": [
+            "wa_chat_hub.shipkia_bot_qa.run_scheduled_qa",
         ],
     },
 }

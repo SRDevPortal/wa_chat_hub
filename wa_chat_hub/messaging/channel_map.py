@@ -15,7 +15,6 @@ PIPELINE_MAP_FIELDS = [
     "chat_channel_account",
     "sr_lead_pipeline",
     "sr_lead_source",
-    "sr_medical_department",
     "is_active",
 ]
 
@@ -23,7 +22,6 @@ PIPELINE_MAP_FIELDS = [
 def get_pipeline_map(
     *,
     pipeline: Optional[str] = None,
-    medical_department: Optional[str] = None,
     channel_account: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Return a single active WA Channel Pipeline Map row."""
@@ -35,8 +33,6 @@ def get_pipeline_map(
         filters["chat_channel_account"] = channel_account
     if pipeline:
         filters["sr_lead_pipeline"] = pipeline
-    if medical_department:
-        filters["sr_medical_department"] = medical_department
 
     rows = safe_ai_get_all(
         "WA Channel Pipeline Map",
@@ -45,7 +41,7 @@ def get_pipeline_map(
         limit_page_length=2,
     )
     if not rows:
-        hint = _missing_map_hint(pipeline=pipeline, medical_department=medical_department)
+        hint = _missing_map_hint(pipeline=pipeline)
         frappe.throw(hint)
     if len(rows) > 1:
         frappe.throw(_("Multiple active WA Channel Pipeline Map records match. Use one row per Interakt account."))
@@ -60,13 +56,6 @@ def get_channel_account_for_lead(lead) -> str:
     if not pipeline:
         frappe.throw(_("CRM Lead {0} does not have a pipeline (sr_lead_pipeline).").format(lead.name))
     return get_pipeline_map(pipeline=pipeline)["chat_channel_account"]
-
-
-def get_channel_account_for_patient(patient) -> str:
-    department = patient.get("sr_medical_department")
-    if not department:
-        frappe.throw(_("Patient {0} has no Medical Department (sr_medical_department).").format(patient.name))
-    return get_pipeline_map(medical_department=department)["chat_channel_account"]
 
 
 def get_pipeline_map_row_for_channel_account(channel_account: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -99,8 +88,7 @@ def get_source_for_channel_account(channel_account: Optional[str]) -> Optional[s
 
 def get_channel_account_defaults(channel_account: Optional[str]) -> Dict[str, Any]:
     """
-    Defaults from WA Channel Pipeline Map for one Interakt Chat Channel Account:
-    sr_lead_pipeline (every new CRM Lead) and sr_medical_department (Patient / Interakt sync — not Chat Conversation.department).
+    Defaults from WA Channel Pipeline Map for one Interakt Chat Channel Account.
     """
     row = get_pipeline_map_row_for_channel_account(channel_account)
     if not row:
@@ -108,7 +96,6 @@ def get_channel_account_defaults(channel_account: Optional[str]) -> Dict[str, An
     return {
         "sr_lead_pipeline": row.get("sr_lead_pipeline"),
         "sr_lead_source": row.get("sr_lead_source"),
-        "sr_medical_department": row.get("sr_medical_department"),
         "pipeline_map": row.get("name"),
     }
 
@@ -143,9 +130,7 @@ def _pipeline_map_fields() -> list[str]:
     return [field for field in fields if field != "sr_lead_source" or meta.has_field(field)]
 
 
-def _missing_map_hint(*, pipeline: Optional[str], medical_department: Optional[str]) -> str:
-    if medical_department:
-        return _("No active WA Channel Pipeline Map for Medical Department {0}.").format(medical_department)
+def _missing_map_hint(*, pipeline: Optional[str]) -> str:
     if pipeline:
         return _("No active WA Channel Pipeline Map for SR Lead Pipeline {0}.").format(pipeline)
     return _("No active WA Channel Pipeline Map found.")

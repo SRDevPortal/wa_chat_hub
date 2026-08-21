@@ -160,7 +160,8 @@
     {
       "fieldname": "medical_guardrail_policy",
       "fieldtype": "Long Text",
-      "label": "Medical Guardrail Policy"
+      "hidden": 1,
+      "label": "Legacy Guardrail Policy"
     },
     {
       "fieldname": "escalation_policy",

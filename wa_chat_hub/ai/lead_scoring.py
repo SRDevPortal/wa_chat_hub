@@ -158,7 +158,7 @@ def _build_scoring_prompt(convo, history: List[Dict], lead_lan: str) -> str:
         "You are a CRM lead scoring assistant.\n"
         "Score this WhatsApp conversation from 0 to 100 for conversion readiness.\n"
         "Return only JSON: {\"score\": number}.\n"
-        "Signals: buying intent, urgency, appointment intent, detailed responses, follow-up behavior.\n"
+        "Signals: shipping intent, rate/pricing interest, current aggregator, monthly shipment volume, pickup/delivery details, RTO/current-rate details, callback intent, and detailed responses.\n"
         "Conversation metadata:\n"
         f"- Priority: {convo.priority}\n"
         f"- Status: {convo.status}\n"
@@ -230,8 +230,25 @@ def _heuristic_score(convo, history: List[Dict], lead_lan: str) -> ScoreResult:
     score += {"Low": 0, "Medium": 5, "High": 12, "Urgent": 20}.get(convo.priority, 0)
 
     joined = " ".join([str(h.get("body") or "") for h in history]).lower()
-    hot_terms = ["price", "cost", "book", "appointment", "consult", "today", "urgent", "buy", "payment"]
-    warm_terms = ["interested", "details", "plan", "treatment", "package"]
+    hot_terms = [
+        "rate",
+        "rates",
+        "price",
+        "pricing",
+        "shipping",
+        "shipment",
+        "courier",
+        "cod",
+        "prepaid",
+        "pickup",
+        "delivery",
+        "monthly",
+        "rto",
+        "callback",
+        "shiprocket",
+        "delhivery",
+    ]
+    warm_terms = ["interested", "details", "business", "store", "brand", "aggregator", "weight", "pincode", "zone", "tracking"]
     score += sum(4 for term in hot_terms if term in joined)
     score += sum(2 for term in warm_terms if term in joined)
 

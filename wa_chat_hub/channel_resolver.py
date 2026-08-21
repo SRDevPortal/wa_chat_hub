@@ -25,7 +25,6 @@ def get_channel_context_for_lead(lead):
         name=row["name"],
         channel_account=row["chat_channel_account"],
         pipeline=row["sr_lead_pipeline"],
-        department=row.get("sr_medical_department"),
     )
 
 
@@ -54,7 +53,7 @@ def ensure_interakt_contact_for_reference(
     *,
     pipeline: str | None = None,
 ) -> dict[str, Any]:
-    """Sync Chat Contact to Interakt (CRM Lead, Patient, etc.)."""
+    """Sync a ShipKia lead/contact to Interakt."""
     from wa_chat_hub.interakt.contact_sync import push_contact_to_interakt
 
     pipeline_map_row = None
@@ -115,55 +114,6 @@ def get_or_create_mapped_lead_conversation(lead) -> dict[str, Any]:
         frappe.log_error(frappe.get_traceback(), "CRM Lead Meta Sync On Map Failed")
 
     _link_crm_lead_on_conversation(conversation, lead.name)
-
-    return {
-        "conversation": conversation,
-        "pipeline_map": pipeline_row["name"],
-        "channel_account": channel_account,
-        "contact": contact,
-        "created": created,
-    }
-
-
-def get_or_create_patient_contact(patient) -> str:
-    phone = _get_patient_phone(patient)
-    normalized_phone = normalize_phone(phone)
-    if not normalized_phone:
-        frappe.throw(_("No mobile number found for Patient {0}.").format(patient.name))
-
-    contact_name = get_or_create_contact(
-        phone_number=normalized_phone,
-        display_name=_get_patient_display_name(patient),
-    )
-    safe_ai_set_value(
-        "Chat Contact",
-        contact_name,
-        {
-            "source_doctype": "Patient",
-            "source_name": patient.name,
-        },
-    )
-    return contact_name
-
-
-def get_or_create_mapped_patient_conversation(patient) -> dict[str, Any]:
-    pipeline_row = get_pipeline_map(medical_department=patient.get("sr_medical_department"))
-    channel_account = pipeline_row["chat_channel_account"]
-    contact = get_or_create_patient_contact(patient)
-    ensure_interakt_contact_for_reference(
-        channel_account,
-        contact,
-        patient,
-        pipeline=pipeline_row.get("sr_lead_pipeline"),
-    )
-
-    conversation, created = _get_or_create_reference_conversation(
-        contact=contact,
-        channel_account=channel_account,
-        reference_doctype="Patient",
-        reference_name=patient.name,
-        department=_conversation_department_for_account(channel_account),
-    )
 
     return {
         "conversation": conversation,
@@ -293,21 +243,6 @@ def _get_lead_display_name(lead) -> str:
     return lead.name
 
 
-def _get_patient_phone(patient) -> str | None:
-    meta = frappe.get_meta("Patient")
-    for fieldname in ("mobile", "mobile_no", "phone", "custom_whatsapp_number"):
-        if meta.has_field(fieldname) and patient.get(fieldname):
-            return patient.get(fieldname)
-    return None
-
-
-def _get_patient_display_name(patient) -> str:
-    for fieldname in ("patient_name", "first_name"):
-        if patient.get(fieldname):
-            return patient.get(fieldname)
-    return patient.name
-
-
 def _split_interakt_phone(phone: str, default_country_code: str) -> tuple[str, str]:
     country_code = str(default_country_code or "+91").strip()
     if not country_code.startswith("+"):
@@ -326,26 +261,15 @@ def _split_interakt_phone(phone: str, default_country_code: str) -> tuple[str, s
 
 def _build_interakt_traits(contact_doc, reference_doc) -> dict[str, Any]:
     doctype = reference_doc.doctype
-    if doctype == "Patient":
-        display = _get_patient_display_name(reference_doc)
-        traits = {
-            "name": contact_doc.display_name or display,
-            "source_doctype": "Patient",
-            "source_name": reference_doc.name,
-            "sr_medical_department": reference_doc.get("sr_medical_department"),
-        }
-        if reference_doc.get("sr_patient_id"):
-            traits["sr_patient_id"] = reference_doc.get("sr_patient_id")
-    else:
-        display = _get_lead_display_name(reference_doc)
-        traits = {
-            "name": contact_doc.display_name or display,
-            "source_doctype": doctype,
-            "source_name": reference_doc.name,
-            "sr_lead_pipeline": reference_doc.get("sr_lead_pipeline"),
-        }
-        for fieldname in ("email", "email_id", "source", "status"):
-            if reference_doc.get(fieldname):
-                traits[fieldname] = reference_doc.get(fieldname)
+    display = _get_lead_display_name(reference_doc)
+    traits = {
+        "name": contact_doc.display_name or display,
+        "source_doctype": doctype,
+        "source_name": reference_doc.name,
+        "sr_lead_pipeline": reference_doc.get("sr_lead_pipeline"),
+    }
+    for fieldname in ("email", "email_id", "source", "status"):
+        if reference_doc.get(fieldname):
+            traits[fieldname] = reference_doc.get(fieldname)
 
     return {key: value for key, value in traits.items() if value not in (None, "")}

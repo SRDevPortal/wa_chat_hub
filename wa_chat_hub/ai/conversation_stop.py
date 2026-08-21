@@ -18,8 +18,8 @@ from wa_chat_hub.security import (
 
 
 FINAL_WARNING_MESSAGE = (
-    "Ji, ye final warning hai. Kripya apni valid medical concern, report/photo, "
-    "appointment, callback ya OPD requirement share karein. Agar aap unrelated chat "
+    "Ji, ye final warning hai. Kripya apni ShipKia shipping requirement, rate query, "
+    "pickup/delivery route, shipment issue, callback time ya onboarding detail share karein. Agar aap unrelated chat "
     "continue karenge to main is conversation mein messaging stop kar dunga."
 )
 STOP_MESSAGE = (
@@ -114,16 +114,16 @@ def is_protected_customer_intent(
         return False
 
     protected_patterns = (
-        r"\b(report|reports|photo|image|xray|x-ray|mri|ct scan|ultrasound|prescription|medicine|medication|dose|tablet)\b",
-        r"\b(appointment|callback|call back|call|opd|consult|consultation|doctor|dr\.?|clinic|visit|book|schedule)\b",
-        r"\b(emergency|urgent|severe|serious|bleeding|blood|breath|breathing|chest pain|unconscious|faint|fever)\b",
-        r"\b(pain|swelling|infection|kidney|stone|urine|urinary|prostate|hernia|piles|fissure|fistula|gallbladder|liver|stomach|abdomen|vomit|nausea|diabetes|bp|blood pressure)\b",
-        r"\b(treatment|surgery|operation|therapy|ayurvedic|allopathy|diagnosis|symptom|problem|disease|illness)\b",
+        r"\b(rate|rates|price|pricing|charges|starting rate|exact rate|rate card)\b",
+        r"\b(shipping|shipment|courier|parcel|order|orders|tracking|ndr|rto|awb|delivery|pickup|pincode|pin code|zone)\b",
+        r"\b(cod|prepaid|weight|kg|gram|grams|surface|express|air|reverse pickup|return)\b",
+        r"\b(aggregator|shiprocket|delhivery|xpressbees|ecom express|shadowfax|amazon shipping|current aggregator)\b",
+        r"\b(business|store|brand|d2c|b2c|marketplace|website|shopify|woocommerce|monthly|volume)\b",
+        r"\b(callback|call back|call|schedule|follow up|sales team|support team|urgent)\b",
         r"\b(hindi|english|language|samajh|samajh nahi|translate)\b",
-        r"\b(fee|fees|cost|charges|address|location|timing|open|close|available|service|services|facility|facilities)\b",
-        r"\b(status|tracking|track|delivery|shipment|courier|awb|order|package|sriaas|dr health|dr\. health)\b",
-        r"(दर्द|सूजन|खून|पेशाब|बुखार|रिपोर्ट|दवा|इलाज|अपॉइंटमेंट|ओपीडी|डॉक्टर|कॉल|तुरंत|आपात)",
-        r"(dard|sujan|khoon|peshab|bukhar|report|dawa|ilaj|upchar|doctor|aspatal|turant)",
+        r"\b(service|services|help|issue|problem|address|location|available)\b",
+        r"(रेट|शिपिंग|कूरियर|पिकअप|डिलीवरी|ऑर्डर|कॉल|वजन|पेमेंट|सीओडी|प्रीपेड)",
+        r"(rate|shipping|courier|pickup|delivery|order|call|wajan|payment|cod|prepaid|bhejna|bhejna hai)",
     )
     return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in protected_patterns)
 
@@ -175,7 +175,7 @@ def _looks_like_final_warning(body: str | None) -> bool:
         return False
     if _normalize_text(FINAL_WARNING_MESSAGE) in text:
         return True
-    warning_signals = ("final warning", "unrelated chat", "messaging stop", "valid medical concern")
+    warning_signals = ("final warning", "unrelated chat", "messaging stop", "shipkia shipping requirement")
     return sum(1 for signal in warning_signals if signal in text) >= 2
 
 

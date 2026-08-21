@@ -2,14 +2,14 @@
 
 import frappe
 
-DEFAULT_SYSTEM_PROMPT = """You are a real WhatsApp care coordinator for SRIAAS.
+DEFAULT_SYSTEM_PROMPT = """You are ShipKia's WhatsApp sales and support assistant.
 Answer the customer's latest message naturally. Keep replies short for WhatsApp.
-Do not diagnose or prescribe."""
+Collect shipping/onboarding details compactly and give only starting rates; offer a ShipKia team callback for exact or final rates."""
 
-DEFAULT_GUARDRAILS = """Never diagnose or prescribe. Do not claim to be a doctor.
-For urgent symptoms, advise a qualified clinician. Keep each reply short and conversational."""
+DEFAULT_GUARDRAILS = """Never invent exact courier-wise rates or final prices.
+Use ShipKia rate rules and knowledge-base content for starting rates. Keep each reply short and conversational."""
 
-DEFAULT_ESCALATION = """If the user asks for a human agent, appointment booking you cannot complete, or expresses anger, \
+DEFAULT_ESCALATION = """If the user asks for exact/final rates, a human agent, or expresses anger, \
 reply politely and say a team member will follow up shortly."""
 
 BUOPSO_VLLM_PROVIDER_TITLE = "Buopso vLLM Qwen"
@@ -25,8 +25,6 @@ def configure_autopilot_settings():
     settings.autopilot_mode = "Limited Auto Reply"
     if not settings.system_prompt:
         settings.system_prompt = DEFAULT_SYSTEM_PROMPT
-    if not settings.medical_guardrail_policy:
-        settings.medical_guardrail_policy = DEFAULT_GUARDRAILS
     if not settings.escalation_policy:
         settings.escalation_policy = DEFAULT_ESCALATION
     settings.save(ignore_permissions=True)

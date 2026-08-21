@@ -67,6 +67,10 @@ def after_migrate() -> None:
     except Exception:
         _safe_log_error("WA Chat Hub Workspace Sync Failed")
     ensure_lead_scoring_fields()
+    ensure_shipkia_ai_lead_fields()
+    ensure_shipkia_aggregator_check_fields()
+    ensure_shipkia_route_fields()
+    ensure_shipkia_conversation_state_fields()
     ensure_chat_message_indexes()
     migrate_conversation_crm_lead_links()
     backfill_messaging_windows()
@@ -161,6 +165,236 @@ def ensure_lead_scoring_fields() -> None:
         ]
     if custom_fields:
         create_custom_fields(custom_fields, update=True)
+
+
+def ensure_shipkia_ai_lead_fields() -> None:
+    if not frappe.db.exists("DocType", "Lead"):
+        return
+
+    custom_fields = {
+        "Lead": [
+            {
+                "fieldname": "shipkia_ai_section",
+                "label": "ShipKia AI Qualification",
+                "fieldtype": "Section Break",
+                "insert_after": "lead_temperature",
+                "collapsible": 0,
+            },
+            {
+                "fieldname": "shipkia_ai_qualified",
+                "label": "Qualified via AI",
+                "fieldtype": "Check",
+                "insert_after": "shipkia_ai_section",
+                "in_list_view": 1,
+                "in_standard_filter": 1,
+                "default": "0",
+                "read_only": 1,
+            },
+            {
+                "fieldname": "shipkia_ai_lead_temperature",
+                "label": "AI Lead Temperature",
+                "fieldtype": "Select",
+                "insert_after": "shipkia_ai_qualified",
+                "in_list_view": 1,
+                "in_standard_filter": 1,
+                "options": "Cold\nWarm\nHot",
+                "default": "Cold",
+                "read_only": 1,
+            },
+            {
+                "fieldname": "shipkia_ai_qualification_status",
+                "label": "AI Qualification Stage",
+                "fieldtype": "Select",
+                "insert_after": "shipkia_ai_lead_temperature",
+                "in_list_view": 1,
+                "in_standard_filter": 1,
+                "options": "New\nIn Progress\nQualified\nNeeds Human Review\nNot Qualified",
+                "default": "New",
+                "read_only": 1,
+            },
+            {
+                "fieldname": "shipkia_ai_qualification_score",
+                "label": "AI Qualification Score",
+                "fieldtype": "Float",
+                "insert_after": "shipkia_ai_qualification_status",
+                "in_list_view": 1,
+                "in_standard_filter": 1,
+                "default": "0",
+                "precision": "2",
+                "read_only": 1,
+            },
+            {
+                "fieldname": "shipkia_ai_context_complete",
+                "label": "AI Context Complete",
+                "fieldtype": "Check",
+                "insert_after": "shipkia_ai_qualification_score",
+                "in_list_view": 1,
+                "in_standard_filter": 1,
+                "default": "0",
+                "read_only": 1,
+            },
+            {
+                "fieldname": "shipkia_ai_onboarding_assisted",
+                "label": "AI Onboarding Assisted",
+                "fieldtype": "Check",
+                "insert_after": "shipkia_ai_context_complete",
+                "in_list_view": 1,
+                "in_standard_filter": 1,
+                "default": "0",
+                "read_only": 1,
+            },
+            {
+                "fieldname": "shipkia_ai_onboarding_stage",
+                "label": "AI Onboarding Stage",
+                "fieldtype": "Select",
+                "insert_after": "shipkia_ai_onboarding_assisted",
+                "in_list_view": 1,
+                "in_standard_filter": 1,
+                "options": "Not Started\nDetails Collected\nSignup Link Sent\nAccount Created\nFirst Shipment Done",
+                "default": "Not Started",
+                "read_only": 1,
+            },
+            {
+                "fieldname": "shipkia_ai_column_break",
+                "fieldtype": "Column Break",
+                "insert_after": "shipkia_ai_onboarding_stage",
+            },
+            {
+                "fieldname": "shipkia_ai_last_action",
+                "label": "AI Last Action",
+                "fieldtype": "Data",
+                "insert_after": "shipkia_ai_column_break",
+                "in_list_view": 1,
+                "read_only": 1,
+            },
+            {
+                "fieldname": "shipkia_ai_last_qualified_at",
+                "label": "AI Last Qualified At",
+                "fieldtype": "Datetime",
+                "insert_after": "shipkia_ai_last_action",
+                "in_standard_filter": 1,
+            },
+            {
+                "fieldname": "shipkia_ai_messages_count",
+                "label": "AI Messages Count",
+                "fieldtype": "Int",
+                "insert_after": "shipkia_ai_last_qualified_at",
+                "default": "0",
+            },
+            {
+                "fieldname": "shipkia_ai_details_collected",
+                "label": "AI Details Collected",
+                "fieldtype": "Int",
+                "insert_after": "shipkia_ai_messages_count",
+                "default": "0",
+            },
+            {
+                "fieldname": "shipkia_ai_last_message_at",
+                "label": "AI Last Message At",
+                "fieldtype": "Datetime",
+                "insert_after": "shipkia_ai_details_collected",
+            },
+            {
+                "fieldname": "shipkia_ai_pending_qualification_at",
+                "label": "AI Pending Qualification At",
+                "fieldtype": "Datetime",
+                "insert_after": "shipkia_ai_last_message_at",
+                "hidden": 1,
+            },
+            {
+                "fieldname": "shipkia_ai_qualification_fingerprint",
+                "label": "AI Qualification Fingerprint",
+                "fieldtype": "Data",
+                "insert_after": "shipkia_ai_pending_qualification_at",
+                "hidden": 1,
+            },
+            {
+                "fieldname": "shipkia_ai_qualification_reason",
+                "label": "AI Qualification Reason",
+                "fieldtype": "Small Text",
+                "insert_after": "shipkia_ai_qualification_fingerprint",
+            },
+        ]
+    }
+    create_custom_fields(custom_fields, update=True)
+
+
+def ensure_shipkia_aggregator_check_fields() -> None:
+    if not frappe.db.exists("DocType", "Lead"):
+        return
+
+    create_custom_fields(
+        {
+            "Lead": [
+                {
+                    "fieldname": "shipkia_current_aggregator_verified",
+                    "label": "Current Aggregator Verified",
+                    "fieldtype": "Check",
+                    "insert_after": "shipkia_current_aggregator_name",
+                    "in_list_view": 1,
+                    "in_standard_filter": 1,
+                    "default": "0",
+                },
+                {
+                    "fieldname": "shipkia_current_aggregator_raw",
+                    "label": "Current Aggregator Raw",
+                    "fieldtype": "Data",
+                    "insert_after": "shipkia_current_aggregator_verified",
+                    "description": "Original aggregator text shared by the WhatsApp lead when it is not recognized.",
+                },
+            ]
+        },
+        update=True,
+    )
+
+
+def ensure_shipkia_route_fields() -> None:
+    if not frappe.db.exists("DocType", "Lead"):
+        return
+
+    create_custom_fields(
+        {
+            "Lead": [
+                {
+                    "fieldname": "shipkia_delivery_city",
+                    "label": "Delivery City",
+                    "fieldtype": "Data",
+                    "insert_after": "shipkia_pickup_pincode",
+                    "description": "Destination city shared by the WhatsApp lead for starting-rate checks.",
+                },
+            ]
+        },
+        update=True,
+    )
+
+
+def ensure_shipkia_conversation_state_fields() -> None:
+    if not frappe.db.exists("DocType", "Chat Conversation"):
+        return
+
+    create_custom_fields(
+        {
+            "Chat Conversation": [
+                {
+                    "fieldname": "shipkia_last_bot_question",
+                    "label": "ShipKia Last Bot Question",
+                    "fieldtype": "Data",
+                    "insert_after": "ai_summary",
+                    "hidden": 1,
+                    "no_copy": 1,
+                },
+                {
+                    "fieldname": "shipkia_pending_slots",
+                    "label": "ShipKia Pending Slots",
+                    "fieldtype": "Small Text",
+                    "insert_after": "shipkia_last_bot_question",
+                    "hidden": 1,
+                    "no_copy": 1,
+                },
+            ]
+        },
+        update=True,
+    )
 
 
 def ensure_chat_message_indexes() -> None:

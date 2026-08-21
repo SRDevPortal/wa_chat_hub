@@ -97,7 +97,8 @@
    "default": "1",
    "fieldname": "medical_extraction_enabled",
    "fieldtype": "Check",
-   "label": "Medical Extraction Enabled"
+   "hidden": 1,
+   "label": "Legacy Extraction Enabled"
   },
   {
    "default": "1",
