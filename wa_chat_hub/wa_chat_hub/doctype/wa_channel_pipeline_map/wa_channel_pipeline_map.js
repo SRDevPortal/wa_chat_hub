@@ -22,7 +22,7 @@ frappe.ui.form.on("WA Channel Pipeline Map", {
 	refresh(frm) {
 		frm.set_intro(
 			__(
-				"One row per Interakt Chat Channel Account. Default SR Lead Pipeline applies to every new CRM Lead. Medical Department is for Patient Open Chat and Interakt contact sync — not Chat Conversation Department (use Chat Channel Account → Department for that)."
+				"One row per Interakt Chat Channel Account. Default Route is the global fallback. Default for Medical Department resolves multiple active Patient maps for the same department. Medical Department is not Chat Conversation Department (use Chat Channel Account → Department for that)."
 			),
 			"blue"
 		);

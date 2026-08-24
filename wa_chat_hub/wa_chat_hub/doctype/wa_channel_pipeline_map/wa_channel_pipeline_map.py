@@ -23,6 +23,8 @@ class WAChannelPipelineMap(Document):
             )
         if self.is_active and self.get("is_default"):
             self._validate_single_default_route()
+        if self.is_active and self.get("is_department_default"):
+            self._validate_single_department_default()
 
     def _validate_single_default_route(self):
         existing = frappe.db.get_value(
@@ -36,6 +38,26 @@ class WAChannelPipelineMap(Document):
         )
         if existing:
             frappe.throw(_("Only one active default WA Channel Pipeline Map is allowed ({0}).").format(existing))
+
+    def _validate_single_department_default(self):
+        if not self.sr_medical_department:
+            frappe.throw(_("Medical Department is required for a department default route."))
+        existing = frappe.db.get_value(
+            "WA Channel Pipeline Map",
+            {
+                "name": ["!=", self.name],
+                "sr_medical_department": self.sr_medical_department,
+                "is_active": 1,
+                "is_department_default": 1,
+            },
+            "name",
+        )
+        if existing:
+            frappe.throw(
+                _(
+                    "Only one active default route is allowed for Medical Department {0} ({1})."
+                ).format(self.sr_medical_department, existing)
+            )
 
 
 def _validate_active_link(doctype: str, name: str | None, message: str) -> None:

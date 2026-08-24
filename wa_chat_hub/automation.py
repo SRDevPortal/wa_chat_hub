@@ -13,7 +13,7 @@ from wa_chat_hub.delivery_outcomes import (
     PatientTemplateOutcomeUnknownError,
 )
 from wa_chat_hub.interakt.templates_api import resolve_approved_template
-from wa_chat_hub.messaging.channel_map import get_pipeline_map, get_pipeline_map_for_patient
+from wa_chat_hub.messaging.channel_map import resolve_patient_department_map
 from wa_chat_hub.outbound import send_interakt_template_message
 from wa_chat_hub.security import safe_ai_get_all, safe_ai_get_doc, set_service_user_context
 from wa_chat_hub.services import append_message
@@ -139,24 +139,7 @@ def resolve_patient_route(patient_doc, fallback_channel_account: str | None = No
     if existing:
         return existing
 
-    mapping_error = None
-    pipeline_row = None
-    try:
-        pipeline_row = get_pipeline_map_for_patient(patient_doc)
-    except frappe.ValidationError as exc:
-        if is_missing_pipeline_map_error(exc):
-            mapping_error = exc
-        elif (
-            fallback_channel_account
-            and is_multiple_pipeline_map_error(exc)
-            and patient_doc.get("sr_medical_department")
-        ):
-            pipeline_row = get_pipeline_map(
-                medical_department=patient_doc.get("sr_medical_department"),
-                channel_account=fallback_channel_account,
-            )
-        else:
-            raise
+    pipeline_row = resolve_patient_department_map(patient_doc)
     if pipeline_row:
         route = get_or_create_patient_conversation_for_channel_account(
             patient_doc,
@@ -164,7 +147,7 @@ def resolve_patient_route(patient_doc, fallback_channel_account: str | None = No
             pipeline_map=pipeline_row.get("name"),
         )
         route["routing_source"] = (
-            "Default Pipeline Map" if pipeline_row.get("is_default") else "Department Map"
+            "Department Default" if pipeline_row.get("is_department_default") else "Department Map"
         )
         return route
 
@@ -173,12 +156,14 @@ def resolve_patient_route(patient_doc, fallback_channel_account: str | None = No
             patient_doc,
             fallback_channel_account,
         )
-        route["routing_source"] = "Configured Fallback"
+        route["routing_source"] = "Patient Notification Settings Fallback"
         return route
 
-    if mapping_error:
-        raise mapping_error
-    frappe.throw(_("No WhatsApp route is available for Patient {0}.").format(patient_doc.name))
+    frappe.throw(
+        _(
+            "No department route or Patient Notification fallback is available for Patient {0}."
+        ).format(patient_doc.name)
+    )
 
 
 def find_existing_patient_route(patient: str) -> dict[str, Any] | None:
@@ -221,13 +206,3 @@ def find_existing_patient_route(patient: str) -> dict[str, Any] | None:
             "routing_source": "Existing Conversation",
         }
     return None
-
-
-def is_missing_pipeline_map_error(error: Exception) -> bool:
-    message = cstr(error).strip().lower()
-    return message.startswith("no active ") and "wa channel pipeline map" in message
-
-
-def is_multiple_pipeline_map_error(error: Exception) -> bool:
-    message = cstr(error).strip().lower()
-    return message.startswith("multiple active wa channel pipeline map")

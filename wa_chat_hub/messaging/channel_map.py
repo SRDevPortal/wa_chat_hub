@@ -14,6 +14,7 @@ PIPELINE_MAP_FIELDS = [
     "name",
     "chat_channel_account",
     "is_default",
+    "is_department_default",
     "sr_lead_pipeline",
     "sr_lead_source",
     "sr_medical_department",
@@ -91,6 +92,45 @@ def get_pipeline_map_for_patient(patient) -> Dict[str, Any]:
     if _linked_record_exists("Medical Department", department):
         return get_pipeline_map(medical_department=department)
     return get_default_pipeline_map()
+
+
+def resolve_patient_department_map(patient) -> Optional[Dict[str, Any]]:
+    """Resolve one active map for a Patient department without using the global default."""
+    department = patient.get("sr_medical_department")
+    if not _linked_record_exists("Medical Department", department):
+        return None
+
+    rows = safe_ai_get_all(
+        "WA Channel Pipeline Map",
+        filters={
+            "sr_medical_department": department,
+            "is_active": 1,
+        },
+        fields=_pipeline_map_fields(),
+        limit_start=0,
+        limit_page_length=20,
+    )
+    if not rows:
+        return None
+
+    selected = None
+    if len(rows) == 1:
+        selected = rows[0]
+    else:
+        defaults = [row for row in rows if row.get("is_department_default")]
+        if len(defaults) > 1:
+            frappe.throw(
+                _(
+                    "Multiple active default routes are configured for Medical Department {0}."
+                ).format(department)
+            )
+        if defaults:
+            selected = defaults[0]
+
+    if not selected:
+        return None
+    _validate_channel_account(selected["chat_channel_account"])
+    return selected
 
 
 def get_channel_account_for_lead(lead) -> str:
