@@ -39,6 +39,30 @@ ENCOUNTER_FIELDS = (
     "diet_chart",
 )
 
+DRUG_PRESCRIPTION_TABLES = (
+    "drug_prescription",
+    "sr_homeopathy_drug_prescription",
+    "sr_allopathy_drug_prescription",
+)
+
+DRUG_PRESCRIPTION_FIELDS = (
+    "medication",
+    "drug_code",
+    "drug_name",
+    "sr_medication_name_print",
+    "strength",
+    "strength_uom",
+    "dosage_form",
+    "dosage_by_interval",
+    "dosage",
+    "interval",
+    "interval_uom",
+    "period",
+    "number_of_repeats_allowed",
+    "sr_drug_instruction",
+    "comment",
+)
+
 DIET_CHART_FIELDS = (
     "name",
     "diet_chart_name",
@@ -149,6 +173,52 @@ def get_verified_patient_encounters(
         limit_page_length=_safe_limit(limit),
     )
     return {"patient": patient_name, "encounters": [dict(row) for row in rows]}
+
+
+def get_verified_patient_drug_prescriptions(
+    *, patient: str, conversation: str, limit: int = 10
+) -> dict[str, Any]:
+    """Return the latest non-cancelled encounter containing prescribed drugs."""
+    patient_name = _verified_patient(patient=patient, conversation=conversation)
+    encounter_names = safe_ai_get_all(
+        "Patient Encounter",
+        filters={"patient": patient_name, "docstatus": ["!=", 2]},
+        pluck="name",
+        order_by="encounter_date desc, encounter_time desc, modified desc",
+        limit_page_length=_safe_limit(limit),
+    )
+
+    encounter_meta = frappe.get_meta("Patient Encounter")
+    available_tables = [
+        fieldname
+        for fieldname in DRUG_PRESCRIPTION_TABLES
+        if encounter_meta.has_field(fieldname)
+    ]
+    for encounter_name in encounter_names:
+        encounter = safe_ai_get_doc("Patient Encounter", encounter_name)
+        prescriptions = {
+            fieldname: [
+                _allowlisted_doc(row, DRUG_PRESCRIPTION_FIELDS)
+                for row in (encounter.get(fieldname) or [])
+            ]
+            for fieldname in available_tables
+        }
+        if not any(prescriptions.values()):
+            continue
+        return {
+            "patient": patient_name,
+            "encounter": encounter.name,
+            "encounter_date": encounter.get("encounter_date"),
+            "practitioner_name": encounter.get("practitioner_name"),
+            "instructions": encounter.get("sr_pe_instruction"),
+            **prescriptions,
+        }
+
+    return {
+        "patient": patient_name,
+        "encounter": None,
+        **{fieldname: [] for fieldname in available_tables},
+    }
 
 
 def get_verified_patient_diet_charts(
