@@ -14,10 +14,18 @@ from wa_chat_hub.interakt.contact_sync import (
 
 @frappe.whitelist()
 def sync_pipeline_map_to_interakt(pipeline_map: str):
-    """Bulk push leads and conversation contacts for one WA Channel Pipeline Map."""
+    """Bulk push patients, leads, and conversation contacts for one WA Channel Pipeline Map."""
     if not pipeline_map:
         frappe.throw(_("pipeline_map is required"))
     result = push_pipeline_map_contacts(pipeline_map)
+    return {"success": True, "result": result}
+
+
+@frappe.whitelist()
+def push_patient_to_interakt(patient: str):
+    if not patient or not frappe.db.exists("Patient", patient):
+        frappe.throw(_("Patient not found"))
+    result = push_reference_to_interakt(frappe.get_doc("Patient", patient))
     return {"success": True, "result": result}
 
 

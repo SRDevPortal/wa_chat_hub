@@ -1,0 +1,174 @@
+{
+  "WA AI Intent": [
+    {
+      "intent_name": "shipping_rate_enquiry",
+      "intent_label": "Shipping Rate Enquiry",
+      "is_active": 1,
+      "priority": 100,
+      "description": "The customer asks for shipping rates, courier charges, flat rates, starting rates, COD charges, or zone-wise pricing.",
+      "classifier_examples": "rate batao\nDelhi to Mumbai shipping charge\n500g prepaid rate\nCOD charges kya hain\nflat rate chahiye",
+      "fallback_match": {
+        "contains_any": [
+          "rate",
+          "price",
+          "charge",
+          "charges",
+          "shipping charge",
+          "courier charge",
+          "flat rate",
+          "starting rate",
+          "cod charge",
+          "quotation"
+        ]
+      },
+      "confidence_threshold": 0.55,
+      "requires_patient_data": 0,
+      "is_default_fallback": 0,
+      "clarification_prompt": "Sure. Which city will the shipment be picked up from?"
+    },
+    {
+      "intent_name": "shipment_tracking",
+      "intent_label": "Shipment Tracking",
+      "is_active": 1,
+      "priority": 90,
+      "description": "The customer wants shipment, AWB, courier, dispatch, pickup, NDR, RTO, or delivery status.",
+      "classifier_examples": "mera shipment kahan hai\nAWB status\norder delivery status\npickup nahi hua\nRTO update chahiye",
+      "fallback_match": {
+        "contains_any": [
+          "tracking",
+          "track",
+          "awb",
+          "shipment status",
+          "delivery status",
+          "pickup",
+          "ndr",
+          "rto",
+          "courier status",
+          "dispatch"
+        ]
+      },
+      "confidence_threshold": 0.55,
+      "requires_patient_data": 0,
+      "is_default_fallback": 0,
+      "clarification_prompt": "Sure, please share the AWB number first."
+    },
+    {
+      "intent_name": "shipkia_signup_or_onboarding",
+      "intent_label": "ShipKia Signup / Onboarding",
+      "is_active": 1,
+      "priority": 80,
+      "description": "The customer wants to create a ShipKia account, start shipping, or understand onboarding.",
+      "classifier_examples": "account banana hai\nShipKia signup\nshipping start karni hai\nplatform kaise use karu",
+      "fallback_match": {
+        "contains_any": [
+          "signup",
+          "sign up",
+          "account banana",
+          "account create",
+          "start shipping",
+          "onboarding",
+          "register"
+        ]
+      },
+      "confidence_threshold": 0.55,
+      "requires_patient_data": 0,
+      "is_default_fallback": 0,
+      "clarification_prompt": "Great. What type of business do you run?"
+    },
+    {
+      "intent_name": "cod_or_payment_query",
+      "intent_label": "COD / Payment Query",
+      "is_active": 1,
+      "priority": 70,
+      "description": "The customer asks about COD remittance, wallet, billing, invoice, recharge, deductions, or payment status.",
+      "classifier_examples": "COD kab milega\nwallet balance\ninvoice chahiye\npayment status kya hai\nrecharge ka issue hai",
+      "fallback_match": {
+        "contains_any": [
+          "cod",
+          "remittance",
+          "payment",
+          "wallet",
+          "invoice",
+          "billing",
+          "recharge",
+          "deduction"
+        ]
+      },
+      "confidence_threshold": 0.55,
+      "requires_patient_data": 0,
+      "is_default_fallback": 0,
+      "clarification_prompt": "Sure. Is this about COD remittance, wallet, invoice, recharge, or deduction?"
+    },
+    {
+      "intent_name": "human_support",
+      "intent_label": "Human Support",
+      "is_active": 1,
+      "priority": 60,
+      "description": "The customer asks to speak with a person, sales team, support team, or callback.",
+      "classifier_examples": "agent se baat karni hai\ncallback arrange karo\nsupport chahiye\nsales team se connect karao",
+      "fallback_match": {
+        "contains_any": [
+          "human agent",
+          "support",
+          "callback",
+          "call back",
+          "sales team",
+          "person se baat",
+          "agent se baat"
+        ]
+      },
+      "confidence_threshold": 0.55,
+      "requires_patient_data": 0,
+      "is_default_fallback": 0,
+      "clarification_prompt": "Sure. What should our team help you with first?"
+    },
+    {
+      "intent_name": "greeting_or_general_chat",
+      "intent_label": "Greeting / General Chat",
+      "is_active": 1,
+      "priority": 50,
+      "description": "A greeting, courtesy message, or normal public conversation.",
+      "classifier_examples": "hello\nhi\nnamaste\ngood morning\nkaise ho",
+      "fallback_match": {
+        "full_text_any": [
+          "hi",
+          "hii",
+          "hello",
+          "hey",
+          "namaste",
+          "namaskar",
+          "good morning",
+          "good evening"
+        ]
+      },
+      "confidence_threshold": 0.5,
+      "requires_patient_data": 0,
+      "is_default_fallback": 0,
+      "clarification_prompt": "Hi, how can I help you with ShipKia today?"
+    },
+    {
+      "intent_name": "unclear",
+      "intent_label": "Unclear",
+      "is_active": 1,
+      "priority": 0,
+      "description": "The customer request is ambiguous or does not have enough information to route.",
+      "classifier_examples": "help\nbatao\nissue hai",
+      "fallback_match": {},
+      "confidence_threshold": 0,
+      "requires_patient_data": 0,
+      "is_default_fallback": 1,
+      "clarification_prompt": "Sure. Do you need help with rates, tracking, COD/payment, or starting ShipKia?"
+    }
+  ],
+  "WA AI Workflow": [],
+  "WA AI Intent Route": [
+    {
+      "route_name": "ShipKia Public Channel Default",
+      "configuration_version": 1,
+      "is_active": 1,
+      "priority": 20,
+      "data_scope": "Public",
+      "target_type": "Channel Account Default"
+    }
+  ]
+}

@@ -66,6 +66,7 @@ wa_chat_hub.notifications = {
     categories: [
         { key: "all", label: "All" },
         { key: "crm_leads", label: "CRM Leads" },
+        { key: "customers", label: "Customers" },
         { key: "ai_replies", label: "AI Replies" },
     ],
 
@@ -269,6 +270,9 @@ wa_chat_hub.notifications = {
         const route = (frappe.get_route ? frappe.get_route() : []).join('/').toLowerCase();
         if (route.indexOf('crm-lead') !== -1 || route.indexOf('crm lead') !== -1) {
             return 'crm_leads';
+        }
+        if (route.indexOf('customer') !== -1) {
+            return 'customers';
         }
         return 'all';
     },

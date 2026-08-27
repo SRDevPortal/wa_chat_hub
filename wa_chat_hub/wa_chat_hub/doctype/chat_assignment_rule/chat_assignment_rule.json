@@ -9,18 +9,9 @@
   "channel_account",
   "priority",
   "assign_to",
-  "is_active",
-  "company"
+  "is_active"
  ],
  "fields": [
-  {
-   "fieldname": "company",
-   "fieldtype": "Link",
-   "in_list_view": 1,
-   "in_standard_filter": 1,
-   "label": "Company",
-   "options": "AI Company"
-  },
   {
    "fieldname": "rule_name",
    "fieldtype": "Data",
@@ -30,8 +21,9 @@
   },
   {
    "fieldname": "department",
-   "fieldtype": "Data",
-   "label": "Department"
+   "fieldtype": "Link",
+   "label": "Department",
+   "options": "Department"
   },
   {
    "fieldname": "channel_account",
@@ -73,6 +65,5 @@
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
- "track_changes": 1,
- "modified": "2026-07-16 00:00:00.000000"
+ "track_changes": 1
 }

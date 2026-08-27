@@ -22,6 +22,7 @@ from wa_chat_hub.ai.providers import (
     looks_like_vision_model,
 )
 from wa_chat_hub.prompts import get_conversation_crm_lead
+from wa_chat_hub.policy import policy_reply, policy_section
 from wa_chat_hub.security import (
     WAChatHubSecurityError,
     assert_ai_doctype_permission,
@@ -40,16 +41,22 @@ def build_transcript_context_for_chat(
     media_url: str,
     content_type: str,
     body_hint: str = "",
+    channel_account: str | None = None,
 ) -> str:
     """Plain-text transcript context for inbound audio/video autopilot replies."""
     content_type = str(content_type or "Audio").title()
+    media_policy = policy_section(channel_account, "media_policy")
     caption = _clean_caption(body_hint)
     label = "voice note" if content_type == "Audio" else "video"
     lines = [f"Customer sent a WhatsApp {label}."]
     if caption:
         lines.append(f"Caption: {caption}")
 
-    visual_summary = describe_video_media(media_url) if content_type == "Video" else ""
+    visual_summary = (
+        describe_video_media(media_url)
+        if content_type == "Video" and media_policy.get("enable_local_clinical_heuristics")
+        else ""
+    )
     if visual_summary:
         lines.append(f"Visible video content:\n{visual_summary[:3500]}")
 
@@ -60,29 +67,21 @@ def build_transcript_context_for_chat(
 
     if content_type == "Video":
         if visual_summary or transcript:
-            lines.append(
-                "Use the visible video content first. Use the spoken transcript only if it is "
-                "clearly relevant. Ask one focused ShipKia sales/support follow-up question."
-            )
+            instruction = str(media_policy.get("transcript_summary_prompt") or "").strip()
+            if instruction:
+                lines.append(instruction)
         else:
-            has_visible_frames = video_has_visible_frames(media_url)
-            if has_visible_frames:
-                lines.append("The video file has visible frames, but no local vision-description model is active.")
-            lines.append(
-                "The video was received successfully, but no usable voice transcript could be "
-                "generated. Reply in Hindi/Hinglish as ShipKia: video mil gaya hai, ShipKia team "
-                "context review kar legi. Ask the customer to type the shipping requirement if needed."
-            )
+            unavailable = policy_reply(channel_account, "media_unavailable")
+            if unavailable:
+                lines.append(unavailable)
     elif transcript:
-        lines.append(
-            "Use the transcript as the customer's latest message. Reply to what they asked, "
-            "and mention only if any part was unclear."
-        )
+        instruction = str(media_policy.get("transcript_summary_prompt") or "").strip()
+        if instruction:
+            lines.append(instruction)
     else:
-        lines.append(
-            f"{content_type} could not be transcribed. Acknowledge receipt and ask the customer "
-            "to resend it or type the details."
-        )
+        unavailable = policy_reply(channel_account, "media_unavailable")
+        if unavailable:
+            lines.append(unavailable)
     return "\n".join(lines)
 
 
@@ -143,6 +142,8 @@ def transcribe_media(media_url: str, content_type: str = "Audio") -> str:
 
     endpoint = _build_audio_transcription_url(provider.get("base_url"))
 
+    if not endpoint:
+        return ""
     try:
         transcript = _post_transcription(
             endpoint=endpoint,
@@ -225,7 +226,9 @@ def describe_video_media(media_url: str) -> str:
         )
 
     for provider in providers:
-        base_url = provider["base_url"] or "https://api.openai.com/v1/chat/completions"
+        base_url = str(provider.get("base_url") or "").strip()
+        if not base_url:
+            continue
         if base_url.endswith("/") and "chat/completions" not in base_url:
             base_url = f"{base_url}chat/completions"
 
@@ -257,94 +260,14 @@ def describe_video_media(media_url: str) -> str:
 
 
 def describe_video_frames_locally(media_url: str) -> str:
-    """Cheap visual triage for videos when no vision-language model is active."""
-    media = _download_media(media_url, "Video")
-    if not media or not (media.get("content") or b""):
-        return ""
-
-    frames = _extract_video_frames(media.get("content") or b"")
-    if not frames:
-        return ""
-
-    observations = [_analyze_video_frame(frame) for frame in frames]
-    observations = [obs for obs in observations if obs]
-    if not observations:
-        return ""
-
-    skin_frames = [obs for obs in observations if obs.get("skin_ratio", 0) >= 0.08]
-    if not skin_frames:
-        return "Sampled frames are visible, but no clear skin/body area was detected locally."
-
-    avg_skin = sum(obs.get("skin_ratio", 0) for obs in skin_frames) / len(skin_frames)
-    avg_red = sum(obs.get("red_ratio", 0) for obs in skin_frames) / len(skin_frames)
-    avg_texture = sum(obs.get("texture_ratio", 0) for obs in skin_frames) / len(skin_frames)
-    avg_spot = sum(obs.get("spot_ratio", 0) for obs in skin_frames) / len(skin_frames)
-
-    details = ["Sampled frames show a close-up of a visible skin/body area."]
-    if avg_red >= 0.08:
-        details.append("There appears to be visible redness/irritation in part of the area.")
-    elif avg_red >= 0.035:
-        details.append("There may be mild redness/irritation.")
-
-    if avg_texture >= 0.055:
-        details.append("The skin surface looks uneven/rough, which can be seen with dryness, scaling, rash, or irritation.")
-    elif avg_texture >= 0.03:
-        details.append("There is some visible texture/roughness on the skin surface.")
-
-    if avg_spot >= 0.02:
-        details.append("Small darker or patchy spots are visible in the sampled frames.")
-
-    if len(details) == 1 and avg_skin >= 0.25:
-        details.append("No obvious shipment text is visible; treat this as general ShipKia media context.")
-
-    details.append(
-        "Use this only as visible media context for ShipKia sales/support. Ask the customer to type the shipping requirement if business, route, weight, or rate details are unclear."
-    )
-    return " ".join(details)[:2000]
+    """Compatibility stub: local clinical image inference is intentionally disabled."""
+    del media_url
+    return ""
 
 
 def _analyze_video_frame(frame_bytes: bytes) -> dict:
-    if not frame_bytes:
-        return {}
-    try:
-        import cv2
-        import numpy as np
-
-        data = np.frombuffer(frame_bytes, dtype=np.uint8)
-        image = cv2.imdecode(data, cv2.IMREAD_COLOR)
-        if image is None:
-            return {}
-
-        h, w = image.shape[:2]
-        if h <= 0 or w <= 0:
-            return {}
-
-        ycrcb = cv2.cvtColor(image, cv2.COLOR_BGR2YCrCb)
-        lower = np.array([0, 133, 77], dtype=np.uint8)
-        upper = np.array([255, 173, 127], dtype=np.uint8)
-        skin_mask = cv2.inRange(ycrcb, lower, upper) > 0
-
-        skin_count = int(np.count_nonzero(skin_mask))
-        total = int(h * w)
-        if not total:
-            return {}
-
-        b, g, r = cv2.split(image)
-        red_mask = skin_mask & (r > 120) & (r > (g.astype("float32") * 1.12)) & (r > (b.astype("float32") * 1.18))
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        edges = cv2.Canny(gray, 60, 140) > 0
-        texture_mask = skin_mask & edges
-        spot_mask = skin_mask & (gray < 95)
-
-        return {
-            "skin_ratio": skin_count / total,
-            "red_ratio": int(np.count_nonzero(red_mask)) / max(skin_count, 1),
-            "texture_ratio": int(np.count_nonzero(texture_mask)) / max(skin_count, 1),
-            "spot_ratio": int(np.count_nonzero(spot_mask)) / max(skin_count, 1),
-        }
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "WA Local Video Frame Analysis Failed")
-        return {}
+    del frame_bytes
+    return {}
 
 
 def video_has_visible_frames(media_url: str) -> bool:
@@ -695,16 +618,16 @@ def _build_transcript_notes_block(
 def _normalize_summary_sections(summary: str, content_type: str) -> str:
     if not summary:
         return (
-            "ShipKia summary:\n"
+            "Report summary:\n"
             f"- No {content_type.lower()} transcript generated.\n\n"
             "Suggested follow-up:\n"
             "- Ask customer to resend the media or type the details."
         )
 
     required_headers = (
-        "ShipKia summary:",
-        "Key details:",
-        "Missing details:",
+        "Report summary:",
+        "Key findings:",
+        "Abnormal values:",
         "Suggested follow-up:",
     )
     lowered = summary.lower()
@@ -712,14 +635,14 @@ def _normalize_summary_sections(summary: str, content_type: str) -> str:
         return summary
 
     return (
-        "ShipKia summary:\n"
+        "Report summary:\n"
         f"- {summary.replace(chr(10), chr(10) + '- ')}\n\n"
-        "Key details:\n"
+        "Key findings:\n"
         "- See transcript summary above.\n\n"
-        "Missing details:\n"
-        "- Note any missing business, route, weight, payment mode, current rate, RTO, or callback details.\n\n"
+        "Abnormal values:\n"
+        "- None noted unless the customer mentioned medical values explicitly.\n\n"
         "Suggested follow-up:\n"
-        "- Continue the ShipKia sales/support workflow concisely."
+        "- Review transcript and confirm details with the customer."
     )
 
 
@@ -834,7 +757,9 @@ def _looks_like_vision_model(provider_type: str, model_name: str | None) -> bool
 
 
 def _build_audio_transcription_url(base_url: str | None) -> str:
-    base_url = (base_url or "").strip() or "https://api.openai.com/v1"
+    base_url = (base_url or "").strip()
+    if not base_url:
+        return ""
     if base_url.endswith("/chat/completions"):
         base_url = base_url[: -len("/chat/completions")]
     if base_url.endswith("/responses"):
@@ -913,20 +838,22 @@ def _clean_caption(body_hint: str) -> str:
 
 
 def _summarize_transcript_with_model(provider: Dict, transcript: str, content_type: str) -> str:
-    base_url = provider["base_url"] or "https://api.openai.com/v1/chat/completions"
+    base_url = str(provider.get("base_url") or "").strip()
+    if not base_url:
+        return ""
     if base_url.endswith("/") and "chat/completions" not in base_url:
         base_url = f"{base_url}chat/completions"
     prompt = (
-        f"Summarize this WhatsApp {content_type.lower()} transcript for ShipKia lead notes. "
+        f"Summarize this WhatsApp {content_type.lower()} transcript for CRM lead notes. "
         "Return ONLY plain text using exactly these section headers and bullet lines:\n"
-        "ShipKia summary:\n"
-        "- <1-3 short bullets about the customer's shipping requirement>\n\n"
-        "Key details:\n"
-        "- <business/store, monthly shipments, aggregator, route, weight, payment mode, current rates/RTO, or 'None noted'>\n\n"
-        "Missing details:\n"
-        "- <missing details needed for ShipKia sales/support, or 'None noted'>\n\n"
+        "Report summary:\n"
+        "- <1-3 short bullets about what the customer said>\n\n"
+        "Key findings:\n"
+        "- <important symptoms, requests, appointment/payment/order details, or 'None noted'>\n\n"
+        "Abnormal values:\n"
+        "- None noted unless the customer mentioned medical values explicitly\n\n"
         "Suggested follow-up:\n"
-        "- <one concise ShipKia sales/support next step>\n\n"
+        "- <safe operational follow-up questions, no diagnosis or prescriptions>\n\n"
         f"Transcript:\n{transcript[:10000]}"
     )
     try:

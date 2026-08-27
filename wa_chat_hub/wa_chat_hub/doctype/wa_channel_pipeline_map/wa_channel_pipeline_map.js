@@ -6,14 +6,12 @@ frappe.ui.form.on("WA Channel Pipeline Map", {
 			},
 		}));
 
-		frm.set_query("sr_lead_pipeline", () => ({}));
-		frm.set_query("sr_lead_source", () => ({}));
 	},
 
 	refresh(frm) {
 		frm.set_intro(
 			__(
-				"One row per Interakt Chat Channel Account. Default SR Lead Pipeline applies to every new ShipKia lead/contact sync."
+				"One row per Interakt Chat Channel Account. Default Route is the global fallback. Default for Medical Department resolves multiple active Patient maps for the same department. Medical Department is not Chat Conversation Department (use Chat Channel Account → Department for that)."
 			),
 			"blue"
 		);
@@ -42,7 +40,7 @@ frappe.ui.form.on("WA Channel Pipeline Map", {
 function sync_contacts_to_interakt(frm) {
 	frappe.confirm(
 		__(
-			"Push CRM leads and chat contacts on this Interakt account to Interakt?"
+			"Push patients (this Medical Department), CRM leads (this pipeline), and chat contacts on this Interakt account to Interakt?"
 		),
 		() => {
 			frappe.call({

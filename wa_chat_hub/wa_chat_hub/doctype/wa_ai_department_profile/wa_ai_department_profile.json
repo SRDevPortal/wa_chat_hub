@@ -1,0 +1,108 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "field:profile_name",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "profile_name",
+  "agent_profile",
+  "medical_department",
+  "is_active",
+  "priority",
+  "auto_reply_mode",
+  "prompt_overlay",
+  "escalation_team",
+  "knowledge_bases",
+  "allowed_tools"
+ ],
+ "fields": [
+  {
+   "fieldname": "profile_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Profile Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "agent_profile",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Agent Profile",
+   "options": "WA AI Agent Profile",
+   "reqd": 1
+  },
+  {
+   "fieldname": "medical_department",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Department",
+   "options": "Department",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Is Active"
+  },
+  {
+   "default": "10",
+   "fieldname": "priority",
+   "fieldtype": "Int",
+   "label": "Priority"
+  },
+  {
+   "description": "Optional override of the shared agent mode.",
+   "fieldname": "auto_reply_mode",
+   "fieldtype": "Select",
+   "label": "Auto Reply Mode Override",
+   "options": "\nSuggest Only\nDraft + Approval\nLimited Auto Reply"
+  },
+  {
+   "description": "Department-only behavior. Shared safety rules remain on the agent profile.",
+   "fieldname": "prompt_overlay",
+   "fieldtype": "Long Text",
+   "label": "Department Prompt Overlay"
+  },
+  {
+   "fieldname": "escalation_team",
+   "fieldtype": "Link",
+   "label": "Escalation Team",
+   "options": "Department"
+  },
+  {
+   "fieldname": "knowledge_bases",
+   "fieldtype": "Table",
+   "label": "Approved Knowledge Bases",
+   "options": "WA Channel Context Knowledge Base"
+  },
+  {
+   "description": "Additional tools allowed only for this department.",
+   "fieldname": "allowed_tools",
+   "fieldtype": "Table",
+   "label": "Department MCP Tools",
+   "options": "WA AI Agent Tool"
+  }
+ ],
+ "links": [],
+ "module": "WA Chat Hub",
+ "name": "WA AI Department Profile",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  }
+ ],
+ "sort_field": "priority",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "profile_name",
+ "track_changes": 1
+}

@@ -5,23 +5,13 @@
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
-  "company",
   "display_name",
   "phone_number",
   "source_doctype",
   "source_name",
-  "linked_lead",
-  "linked_patient"
+  "linked_lead"
  ],
  "fields": [
-  {
-   "fieldname": "company",
-   "fieldtype": "Link",
-   "in_list_view": 1,
-   "in_standard_filter": 1,
-   "label": "Company",
-   "options": "AI Company"
-  },
   {
    "fieldname": "display_name",
    "fieldtype": "Data",
@@ -47,18 +37,13 @@
   },
   {
    "fieldname": "linked_lead",
-   "fieldtype": "Data",
-   "label": "Linked Lead"
-  },
-  {
-   "fieldname": "linked_patient",
-   "fieldtype": "Data",
-   "hidden": 1,
-   "label": "Legacy Linked Reference"
+   "fieldtype": "Link",
+   "label": "Linked Lead",
+   "options": "Lead"
   }
  ],
  "links": [],
- "modified": "2026-07-16 00:00:00.000000",
+ "modified": "2026-04-09 12:37:52.023873",
  "modified_by": "Administrator",
  "module": "WA Chat Hub",
  "name": "Chat Contact",

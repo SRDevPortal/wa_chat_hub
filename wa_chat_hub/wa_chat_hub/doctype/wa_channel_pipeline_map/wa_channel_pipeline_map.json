@@ -1,32 +1,33 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "format:wacpm-{##}",
+ "autoname": "field:chat_channel_account",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
   "chat_channel_account",
+  "is_default",
   "sr_lead_pipeline",
   "sr_lead_source",
-  "sr_medical_department",
-  "is_active",
-  "company"
+  "is_active"
  ],
  "fields": [
-  {
-   "fieldname": "company",
-   "fieldtype": "Link",
-   "in_list_view": 1,
-   "in_standard_filter": 1,
-   "label": "Company",
-   "options": "AI Company"
-  },
   {
    "fieldname": "chat_channel_account",
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "Interakt Channel Account",
-   "options": "Chat Channel Account"
+   "options": "Chat Channel Account",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "default": "0",
+   "description": "Use this row when a Lead has no valid pipeline.",
+   "fieldname": "is_default",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Default Route"
   },
   {
    "description": "Default for every new CRM Lead from this Interakt account (not per WhatsApp user).",
@@ -43,13 +44,7 @@
    "label": "SR Lead Source"
   },
   {
-   "description": "Legacy field retained for existing records. Not used by ShipKia WhatsApp agent.",
-   "fieldname": "sr_medical_department",
-   "fieldtype": "Data",
-   "hidden": 1,
-   "label": "Legacy Department"
-  },
-  {
+   "db_index": 1,
    "default": "1",
    "fieldname": "is_active",
    "fieldtype": "Check",
@@ -72,6 +67,5 @@
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
- "track_changes": 1,
- "modified": "2026-07-16 00:00:00.000000"
+ "track_changes": 1
 }

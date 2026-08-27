@@ -1,9 +1,8 @@
 # Copyright (c) 2026, SAI and Contributors
 # See license.txt
 
-# import frappe
+from frappe import _dict
 from frappe.tests.utils import FrappeTestCase
-from frappe._dict import _dict
 
 from wa_chat_hub.ai.lead_scoring import _is_chat_reply_only_provider
 from wa_chat_hub.setup_autopilot import (

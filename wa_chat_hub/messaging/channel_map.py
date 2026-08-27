@@ -13,6 +13,8 @@ from wa_chat_hub.security import safe_ai_exists, safe_ai_get_all, safe_ai_get_do
 PIPELINE_MAP_FIELDS = [
     "name",
     "chat_channel_account",
+    "is_default",
+    "is_department_default",
     "sr_lead_pipeline",
     "sr_lead_source",
     "is_active",
@@ -51,11 +53,50 @@ def get_pipeline_map(
     return row
 
 
-def get_channel_account_for_lead(lead) -> str:
+def get_default_pipeline_map() -> Dict[str, Any]:
+    """Single active default map for records missing valid routing fields."""
+    if not safe_ai_exists("DocType", "WA Channel Pipeline Map"):
+        frappe.throw(_("WA Channel Pipeline Map is not installed."))
+    if not _pipeline_map_has_field("is_default"):
+        frappe.throw(_("WA Channel Pipeline Map is missing Default Route field. Please migrate the site."))
+
+    rows = safe_ai_get_all(
+        "WA Channel Pipeline Map",
+        filters={"is_active": 1, "is_default": 1},
+        fields=_pipeline_map_fields(),
+        limit_page_length=2,
+    )
+    if not rows:
+        frappe.throw(_("No active default WA Channel Pipeline Map found. Mark one row as Default Route."))
+    if len(rows) > 1:
+        frappe.throw(_("Multiple active default WA Channel Pipeline Map records found. Keep only one Default Route."))
+
+    row = rows[0]
+    _validate_channel_account(row["chat_channel_account"])
+    return row
+
+
+def get_pipeline_map_for_lead(lead) -> Dict[str, Any]:
     pipeline = lead.get("sr_lead_pipeline")
-    if not pipeline:
-        frappe.throw(_("CRM Lead {0} does not have a pipeline (sr_lead_pipeline).").format(lead.name))
-    return get_pipeline_map(pipeline=pipeline)["chat_channel_account"]
+    if _linked_record_exists("SR Lead Pipeline", pipeline):
+        return get_pipeline_map(pipeline=pipeline)
+    return get_default_pipeline_map()
+
+
+def get_pipeline_map_for_patient(patient) -> Dict[str, Any]:
+    frappe.throw(_("Patient pipeline mapping is disabled for ShipKia customer flow."))
+
+
+def resolve_patient_department_map(patient) -> Optional[Dict[str, Any]]:
+    return None
+
+
+def get_channel_account_for_lead(lead) -> str:
+    return get_pipeline_map_for_lead(lead)["chat_channel_account"]
+
+
+def get_channel_account_for_patient(patient) -> str:
+    frappe.throw(_("Patient channel mapping is disabled for ShipKia customer flow."))
 
 
 def get_pipeline_map_row_for_channel_account(channel_account: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -88,7 +129,8 @@ def get_source_for_channel_account(channel_account: Optional[str]) -> Optional[s
 
 def get_channel_account_defaults(channel_account: Optional[str]) -> Dict[str, Any]:
     """
-    Defaults from WA Channel Pipeline Map for one Interakt Chat Channel Account.
+    Defaults from WA Channel Pipeline Map for one Interakt Chat Channel Account:
+    sr_lead_pipeline (every new CRM Lead) and sr_medical_department (Patient / Interakt sync — not Chat Conversation.department).
     """
     row = get_pipeline_map_row_for_channel_account(channel_account)
     if not row:
@@ -123,11 +165,26 @@ def _validate_channel_account(channel_account: str) -> None:
 
 def _pipeline_map_fields() -> list[str]:
     fields = list(PIPELINE_MAP_FIELDS)
+    return [field for field in fields if _pipeline_map_has_field(field)]
+
+
+def _pipeline_map_has_field(fieldname: str) -> bool:
+    if fieldname in {"name", "is_active", "chat_channel_account", "sr_lead_pipeline"}:
+        return True
     try:
         meta = frappe.get_meta("WA Channel Pipeline Map")
     except Exception:
-        return [field for field in fields if field != "sr_lead_source"]
-    return [field for field in fields if field != "sr_lead_source" or meta.has_field(field)]
+        return False
+    return meta.has_field(fieldname)
+
+
+def _linked_record_exists(doctype: str, name: Optional[str]) -> bool:
+    if not name:
+        return False
+    try:
+        return bool(safe_ai_exists(doctype, name))
+    except Exception:
+        return False
 
 
 def _missing_map_hint(*, pipeline: Optional[str]) -> str:

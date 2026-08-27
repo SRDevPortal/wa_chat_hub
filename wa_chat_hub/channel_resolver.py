@@ -5,7 +5,7 @@ from typing import Any
 import frappe
 from frappe import _
 
-from wa_chat_hub.messaging.channel_map import get_pipeline_map
+from wa_chat_hub.messaging.channel_map import get_pipeline_map, get_pipeline_map_for_lead
 from wa_chat_hub.security import (
     safe_ai_get_doc,
     safe_ai_get_value,
@@ -17,14 +17,12 @@ from wa_chat_hub.services import DEFAULT_CONVERSATION_STATUS, get_or_create_cont
 
 def get_channel_context_for_lead(lead):
     """Legacy name: returns pipeline map row as a simple namespace for callers."""
-    pipeline = lead.get("sr_lead_pipeline")
-    if not pipeline:
-        frappe.throw(_("CRM Lead {0} does not have a pipeline.").format(lead.name))
-    row = get_pipeline_map(pipeline=pipeline)
+    row = get_pipeline_map_for_lead(lead)
     return frappe._dict(
         name=row["name"],
         channel_account=row["chat_channel_account"],
         pipeline=row["sr_lead_pipeline"],
+        department=None,
     )
 
 
@@ -52,15 +50,18 @@ def ensure_interakt_contact_for_reference(
     reference_doc,
     *,
     pipeline: str | None = None,
+    allow_unmapped: bool = False,
+    pipeline_map_row: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Sync a ShipKia lead/contact to Interakt."""
+    """Sync Chat Contact to Interakt (CRM Lead, Patient, etc.)."""
     from wa_chat_hub.interakt.contact_sync import push_contact_to_interakt
 
-    pipeline_map_row = None
-    try:
-        pipeline_map_row = get_pipeline_map(channel_account=channel_account)
-    except Exception:
-        pass
+    if pipeline_map_row is None:
+        try:
+            pipeline_map_row = get_pipeline_map(channel_account=channel_account)
+        except Exception:
+            if allow_unmapped:
+                pipeline_map_row = {}
 
     return push_contact_to_interakt(
         channel_account,
@@ -80,14 +81,34 @@ def ensure_interakt_contact_for_lead(channel_account: str, contact: str, lead) -
 
 
 def get_or_create_mapped_lead_conversation(lead) -> dict[str, Any]:
-    pipeline_row = get_pipeline_map(pipeline=lead.get("sr_lead_pipeline"))
+    pipeline_row = get_pipeline_map_for_lead(lead)
     channel_account = pipeline_row["chat_channel_account"]
+    return get_or_create_lead_conversation_for_channel_account(
+        lead,
+        channel_account,
+        pipeline_map=pipeline_row.get("name"),
+        pipeline=pipeline_row.get("sr_lead_pipeline"),
+    )
+
+
+def get_or_create_lead_conversation_for_channel_account(
+    lead,
+    channel_account: str,
+    *,
+    pipeline_map: str | None = None,
+    pipeline: str | None = None,
+) -> dict[str, Any]:
+    """Create a lead conversation on an explicitly selected Interakt account."""
+    account = safe_ai_get_doc("Chat Channel Account", channel_account)
+    if not account.is_active or account.channel_type != "Interakt":
+        frappe.throw(_("WhatsApp channel {0} must be an active Interakt account.").format(channel_account))
+
     contact = get_or_create_lead_contact(lead)
     ensure_interakt_contact_for_reference(
         channel_account,
         contact,
         lead,
-        pipeline=pipeline_row.get("sr_lead_pipeline"),
+        pipeline=pipeline or lead.get("sr_lead_pipeline"),
     )
 
     conversation, created = _get_or_create_reference_conversation(
@@ -117,7 +138,84 @@ def get_or_create_mapped_lead_conversation(lead) -> dict[str, Any]:
 
     return {
         "conversation": conversation,
-        "pipeline_map": pipeline_row["name"],
+        "pipeline_map": pipeline_map,
+        "channel_account": channel_account,
+        "contact": contact,
+        "created": created,
+    }
+
+
+def get_or_create_patient_contact(patient) -> str:
+    frappe.throw(_("Patient contact mapping is disabled for ShipKia customer flow."))
+
+    phone = _get_patient_phone(patient)
+    normalized_phone = normalize_phone(phone)
+    if not normalized_phone:
+        frappe.throw(_("No mobile number found for Patient {0}.").format(patient.name))
+
+    contact_name = get_or_create_contact(
+        phone_number=normalized_phone,
+        display_name=_get_patient_display_name(patient),
+    )
+    safe_ai_set_value(
+        "Chat Contact",
+        contact_name,
+        {
+            "source_doctype": "Patient",
+            "source_name": patient.name,
+        },
+    )
+    return contact_name
+
+
+def get_or_create_mapped_patient_conversation(patient) -> dict[str, Any]:
+    frappe.throw(_("Patient conversation mapping is disabled for ShipKia customer flow."))
+
+
+def get_or_create_patient_conversation_for_channel_account(
+    patient,
+    channel_account: str,
+    *,
+    pipeline_map: str | None = None,
+) -> dict[str, Any]:
+    frappe.throw(_("Patient conversation mapping is disabled for ShipKia customer flow."))
+
+    account = safe_ai_get_doc("Chat Channel Account", channel_account)
+    if not account.is_active or account.channel_type != "Interakt":
+        frappe.throw(_("WhatsApp channel {0} must be an active Interakt account.").format(channel_account))
+
+    contact = get_or_create_patient_contact(patient)
+    ensure_interakt_contact_for_reference(
+        channel_account,
+        contact,
+        patient,
+        allow_unmapped=True,
+        pipeline_map_row={
+            "sr_medical_department": patient.get("sr_medical_department"),
+        },
+    )
+
+    conversation, created = _get_or_create_reference_conversation(
+        contact=contact,
+        channel_account=channel_account,
+        reference_doctype="Patient",
+        reference_name=patient.name,
+        department=_conversation_department_for_account(channel_account),
+    )
+    try:
+        from wa_chat_hub.identity import reconcile_conversation_identity
+
+        reconcile_conversation_identity(
+            conversation,
+            patient=patient.name,
+            source="patient_conversation",
+        )
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "WA Chat Hub Patient Identity Sync Failed")
+
+    return {
+        "conversation": conversation,
+        "pipeline_map": pipeline_map,
         "channel_account": channel_account,
         "contact": contact,
         "created": created,
@@ -241,6 +339,21 @@ def _get_lead_display_name(lead) -> str:
         if lead.get(fieldname):
             return lead.get(fieldname)
     return lead.name
+
+
+def _get_patient_phone(patient) -> str | None:
+    meta = frappe.get_meta("Patient")
+    for fieldname in ("mobile", "mobile_no", "phone", "custom_whatsapp_number"):
+        if meta.has_field(fieldname) and patient.get(fieldname):
+            return patient.get(fieldname)
+    return None
+
+
+def _get_patient_display_name(patient) -> str:
+    for fieldname in ("patient_name", "first_name"):
+        if patient.get(fieldname):
+            return patient.get(fieldname)
+    return patient.name
 
 
 def _split_interakt_phone(phone: str, default_country_code: str) -> tuple[str, str]:

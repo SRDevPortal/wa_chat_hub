@@ -16,6 +16,7 @@ def search_knowledge_base(
     top_k: int = 3,
     department: Optional[str] = None,
     channel_account: Optional[str] = None,
+    allowed_names: Optional[set[str]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Return relevant knowledge snippets for the user query.
@@ -25,7 +26,11 @@ def search_knowledge_base(
     if not query or not safe_ai_exists("DocType", "WA AI Knowledge Base"):
         return []
 
-    rows = get_active_knowledge_base(department=department, channel_account=channel_account)
+    rows = get_active_knowledge_base(
+        department=department,
+        channel_account=channel_account,
+        allowed_names=allowed_names,
+    )
     if not rows:
         return []
 

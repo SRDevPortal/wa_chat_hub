@@ -1,5 +1,5 @@
 (function () {
-	const doctypes = ["CRM Lead"];
+	const doctypes = ["CRM Lead", "Lead", "Customer"];
 	const referenceChatStatusEnabled = false;
 	const statusDoctypes = referenceChatStatusEnabled ? ["CRM Lead"] : [];
 

@@ -1,195 +1,347 @@
 {
-  "doctype": "DocType",
-  "name": "WA Chat Hub Settings",
-  "module": "WA Chat Hub",
-  "custom": 0,
-  "istable": 0,
-  "issingle": 1,
-  "track_changes": 1,
-  "engine": "InnoDB",
-  "field_order": [
-    "section_ai",
-    "enable_ai_summary",
-    "enable_ai_reply_draft",
-    "enable_ai_autopilot",
-    "autopilot_mode",
-    "enable_autopilot_reply_batching",
-    "text_autopilot_reply_delay_seconds",
-    "media_autopilot_reply_delay_seconds",
-    "default_model",
-    "system_prompt",
-    "enable_multilingual_replies",
-    "multilingual_reply_policy",
-    "section_access",
-    "service_user",
-    "ai_doctype_permissions",
-    "allow_mcp_access",
-    "allow_erp_read",
-    "allow_erp_write",
-    "allowed_actions",
-    "section_guardrails",
-    "medical_guardrail_policy",
-    "escalation_policy",
-    "section_account_prompts",
-    "account_prompt_maps"
-  ],
-  "fields": [
-    {
-      "fieldname": "section_ai",
-      "fieldtype": "Section Break",
-      "label": "AI"
-    },
-    {
-      "fieldname": "enable_ai_summary",
-      "fieldtype": "Check",
-      "label": "Enable AI Summary",
-      "default": 1
-    },
-    {
-      "fieldname": "enable_ai_reply_draft",
-      "fieldtype": "Check",
-      "label": "Enable AI Reply Draft",
-      "default": 1
-    },
-    {
-      "fieldname": "enable_ai_autopilot",
-      "fieldtype": "Check",
-      "label": "Enable AI Autopilot"
-    },
-    {
-      "fieldname": "autopilot_mode",
-      "fieldtype": "Select",
-      "label": "Autopilot Mode",
-      "options": "Disabled\nSuggest Only\nDraft + Approval\nLimited Auto Reply",
-      "default": "Suggest Only"
-    },
-    {
-      "default": "1",
-      "description": "Wait briefly before AI replies so multiple customer messages can be answered together. Only the latest inbound in the batch will continue.",
-      "fieldname": "enable_autopilot_reply_batching",
-      "fieldtype": "Check",
-      "label": "Enable Autopilot Reply Batching"
-    },
-    {
-      "default": "3",
-      "depends_on": "eval:doc.enable_autopilot_reply_batching",
-      "description": "Seconds to wait before replying to text messages.",
-      "fieldname": "text_autopilot_reply_delay_seconds",
-      "fieldtype": "Int",
-      "label": "Text Autopilot Reply Delay (Seconds)"
-    },
-    {
-      "default": "15",
-      "depends_on": "eval:doc.enable_autopilot_reply_batching",
-      "description": "Seconds to wait before replying to media messages such as image, audio, video, or document.",
-      "fieldname": "media_autopilot_reply_delay_seconds",
-      "fieldtype": "Int",
-      "label": "Media Autopilot Reply Delay (Seconds)"
-    },
-    {
-      "fieldname": "default_model",
-      "fieldtype": "Data",
-      "label": "Default Model"
-    },
-    {
-      "description": "Default for all channel accounts. Overridden when a matching row exists in Per Account AI Prompts.",
-      "fieldname": "system_prompt",
-      "fieldtype": "Long Text",
-      "label": "System Prompt (Global Default)"
-    },
-    {
-      "default": "1",
-      "fieldname": "enable_multilingual_replies",
-      "fieldtype": "Check",
-      "label": "Enable Multilingual Auto-Replies"
-    },
-    {
-      "depends_on": "eval:doc.enable_multilingual_replies",
-      "description": "Appended to the system prompt when Enable Multilingual Auto-Replies is on.",
-      "fieldname": "multilingual_reply_policy",
-      "fieldtype": "Long Text",
-      "label": "Multilingual Reply Policy"
-    },
-    {
-      "fieldname": "section_access",
-      "fieldtype": "Section Break",
-      "label": "ERP / Tool Access"
-    },
-    {
-      "description": "Dedicated user used by WA Chat Hub background jobs and AI runtime. Do not set this to Administrator.",
-      "fieldname": "service_user",
-      "fieldtype": "Link",
-      "label": "WA Chat Hub Service User",
-      "options": "User"
-    },
-    {
-      "description": "Explicit DocType-level access for WA Chat Hub AI/service-worker reads, writes, and deletes. Unlisted DocTypes are denied.",
-      "fieldname": "ai_doctype_permissions",
-      "fieldtype": "Table",
-      "label": "AI DocType Permissions",
-      "options": "WA AI DocType Permission"
-    },
-    {
-      "default": "0",
-      "description": "Allow the AI bot to call tools defined in WA MCP Tool Endpoint.",
-      "fieldname": "allow_mcp_access",
-      "fieldtype": "Check",
-      "label": "Allow MCP Tool Access"
-    },
-    {
-      "fieldname": "allow_erp_read",
-      "fieldtype": "Check",
-      "label": "Allow ERP Read",
-      "default": 1
-    },
-    {
-      "fieldname": "allow_erp_write",
-      "fieldtype": "Check",
-      "label": "Allow ERP Write"
-    },
-    {
-      "fieldname": "allowed_actions",
-      "fieldtype": "Small Text",
-      "label": "Allowed ERP Actions"
-    },
-    {
-      "fieldname": "section_guardrails",
-      "fieldtype": "Section Break",
-      "label": "Guardrails"
-    },
-    {
-      "fieldname": "medical_guardrail_policy",
-      "fieldtype": "Long Text",
-      "hidden": 1,
-      "label": "Legacy Guardrail Policy"
-    },
-    {
-      "fieldname": "escalation_policy",
-      "fieldtype": "Long Text",
-      "label": "Escalation Policy"
-    },
-    {
-      "collapsible": 1,
-      "description": "Map each Chat Channel Account to its own system prompt and policies. Used when the conversation's channel account matches an active row; otherwise global fields above apply.",
-      "fieldname": "section_account_prompts",
-      "fieldtype": "Section Break",
-      "label": "Per Account AI Prompts"
-    },
-    {
-      "fieldname": "account_prompt_maps",
-      "fieldtype": "Table",
-      "label": "Account Prompt Maps",
-      "options": "WA Channel Account Prompt Map"
-    }
-  ],
-  "permissions": [
-    {
-      "role": "System Manager",
-      "read": 1,
-      "write": 1,
-      "create": 1,
-      "delete": 1,
-      "permlevel": 0
-    }
-  ]
+ "doctype": "DocType",
+ "name": "WA Chat Hub Settings",
+ "module": "WA Chat Hub",
+ "custom": 0,
+ "istable": 0,
+ "issingle": 1,
+ "track_changes": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "section_ai",
+  "enable_ai_summary",
+  "enable_ai_reply_draft",
+  "enable_ai_autopilot",
+  "autopilot_mode",
+  "enable_autopilot_reply_batching",
+  "text_autopilot_reply_delay_seconds",
+  "media_autopilot_reply_delay_seconds",
+  "default_model",
+  "system_prompt",
+  "enable_multilingual_replies",
+  "multilingual_reply_policy",
+  "section_access",
+  "service_user",
+  "ai_doctype_permissions",
+  "allow_mcp_access",
+  "allow_erp_read",
+  "allow_erp_write",
+  "allowed_actions",
+  "section_guardrails",
+  "medical_guardrail_policy",
+  "escalation_policy",
+  "section_performance",
+  "enable_indexed_phone_lookup",
+  "enable_webhook_idempotency",
+  "enable_conversation_job_deduplication",
+  "conversation_job_deduplication_setting_active",
+  "enable_conditional_conversation_updates",
+  "phone_backfill_batch_size",
+  "raw_payload_retention_days",
+  "raw_payload_archive_batch_size",
+  "enable_raw_payload_archival",
+  "version_retention_days",
+  "version_archive_batch_size",
+  "enable_version_archival",
+  "section_account_prompts",
+  "account_prompt_maps",
+  "section_app_updates",
+  "enable_app_update_system",
+  "app_update_system_initialized",
+  "active_app_update_count",
+  "last_app_update_result",
+  "new_app_update",
+  "manage_app_updates",
+  "view_app_update_logs"
+ ],
+ "fields": [
+  {
+   "fieldname": "section_ai",
+   "fieldtype": "Section Break",
+   "label": "AI"
+  },
+  {
+   "fieldname": "enable_ai_summary",
+   "fieldtype": "Check",
+   "label": "Enable AI Summary",
+   "default": 1
+  },
+  {
+   "fieldname": "enable_ai_reply_draft",
+   "fieldtype": "Check",
+   "label": "Enable AI Reply Draft",
+   "default": 1
+  },
+  {
+   "fieldname": "enable_ai_autopilot",
+   "fieldtype": "Check",
+   "label": "Enable AI Autopilot"
+  },
+  {
+   "fieldname": "autopilot_mode",
+   "fieldtype": "Select",
+   "label": "Autopilot Mode",
+   "options": "Disabled\nSuggest Only\nDraft + Approval\nLimited Auto Reply",
+   "default": "Suggest Only"
+  },
+  {
+   "default": "1",
+   "description": "Wait briefly before AI replies so multiple customer messages can be answered together. Only the latest inbound in the batch will continue.",
+   "fieldname": "enable_autopilot_reply_batching",
+   "fieldtype": "Check",
+   "label": "Enable Autopilot Reply Batching"
+  },
+  {
+   "default": "3",
+   "depends_on": "eval:doc.enable_autopilot_reply_batching",
+   "description": "Seconds to wait before replying to text messages.",
+   "fieldname": "text_autopilot_reply_delay_seconds",
+   "fieldtype": "Int",
+   "label": "Text Autopilot Reply Delay (Seconds)"
+  },
+  {
+   "default": "15",
+   "depends_on": "eval:doc.enable_autopilot_reply_batching",
+   "description": "Seconds to wait before replying to media messages such as image, audio, video, or document.",
+   "fieldname": "media_autopilot_reply_delay_seconds",
+   "fieldtype": "Int",
+   "label": "Media Autopilot Reply Delay (Seconds)"
+  },
+  {
+   "fieldname": "default_model",
+   "fieldtype": "Data",
+   "label": "Default Model"
+  },
+  {
+   "description": "Default for all channel accounts. Overridden when a matching row exists in Per Account AI Prompts.",
+   "fieldname": "system_prompt",
+   "fieldtype": "Long Text",
+   "label": "System Prompt (Global Default)"
+  },
+  {
+   "default": "1",
+   "fieldname": "enable_multilingual_replies",
+   "fieldtype": "Check",
+   "label": "Enable Multilingual Auto-Replies"
+  },
+  {
+   "depends_on": "eval:doc.enable_multilingual_replies",
+   "description": "Appended to the system prompt when Enable Multilingual Auto-Replies is on.",
+   "fieldname": "multilingual_reply_policy",
+   "fieldtype": "Long Text",
+   "label": "Multilingual Reply Policy"
+  },
+  {
+   "fieldname": "section_access",
+   "fieldtype": "Section Break",
+   "label": "ERP / Tool Access"
+  },
+  {
+   "description": "Dedicated user used by WA Chat Hub background jobs and AI runtime. Do not set this to Administrator.",
+   "fieldname": "service_user",
+   "fieldtype": "Link",
+   "label": "WA Chat Hub Service User",
+   "options": "User"
+  },
+  {
+   "description": "Explicit DocType-level access for WA Chat Hub AI/service-worker reads, writes, and deletes. Unlisted DocTypes are denied.",
+   "fieldname": "ai_doctype_permissions",
+   "fieldtype": "Table",
+   "label": "AI DocType Permissions",
+   "options": "WA AI DocType Permission"
+  },
+  {
+   "default": "0",
+   "description": "Allow the AI bot to call tools defined in WA MCP Tool Endpoint.",
+   "fieldname": "allow_mcp_access",
+   "fieldtype": "Check",
+   "label": "Allow MCP Tool Access"
+  },
+  {
+   "fieldname": "allow_erp_read",
+   "fieldtype": "Check",
+   "label": "Allow ERP Read",
+   "default": 1
+  },
+  {
+   "fieldname": "allow_erp_write",
+   "fieldtype": "Check",
+   "label": "Allow ERP Write"
+  },
+  {
+   "fieldname": "allowed_actions",
+   "fieldtype": "Small Text",
+   "label": "Allowed ERP Actions"
+  },
+  {
+   "fieldname": "section_guardrails",
+   "fieldtype": "Section Break",
+   "label": "Guardrails"
+  },
+  {
+   "fieldname": "medical_guardrail_policy",
+   "fieldtype": "Long Text",
+   "label": "Guardrail Policy"
+  },
+  {
+   "fieldname": "escalation_policy",
+   "fieldtype": "Long Text",
+   "label": "Escalation Policy"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_performance",
+   "fieldtype": "Section Break",
+   "label": "Performance and Retention"
+  },
+  {
+   "default": "0",
+   "description": "Use exact normalized phone keys instead of leading-wildcard telephone searches.",
+   "fieldname": "enable_indexed_phone_lookup",
+   "fieldtype": "Check",
+   "label": "Enable Indexed Phone Lookup"
+  },
+  {
+   "default": "1",
+   "description": "Prevent repeated provider webhooks from inserting the same Chat Message twice.",
+   "fieldname": "enable_webhook_idempotency",
+   "fieldtype": "Check",
+   "label": "Enable Webhook Idempotency"
+  },
+  {
+   "default": "1",
+   "description": "Deduplicate repeatable lead-scoring jobs for the same conversation. Provider webhook and outbound-send idempotency remain mandatory.",
+   "fieldname": "enable_conversation_job_deduplication",
+   "fieldtype": "Check",
+   "label": "Enable Conversation Job Deduplication"
+  },
+  {
+   "default": "0",
+   "fieldname": "conversation_job_deduplication_setting_active",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "Conversation Job Deduplication Setting Active",
+   "read_only": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "enable_conditional_conversation_updates",
+   "fieldtype": "Check",
+   "label": "Enable Conditional Conversation Updates"
+  },
+  {
+   "default": "2000",
+   "fieldname": "phone_backfill_batch_size",
+   "fieldtype": "Int",
+   "label": "Phone Backfill Batch Size"
+  },
+  {
+   "default": "30",
+   "fieldname": "raw_payload_retention_days",
+   "fieldtype": "Int",
+   "label": "Raw Payload Retention (Days)"
+  },
+  {
+   "default": "500",
+   "fieldname": "raw_payload_archive_batch_size",
+   "fieldtype": "Int",
+   "label": "Raw Payload Archive Batch Size"
+  },
+  {
+   "default": "0",
+   "fieldname": "enable_raw_payload_archival",
+   "fieldtype": "Check",
+   "label": "Enable Raw Payload Archival"
+  },
+  {
+   "default": "180",
+   "fieldname": "version_retention_days",
+   "fieldtype": "Int",
+   "label": "Chat Version Retention (Days)"
+  },
+  {
+   "default": "2000",
+   "fieldname": "version_archive_batch_size",
+   "fieldtype": "Int",
+   "label": "Version Archive Batch Size"
+  },
+  {
+   "default": "0",
+   "fieldname": "enable_version_archival",
+   "fieldtype": "Check",
+   "label": "Enable Chat Version Archival"
+  },
+  {
+   "collapsible": 1,
+   "description": "Map each Chat Channel Account to its own system prompt and policies. Used when the conversation's channel account matches an active row; otherwise global fields above apply.",
+   "fieldname": "section_account_prompts",
+   "fieldtype": "Section Break",
+   "label": "Per Account AI Prompts"
+  },
+  {
+   "fieldname": "account_prompt_maps",
+   "fieldtype": "Table",
+   "label": "Account Prompt Maps",
+   "options": "WA Channel Account Prompt Map"
+  },
+  {
+   "collapsible": 1,
+   "description": "Create approved Python apply/revert updates and manage their lifecycle without editing app files manually.",
+   "fieldname": "section_app_updates",
+   "fieldtype": "Section Break",
+   "label": "App Updates"
+  },
+  {
+   "default": "1",
+   "fieldname": "enable_app_update_system",
+   "fieldtype": "Check",
+   "label": "Enable App Update System"
+  },
+  {
+   "default": "0",
+   "fieldname": "app_update_system_initialized",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "App Update System Initialized",
+   "read_only": 1
+  },
+  {
+   "fieldname": "active_app_update_count",
+   "fieldtype": "Int",
+   "label": "Active Updates",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_app_update_result",
+   "fieldtype": "Small Text",
+   "label": "Latest Update Activity",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.enable_app_update_system",
+   "fieldname": "new_app_update",
+   "fieldtype": "Button",
+   "label": "New App Update"
+  },
+  {
+   "fieldname": "manage_app_updates",
+   "fieldtype": "Button",
+   "label": "Manage App Updates"
+  },
+  {
+   "fieldname": "view_app_update_logs",
+   "fieldtype": "Button",
+   "label": "View Update Logs"
+  }
+ ],
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "permlevel": 0
+  }
+ ]
 }

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import time
 from contextlib import contextmanager
 from typing import Any, Dict, Optional
@@ -10,6 +9,8 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 import frappe
 from frappe import _
+from frappe.utils import cint, now_datetime
+from frappe.utils.file_lock import LockTimeoutError
 from frappe.utils.synchronization import filelock
 
 from wa_chat_hub.ai.ocr_summary import build_attachment_filename, process_attachment_for_lead_summary
@@ -18,11 +19,19 @@ from wa_chat_hub.ai.media_transcription import (
     process_transcript_for_lead_summary,
 )
 from wa_chat_hub.db_retry import is_db_lock_conflict, with_db_lock_retry
+from wa_chat_hub.messaging.idempotency import (
+    build_message_dedupe_key,
+    webhook_idempotency_enabled,
+)
+from wa_chat_hub.phone_normalization import canonical_phone as _canonical_phone
+from wa_chat_hub.phone_normalization import normalize_phone
+from wa_chat_hub.performance_flags import conversation_job_enqueue_options
 from wa_chat_hub.prompts import (
     get_conversation_crm_lead,
     get_conversation_linked_reference,
     set_conversation_crm_lead,
 )
+from wa_chat_hub.policy import get_channel_policy
 from wa_chat_hub.security import (
     WAChatHubSecurityError,
     assert_ai_doctype_permission,
@@ -37,10 +46,33 @@ from wa_chat_hub.task_logger import elapsed, task_log
 
 
 DEFAULT_CONVERSATION_STATUS = "Open"
+ACTIVE_CONVERSATION_STATUSES = ("Open", "Pending", "Resolved")
 WA_LEAD_CONTEXT_MARKER = "WA_CHAT_HUB_CONTEXT_JSON"
 WA_LEAD_PAYLOAD_MARKER = "WA_CHAT_HUB_PAYLOAD_JSON"
-APPEND_MESSAGE_LOCK_TIMEOUT = 30
-CONVERSATION_UPDATE_LOCK_TIMEOUT = 30
+APPEND_MESSAGE_LOCK_TIMEOUT = 8
+CONVERSATION_UPDATE_LOCK_TIMEOUT = 8
+FILE_LOCK_RETRY_ATTEMPTS = 3
+FILE_LOCK_RETRY_DELAY_SECONDS = 0.35
+CONTACT_DUPLICATE_VISIBILITY_ATTEMPTS = 20
+CONTACT_DUPLICATE_VISIBILITY_DELAY_SECONDS = 0.25
+PHONE_INDEX_FIELD_BY_SOURCE = {
+    "mobile": "vobiz_mobile_last10",
+    "mobile_no": "vobiz_mobile_last10",
+    "phone": "vobiz_phone_last10",
+    "custom_whatsapp_number": "vobiz_whatsapp_last10",
+}
+PHONE_CANONICAL_INDEX_FIELDS = ("vobiz_normalized_phone", "sr_mobile_norm")
+
+
+def _indexed_phone_lookup_enabled() -> bool:
+    """Keep legacy lookup available until normalized-key coverage is validated."""
+    try:
+        settings = frappe.get_cached_doc("WA Chat Hub Settings")
+        if not settings.meta.has_field("enable_indexed_phone_lookup"):
+            return False
+        return bool(cint(settings.enable_indexed_phone_lookup))
+    except Exception:
+        return False
 
 
 @contextmanager
@@ -71,26 +103,6 @@ def _lead_creation_error_details(traceback: str, payload: Dict[str, Any], contex
     )
 
 
-def normalize_phone(phone: Optional[str]) -> str:
-    if not phone:
-        return ""
-    return "".join(ch for ch in str(phone) if ch.isdigit())
-
-
-def _doctype_has_field(doctype: str, fieldname: str) -> bool:
-    try:
-        return bool(frappe.get_meta(doctype).has_field(fieldname))
-    except Exception:
-        return False
-
-
-def _channel_account_company(channel_account: Optional[str]) -> Optional[str]:
-    if not channel_account or not _doctype_has_field("Chat Channel Account", "company"):
-        return None
-    company = safe_ai_get_value("Chat Channel Account", channel_account, "company")
-    return str(company).strip() if company else None
-
-
 def _record_lock_name(prefix: str, token: str) -> str:
     digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:24]
     return f"wa_chat_{prefix}_{digest}"
@@ -112,6 +124,37 @@ def conversation_update_lock(conversation: str):
         yield
 
 
+def _is_file_lock_timeout(exc: Exception) -> bool:
+    return isinstance(exc, LockTimeoutError)
+
+
+def _is_duplicate_entry(exc: Exception) -> bool:
+    return isinstance(exc, frappe.DuplicateEntryError) or exc.__class__.__name__ == "DuplicateEntryError"
+
+
+def _sleep_before_file_lock_retry(attempt: int) -> None:
+    time.sleep(FILE_LOCK_RETRY_DELAY_SECONDS * attempt)
+
+
+def _run_with_file_lock_retry(label: str, action):
+    for attempt in range(1, FILE_LOCK_RETRY_ATTEMPTS + 1):
+        try:
+            return action()
+        except Exception as exc:
+            if not _is_file_lock_timeout(exc) or attempt >= FILE_LOCK_RETRY_ATTEMPTS:
+                raise
+            task_log(
+                "file_lock",
+                "retry",
+                label=label,
+                attempt=attempt,
+                error=str(exc)[:140],
+            )
+            _sleep_before_file_lock_retry(attempt)
+
+    raise RuntimeError(f"File lock retry exhausted for {label}")
+
+
 def _valid_link(doctype: str, value: Optional[str]) -> Optional[str]:
     """Return value only if it exists in the linked DocType (avoids webhook hard-fail)."""
     name = (value or "").strip()
@@ -129,7 +172,7 @@ def _valid_link(doctype: str, value: Optional[str]) -> Optional[str]:
 
 
 def classify_department(channel_department: Optional[str], detected_department: Optional[str] = None) -> Optional[str]:
-    return (detected_department or channel_department or "").strip() or None
+    return _valid_link("Department", detected_department or channel_department)
 
 
 def route_conversation(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -202,8 +245,12 @@ def get_or_create_contact(phone_number: str, display_name: Optional[str] = None)
     })
     try:
         safe_ai_insert(doc)
-    except frappe.DuplicateEntryError:
-        existing = safe_ai_get_value("Chat Contact", {"phone_number": normalized}, "name") or normalized
+    except Exception as exc:
+        if not _is_duplicate_entry(exc):
+            raise
+        existing = _wait_for_duplicate_contact(normalized)
+        if not existing:
+            raise
         if display_name and safe_ai_exists("Chat Contact", existing):
             with_db_lock_retry(
                 "contact_display_name_update",
@@ -219,6 +266,15 @@ def get_or_create_contact(phone_number: str, display_name: Optional[str] = None)
     return doc.name
 
 
+def _wait_for_duplicate_contact(phone_number: str) -> Optional[str]:
+    for attempt in range(CONTACT_DUPLICATE_VISIBILITY_ATTEMPTS):
+        existing = safe_ai_get_value("Chat Contact", {"phone_number": phone_number}, "name")
+        if existing:
+            return existing
+        time.sleep(CONTACT_DUPLICATE_VISIBILITY_DELAY_SECONDS)
+    return None
+
+
 def get_or_create_conversation(
     channel_account: str,
     contact: str,
@@ -226,9 +282,11 @@ def get_or_create_conversation(
     assigned_to: Optional[str] = None,
     status: str = DEFAULT_CONVERSATION_STATUS,
 ) -> str:
-    filters = {"channel_account": channel_account, "contact": contact, "status": ["!=", "Closed"]}
-    company = _channel_account_company(channel_account)
-    has_company_field = _doctype_has_field("Chat Conversation", "company")
+    filters = {
+        "channel_account": channel_account,
+        "contact": contact,
+        "status": ["in", ACTIVE_CONVERSATION_STATUSES],
+    }
 
     existing = with_db_lock_retry(
         "conversation_lookup",
@@ -236,8 +294,6 @@ def get_or_create_conversation(
     )
     if existing:
         updates = {}
-        if has_company_field and company and not safe_ai_get_value("Chat Conversation", existing, "company"):
-            updates["company"] = company
         if department:
             updates["department"] = department
         if assigned_to:
@@ -255,17 +311,14 @@ def get_or_create_conversation(
         return existing
 
     def _insert_conversation() -> str:
-        values = {
+        doc = frappe.get_doc({
             "doctype": "Chat Conversation",
             "channel_account": channel_account,
             "contact": contact,
             "department": department,
             "assigned_to": assigned_to,
             "status": status,
-        }
-        if has_company_field and company:
-            values["company"] = company
-        doc = frappe.get_doc(values)
+        })
         try:
             safe_ai_insert(doc)
             return doc.name
@@ -293,8 +346,12 @@ def append_message(payload: Dict[str, Any]) -> Dict[str, str]:
     frappe.flags.wa_chat_in_append_message = True
     frappe.local.wa_chat_in_append_message = True
     try:
-        with filelock(_append_message_lock_name(payload), timeout=APPEND_MESSAGE_LOCK_TIMEOUT):
-            result = _append_message_impl(payload)
+        result = _run_with_file_lock_retry(
+            "append_message",
+            lambda: _append_message_with_lock(payload),
+        )
+        if not result.get("duplicate"):
+            _run_append_message_followups(payload, result)
         task_log(
             "message",
             "append_done",
@@ -303,7 +360,7 @@ def append_message(payload: Dict[str, Any]) -> Dict[str, str]:
             message=result.get("message"),
             duration_sec=elapsed(started),
         )
-        return result
+        return _append_message_public_result(result)
     except Exception as exc:
         task_log(
             "message",
@@ -318,6 +375,25 @@ def append_message(payload: Dict[str, Any]) -> Dict[str, str]:
         frappe.local.wa_chat_in_append_message = False
 
 
+def _append_message_with_lock(payload: Dict[str, Any]) -> Dict[str, str]:
+    with filelock(_append_message_lock_name(payload), timeout=APPEND_MESSAGE_LOCK_TIMEOUT):
+        result = _append_message_impl(payload)
+        # Make the core append visible before releasing the per-chat lock.
+        # Follow-up work runs after this lock, and concurrent webhooks for the same
+        # new contact must be able to see the committed Chat Contact/Conversation.
+        frappe.db.commit()
+        return result
+
+
+def _append_message_public_result(result: Dict[str, str]) -> Dict[str, str]:
+    return {
+        "contact": result.get("contact"),
+        "conversation": result.get("conversation"),
+        "message": result.get("message"),
+        "duplicate": bool(result.get("duplicate")),
+    }
+
+
 def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
     phone_number = normalize_phone(payload.get("phone_number") or payload.get("to") or payload.get("from"))
     if not phone_number:
@@ -325,21 +401,25 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
     contact = get_or_create_contact(phone_number=phone_number, display_name=payload.get("display_name"))
 
     channel_account = payload["channel_account"]
-    company = _channel_account_company(channel_account)
     existing_conversation = safe_ai_get_value(
         "Chat Conversation",
-        {"channel_account": channel_account, "contact": contact, "status": ["!=", "Closed"]},
+        {
+            "channel_account": channel_account,
+            "contact": contact,
+            "status": ["in", ACTIVE_CONVERSATION_STATUSES],
+        },
         "name",
     )
 
     # Preserve existing conversations: map defaults apply only when creating a new thread.
-    # Department is a plain label here so WA Chat Hub can run without ERPNext's Department DocType.
-    channel_department = (payload.get("channel_department") or "").strip() or None
+    # Chat Conversation.department → ERPNext "Department", not Medical Department.
+    # sr_medical_department on WA Channel Pipeline Map is only for Patient routing / Interakt traits.
+    channel_department = _valid_link("Department", payload.get("channel_department"))
     if not channel_department and not existing_conversation:
         account_department = safe_ai_get_value(
             "Chat Channel Account", channel_account, "department"
         )
-        channel_department = (account_department or "").strip() or None
+        channel_department = _valid_link("Department", account_department)
 
     routing = route_conversation({
         "channel_department": channel_department,
@@ -357,12 +437,48 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
     )
 
     direction = payload.get("direction", "Inbound")
+    provider_name = str(
+        payload.get("provider_name") or payload.get("provider") or payload.get("channel_type") or "unknown"
+    ).strip()
+    provider_message_id = payload.get("provider_message_id")
+    channel_message_id = payload.get("channel_message_id")
+    provider_event_id = payload.get("provider_event_id")
+    explicit_dedupe_key = None
+    if direction == "Outbound" and payload.get("sender_type") == "System":
+        explicit_dedupe_key = str(payload.get("dedupe_key") or "").strip() or None
+    dedupe_key = explicit_dedupe_key
+    if not dedupe_key and webhook_idempotency_enabled():
+        dedupe_key = build_message_dedupe_key(
+            conversation=conversation,
+            provider_name=provider_name,
+            provider_message_id=provider_message_id,
+            channel_message_id=channel_message_id,
+            provider_event_id=provider_event_id,
+        )
+    if dedupe_key:
+        existing_message = safe_ai_get_value("Chat Message", {"dedupe_key": dedupe_key}, "name")
+        if existing_message:
+            task_log(
+                "message",
+                "append_duplicate",
+                conversation=conversation,
+                message=existing_message,
+                provider=provider_name,
+            )
+            return {
+                "contact": contact,
+                "conversation": conversation,
+                "message": existing_message,
+                "phone_number": phone_number,
+                "direction": direction,
+                "duplicate": True,
+            }
 
     delivery_status = payload.get("delivery_status")
     if not delivery_status:
         delivery_status = "Received" if direction == "Inbound" else "Pending"
 
-    message_values = {
+    message = frappe.get_doc({
         "doctype": "Chat Message",
         "conversation": conversation,
         "direction": direction,
@@ -371,42 +487,108 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
         "body": payload.get("body"),
         "media_url": payload.get("media_url"),
         "attachment_file": payload.get("attachment_file"),
-        "channel_message_id": payload.get("channel_message_id"),
+        "channel_message_id": channel_message_id,
+        "provider_message_id": provider_message_id,
+        "provider_name": provider_name,
+        "provider_event_id": provider_event_id,
+        "dedupe_key": dedupe_key,
         "delivery_status": delivery_status,
         "raw_payload": frappe.as_json(payload),
         "raw_transport_payload": frappe.as_json(payload.get("raw_transport_payload") or {}),
+    })
+
+    savepoint = "wa_chat_message_insert"
+    frappe.db.savepoint(savepoint)
+    try:
+        # Open the window before insert so after_insert automation observes active state.
+        if direction == "Inbound":
+            try:
+                from frappe.utils import now_datetime
+                from wa_chat_hub.messaging.windows import update_windows_on_message
+
+                update_windows_on_message(
+                    conversation,
+                    direction=direction,
+                    sender_type=payload.get("sender_type", "Customer"),
+                    content_type=payload.get("content_type", "Text"),
+                    raw_payload=payload.get("raw_payload") or payload,
+                    message_time=str(now_datetime()),
+                    template_category=payload.get("template_category"),
+                )
+            except Exception:
+                frappe.log_error(frappe.get_traceback(), "Messaging Window Update Failed")
+
+        safe_ai_insert(message)
+        frappe.db.release_savepoint(savepoint)
+    except Exception as exc:
+        if not dedupe_key or not _is_duplicate_entry(exc):
+            raise
+        frappe.db.rollback(save_point=savepoint)
+        existing_message = safe_ai_get_value("Chat Message", {"dedupe_key": dedupe_key}, "name")
+        if not existing_message:
+            raise
+        task_log(
+            "message",
+            "append_duplicate_race",
+            conversation=conversation,
+            message=existing_message,
+            provider=provider_name,
+        )
+        return {
+            "contact": contact,
+            "conversation": conversation,
+            "message": existing_message,
+            "phone_number": phone_number,
+            "direction": direction,
+            "duplicate": True,
+        }
+
+    try:
+        _run_with_file_lock_retry(
+            "conversation_update_after_message",
+            lambda: update_conversation_after_message(conversation, payload),
+        )
+    except LockTimeoutError as exc:
+        task_log(
+            "message",
+            "conversation_update_lock_timeout",
+            conversation=conversation,
+            message=message.name,
+            direction=direction,
+            error=str(exc)[:140],
+        )
+    return {
+        "contact": contact,
+        "conversation": conversation,
+        "message": message.name,
+        "phone_number": phone_number,
+        "direction": direction,
     }
-    if _doctype_has_field("Chat Message", "company") and company:
-        message_values["company"] = company
-    message = frappe.get_doc(message_values)
 
-    # Open 24h window before insert so AI autopilot (after_insert hook) sees an active window.
-    if direction == "Inbound":
+
+def _run_append_message_followups(payload: Dict[str, Any], result: Dict[str, str]) -> None:
+    conversation = result.get("conversation")
+    contact = result.get("contact")
+    message_name = result.get("message")
+    phone_number = result.get("phone_number") or normalize_phone(
+        payload.get("phone_number") or payload.get("to") or payload.get("from")
+    )
+    direction = result.get("direction") or payload.get("direction", "Inbound")
+
+    message = None
+    if message_name:
         try:
-            from frappe.utils import now_datetime
-            from wa_chat_hub.messaging.windows import update_windows_on_message
-
-            update_windows_on_message(
-                conversation,
-                direction=direction,
-                sender_type=payload.get("sender_type", "Customer"),
-                content_type=payload.get("content_type", "Text"),
-                raw_payload=payload.get("raw_payload") or payload,
-                message_time=str(now_datetime()),
-                template_category=payload.get("template_category"),
-            )
+            message = safe_ai_get_doc("Chat Message", message_name)
         except Exception:
-            frappe.log_error(frappe.get_traceback(), "Messaging Window Update Failed")
+            frappe.log_error(frappe.get_traceback(), "WA Chat Hub Message Reload Failed")
 
-    safe_ai_insert(message)
-
-    if payload.get("attachment_file"):
+    if message and payload.get("attachment_file"):
         try:
             _attach_outbound_file_to_message(message, str(payload.get("attachment_file")))
         except Exception:
             frappe.log_error(frappe.get_traceback(), "Outbound Attachment Link Failed")
 
-    if direction == "Inbound":
+    if direction == "Inbound" and conversation and contact:
         try:
             _link_or_create_master_record(
                 conversation=conversation,
@@ -414,33 +596,32 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
                 phone_number=phone_number,
                 display_name=payload.get("display_name"),
                 raw_payload=_coerce_inbound_raw_payload(payload),
-                message_name=message.name,
+                message_name=message_name,
             )
         except Exception:
             frappe.log_error(
                 frappe.get_traceback(),
                 "WA Chat Hub Inbound Link Failed",
             )
-        try:
-            from wa_chat_hub.shipkia_qualification import capture_and_schedule_qualification
-
-            capture_and_schedule_qualification(conversation=conversation, message_name=message.name)
-        except Exception:
-            frappe.log_error(frappe.get_traceback(), "ShipKia Lead Qualification Schedule Failed")
 
     attachment_file = None
-    try:
-        attachment_file = _persist_inbound_attachment(message, payload)
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "Inbound Attachment Persistence Failed")
+    if message:
+        try:
+            attachment_file = _persist_inbound_attachment(message, payload)
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "Inbound Attachment Persistence Failed")
 
-    update_conversation_after_message(conversation, payload)
+    if direction == "Inbound":
+        try:
+            _enqueue_lead_scoring(conversation)
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "Lead Scoring Enqueue Failed")
     if attachment_file and direction == "Inbound":
         try:
             _sync_inbound_attachment_to_linked_record(
                 conversation=conversation,
                 chat_file_name=attachment_file,
-                message_name=message.name,
+                message_name=message_name,
                 payload=payload,
             )
         except Exception:
@@ -449,18 +630,18 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
         try:
             _enqueue_inbound_media_lead_summary(
                 conversation=conversation,
-                message_name=message.name,
+                message_name=message_name,
                 payload=payload,
                 content_type=content_type,
             )
         except Exception:
             frappe.log_error(frappe.get_traceback(), "Media Lead Summary Enqueue Failed")
-    if payload.get("attachment_file") and direction == "Outbound":
+    if payload.get("attachment_file") and direction == "Outbound" and message_name:
         try:
             _sync_outbound_attachment_to_linked_record(
                 conversation=conversation,
                 chat_file_name=str(payload.get("attachment_file")),
-                message_name=message.name,
+                message_name=message_name,
                 payload=payload,
             )
         except Exception:
@@ -472,28 +653,19 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
         try:
             from wa_chat_hub.api.ai_bot import schedule_autopilot_for_message
 
-            schedule_autopilot_for_message(message.name)
+            schedule_autopilot_for_message(message_name)
         except Exception:
             frappe.log_error(frappe.get_traceback(), "WA AI Autopilot Schedule Failed")
-    frappe.publish_realtime(
-        "wa_chat_new_message",
-        {
-            "conversation": conversation,
-            "message": message.as_dict(),
-            "direction": message.direction,
-        },
-        after_commit=True,
-    )
-    frappe.publish_realtime(
-        "wa_chat_conversation_updated",
-        {
-            "conversation": conversation,
-            "last_message_preview": (payload.get("body") or payload.get("content_type") or "")[:500],
-            "direction": message.direction,
-        },
-        after_commit=True,
-    )
-    return {"contact": contact, "conversation": conversation, "message": message.name}
+    if message:
+        frappe.publish_realtime(
+            "wa_chat_new_message",
+            {
+                "conversation": conversation,
+                "message": message.as_dict(),
+                "direction": message.direction,
+            },
+            after_commit=True,
+        )
 
 
 def _enqueue_lead_scoring(conversation: str) -> None:
@@ -501,6 +673,9 @@ def _enqueue_lead_scoring(conversation: str) -> None:
     if not conversation:
         return
 
+    enqueue_options = conversation_job_enqueue_options(
+        f"wa_lead_score_{conversation}"
+    )
     frappe.enqueue(
         "wa_chat_hub.ai.lead_scoring.score_and_sync_conversation",
         queue="short",
@@ -508,10 +683,15 @@ def _enqueue_lead_scoring(conversation: str) -> None:
         timeout=90,
         enqueue_after_commit=True,
         now=frappe.flags.in_test,
-        job_id=f"wa_lead_score_{conversation}",
-        deduplicate=True,
+        **enqueue_options,
     )
-    task_log("lead_score", "enqueue", conversation=conversation, queue="short")
+    task_log(
+        "lead_score",
+        "enqueue",
+        conversation=conversation,
+        queue="short",
+        deduplicated=bool(enqueue_options),
+    )
 
 
 def _enqueue_inbound_media_lead_summary(
@@ -569,49 +749,50 @@ def cint_safe(value: Any) -> int:
 
 
 def update_conversation_after_message(conversation_name: str, payload: Dict[str, Any]) -> None:
-    """Update preview/unread with atomic SQL so inbound saves cannot be lost on a stale file lock."""
-    body = payload.get("body")
-    content_type = payload.get("content_type") or "Text"
-    media_url = payload.get("media_url")
-    assert_ai_doctype_permission("Chat Conversation", "read")
-    has_last_message_time = frappe.db.has_column("Chat Conversation", "last_message_time")
-    if media_url and content_type != "Text":
-        preview = build_media_preview(content_type, body)
-    else:
-        preview = body or content_type or ""
+    """Update preview/unread without full doc save (avoids TimestampMismatch under concurrent updates)."""
+    with conversation_update_lock(conversation_name):
+        body = payload.get("body")
+        content_type = payload.get("content_type") or "Text"
+        media_url = payload.get("media_url")
+        assert_ai_doctype_permission("Chat Conversation", "read")
+        has_last_message_time = frappe.db.has_column("Chat Conversation", "last_message_time")
+        if media_url and content_type != "Text":
+            preview = build_media_preview(content_type, body)
+        else:
+            preview = body or content_type or ""
 
-    if payload.get("direction", "Inbound") == "Inbound":
-        last_message_sql = "last_message_time = NOW(6)," if has_last_message_time else ""
-        assert_ai_doctype_permission("Chat Conversation", "write")
+        if payload.get("direction", "Inbound") == "Inbound":
+            last_message_sql = "last_message_time = NOW(6)," if has_last_message_time else ""
+            assert_ai_doctype_permission("Chat Conversation", "write")
+            with_db_lock_retry(
+                "conversation_unread_increment",
+                lambda: frappe.db.sql(
+                    f"""
+                    UPDATE `tabChat Conversation`
+                    SET last_message_preview = %s,
+                        {last_message_sql}
+                        unread_count = COALESCE(unread_count, 0) + 1,
+                        modified = NOW(6),
+                        modified_by = %s
+                    WHERE name = %s
+                    """,
+                    ((preview or "")[:500], frappe.session.user, conversation_name),
+                ),
+            )
+            return
+
+        values = {"last_message_preview": (preview or "")[:500]}
+        if has_last_message_time:
+            values["last_message_time"] = frappe.utils.now_datetime()
         with_db_lock_retry(
-            "conversation_unread_increment",
-            lambda: frappe.db.sql(
-                f"""
-                UPDATE `tabChat Conversation`
-                SET last_message_preview = %s,
-                    {last_message_sql}
-                    unread_count = COALESCE(unread_count, 0) + 1,
-                    modified = NOW(6),
-                    modified_by = %s
-                WHERE name = %s
-                """,
-                ((preview or "")[:500], frappe.session.user, conversation_name),
+            "conversation_preview_update",
+            lambda: safe_ai_set_value(
+                "Chat Conversation",
+                conversation_name,
+                values,
+                update_modified=True,
             ),
         )
-        return
-
-    values = {"last_message_preview": (preview or "")[:500]}
-    if has_last_message_time:
-        values["last_message_time"] = frappe.utils.now_datetime()
-    with_db_lock_retry(
-        "conversation_preview_update",
-        lambda: safe_ai_set_value(
-            "Chat Conversation",
-            conversation_name,
-            values,
-            update_modified=True,
-        ),
-    )
 
 
 def build_media_preview(content_type: str, body: Optional[str] = None) -> str:
@@ -637,22 +818,25 @@ def _clean_media_body(content_type: str, body: Optional[str]) -> str:
 
 
 def mark_conversation_read(conversation_name: str) -> None:
-    with conversation_update_lock(conversation_name):
-        assert_ai_doctype_permission("Chat Conversation", "write")
-        with_db_lock_retry(
-            "conversation_mark_read",
-            lambda: frappe.db.sql(
-                """
-                UPDATE `tabChat Conversation`
-                SET unread_count = 0,
-                    modified = NOW(6),
-                    modified_by = %s
-                WHERE name = %s
-                  AND COALESCE(unread_count, 0) != 0
-                """,
-                (frappe.session.user, conversation_name),
-            ),
-        )
+    assert_ai_doctype_permission("Chat Conversation", "write")
+    unread_count = cint(frappe.db.get_value("Chat Conversation", conversation_name, "unread_count") or 0)
+    if unread_count <= 0:
+        return
+
+    with_db_lock_retry(
+        "conversation_mark_read",
+        lambda: frappe.db.sql(
+            """
+            UPDATE `tabChat Conversation`
+            SET unread_count = 0,
+                modified = NOW(6),
+                modified_by = %s
+            WHERE name = %s
+              AND COALESCE(unread_count, 0) != 0
+            """,
+            (frappe.session.user, conversation_name),
+        ),
+    )
     frappe.publish_realtime(
         "wa_chat_conversation_updated",
         {"conversation": conversation_name, "unread_count": 0},
@@ -693,6 +877,191 @@ def _coerce_inbound_raw_payload(payload: Dict[str, Any]) -> Optional[Dict[str, A
     return None
 
 
+def _apply_vobiz_patient_routing(
+    conversation: str,
+    patient: str,
+    channel_account: Optional[str] = None,
+) -> None:
+    if not conversation or not patient:
+        return
+
+    if not frappe.db.exists("DocType", "Vobiz AI Settings"):
+        return
+
+    did_number = _channel_account_phone_number(channel_account)
+    try:
+        from vobiz_ai.api.patient_routing import resolve_patient_routing_for_chat
+    except ModuleNotFoundError as exc:
+        if str(getattr(exc, "name", "")).startswith("vobiz_ai"):
+            task_log(
+                "patient_routing",
+                "optional_vobiz_module_missing",
+                conversation=conversation,
+                patient=patient,
+                module=getattr(exc, "name", ""),
+            )
+            return
+        frappe.log_error(frappe.get_traceback(), "WA Chat Hub Vobiz Patient Routing Failed")
+        return
+
+    try:
+        routing = resolve_patient_routing_for_chat(patient=patient, did_number=did_number)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "WA Chat Hub Vobiz Patient Routing Failed")
+        return
+
+    user = _vobiz_patient_routing_user(routing)
+    status = routing.get("status") or ""
+    if not user:
+        _log_vobiz_patient_routing(
+            conversation,
+            channel_account,
+            patient,
+            routing,
+            status="Skipped",
+            details=f"Vobiz patient routing returned no assignable user. Status: {status or '-'}",
+        )
+        return
+
+    with conversation_update_lock(conversation):
+        existing_assignee = safe_ai_get_value("Chat Conversation", conversation, "assigned_to")
+        if existing_assignee:
+            _log_vobiz_patient_routing(
+                conversation,
+                channel_account,
+                patient,
+                routing,
+                status="Skipped",
+                details=(
+                    "Preserved existing conversation assignment "
+                    f"{existing_assignee}; Vobiz routed user was {user}."
+                ),
+            )
+            return
+
+        with_db_lock_retry(
+            "vobiz_patient_routing_assignment",
+            lambda: safe_ai_set_value(
+                "Chat Conversation",
+                conversation,
+                "assigned_to",
+                user,
+                update_modified=False,
+            ),
+        )
+
+    _log_vobiz_patient_routing(
+        conversation,
+        channel_account,
+        patient,
+        routing,
+        status="Success",
+        details=f"Assigned Patient conversation to {user} using Vobiz patient routing.",
+    )
+    task_log(
+        "patient_routing",
+        "assigned",
+        conversation=conversation,
+        patient=patient,
+        assigned_to=user,
+        routing_status=status,
+        routing_group=routing.get("routing_group"),
+    )
+
+
+def _channel_account_phone_number(channel_account: Optional[str]) -> str:
+    if not channel_account:
+        return ""
+    try:
+        return safe_ai_get_value("Chat Channel Account", channel_account, "phone_number") or ""
+    except Exception:
+        return ""
+
+
+def _vobiz_patient_routing_user(routing: Dict[str, Any]) -> Optional[str]:
+    if not routing:
+        return None
+
+    status = routing.get("status")
+    candidate = ""
+    if status == "selected":
+        candidate = routing.get("agent_user") or ""
+    elif status in {"fallback", "no_available_agent"}:
+        candidate = routing.get("fallback_user") or routing.get("agent_user") or ""
+    else:
+        return None
+
+    return _valid_link("User", candidate)
+
+
+def _skip_vobiz_patient_routing_for_ambiguous_match(
+    conversation: str,
+    patient: str,
+    channel_account: Optional[str],
+    phone_number: str,
+) -> bool:
+    fields = ["mobile", "mobile_no", "phone", "custom_whatsapp_number"]
+    matches = _find_phone_match_names("Patient", fields, phone_number)
+    if len(matches) <= 1:
+        return False
+
+    _log_vobiz_patient_routing(
+        conversation,
+        channel_account,
+        patient,
+        {
+            "success": True,
+            "enabled": True,
+            "matched": False,
+            "patient": patient,
+            "status": "ambiguous_patient_match",
+            "matched_patients": sorted(matches),
+        },
+        status="Skipped",
+        details=(
+            "Skipped Vobiz patient routing because the inbound phone matched "
+            f"multiple Patient records: {', '.join(sorted(matches))}."
+        ),
+    )
+    return True
+
+
+def _log_vobiz_patient_routing(
+    conversation: str,
+    channel_account: Optional[str],
+    patient: str,
+    routing: Dict[str, Any],
+    *,
+    status: str,
+    details: str,
+) -> None:
+    try:
+        from wa_chat_hub.wa_chat_hub.doctype.chat_action_log.chat_action_log import log_chat_action
+
+        log_chat_action(
+            "Assignment",
+            "Vobiz Patient Routing",
+            status=status,
+            conversation=conversation,
+            channel_account=channel_account,
+            action_source="System",
+            reference_doctype="Patient",
+            reference_name=patient,
+            details=details,
+            request_json=json.dumps(
+                {
+                    "patient": patient,
+                    "did_number": _channel_account_phone_number(channel_account),
+                },
+                ensure_ascii=True,
+                default=str,
+            ),
+            response_json=json.dumps(routing or {}, ensure_ascii=True, default=str),
+        )
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "WA Chat Hub Vobiz Patient Routing Log Failed")
+
+
 def _link_or_create_master_record(
     conversation: str,
     contact_name: str,
@@ -702,7 +1071,7 @@ def _link_or_create_master_record(
     raw_payload: Optional[Dict[str, Any]] = None,
     message_name: Optional[str] = None,
 ) -> None:
-    """Attach inbound ShipKia chat to an existing customer or lead, else create a Lead."""
+    """Attach inbound chat to existing Patient/Customer else create a Lead."""
     if not phone_number:
         return
 
@@ -710,33 +1079,95 @@ def _link_or_create_master_record(
     contact = safe_ai_get_doc("Chat Contact", contact_name)
     _sanitize_contact_links(contact)
     _sanitize_conversation_links(convo)
-    ref_dt = getattr(convo, "linked_reference_doctype", None)
-    ref_name = getattr(convo, "linked_reference_name", None)
-    if ref_dt and ref_name and ref_dt not in {"Customer", "Lead", "CRM Lead"}:
+    _normalize_existing_lead_link(convo)
+    try:
+        from wa_chat_hub.identity import reconcile_conversation_identity
+
+        reconcile_conversation_identity(conversation, source="inbound")
+        convo.reload()
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "WA Chat Hub Identity Reconciliation Failed")
+
+    policy = get_channel_policy(getattr(convo, "channel_account", None))
+    routing_policy = policy.section("party_routing_policy") if policy else {}
+    identity_policy = policy.section("identity_policy") if policy else {}
+    priority = [str(value) for value in routing_policy.get("phone_match_priority") or []]
+    configured_phone_fields = routing_policy.get("phone_fields") or {}
+
+    ref_dt, ref_name = get_conversation_linked_reference(convo)
+    if ref_dt and ref_name and routing_policy.get("preserve_existing_reference"):
+        if ref_dt == "Patient":
+            _apply_vobiz_patient_routing(conversation, ref_name, getattr(convo, "channel_account", None))
         return
 
-    customer_name = _find_by_phone("Customer", ["mobile_no", "phone", "custom_whatsapp_number"], phone_number)
-    if customer_name:
-        contact_updates = {
-            "source_doctype": "Customer",
-            "source_name": customer_name,
-        }
+    candidates: dict[str, str] = {}
+    patient_matches: set[str] = set()
+    if "Patient" in priority:
+        patient_fields = [
+            str(fieldname)
+            for fieldname in ((identity_policy.get("phone_fields") or {}).get("Patient") or [])
+            if str(fieldname).strip()
+        ]
+        patient_matches = _find_indexed_phone_match_names(
+            "Patient", patient_fields, phone_number, limit=2
+        )
+        if len(patient_matches) == 1:
+            candidates["Patient"] = next(iter(patient_matches))
+
+    if "Customer" in priority:
+        customer_fields = [
+            str(fieldname)
+            for fieldname in configured_phone_fields.get("Customer") or []
+            if str(fieldname).strip()
+        ]
+        customer_name = _find_by_phone("Customer", customer_fields, phone_number)
+        if customer_name:
+            candidates["Customer"] = customer_name
+
+    existing_crm_lead = get_conversation_crm_lead(convo)
+    if "CRM Lead" in priority and existing_crm_lead and safe_ai_exists("CRM Lead", existing_crm_lead):
+        candidates["CRM Lead"] = existing_crm_lead
+    indexed_lead = _find_existing_lead_by_phone(phone_number)
+    if indexed_lead and indexed_lead[0] in priority:
+        candidates[indexed_lead[0]] = indexed_lead[1]
+
+    selected_type = next((doctype for doctype in priority if doctype in candidates), "")
+    if selected_type == "Patient":
+        _link_patient_to_conversation(
+            conversation=conversation,
+            convo=convo,
+            contact=contact,
+            patient_name=candidates[selected_type],
+            phone_number=phone_number,
+            display_name=display_name,
+        )
+        return
+    if selected_type == "Patient" or (patient_matches and len(patient_matches) > 1 and priority and priority[0] == "Patient"):
+        _mark_conversation_patient_ambiguous(convo)
+        return
+    if selected_type == "Customer":
+        customer_name = candidates[selected_type]
+        contact_updates = {"source_doctype": selected_type, "source_name": customer_name}
         if display_name and not contact.display_name:
             contact_updates["display_name"] = display_name
         _set_contact_fields(contact, contact_updates)
         _set_conversation_fields(
             convo,
-            {
-                "linked_reference_doctype": "Customer",
-                "linked_reference_name": customer_name,
-            },
+            {"linked_reference_doctype": selected_type, "linked_reference_name": customer_name},
         )
         return
+    if ref_dt and ref_name and ref_dt not in {"CRM Lead", "Lead"}:
+        return
 
-    if ref_dt == "Lead" and ref_name and safe_ai_exists("Lead", ref_name):
-        existing_lead = ("Lead", ref_name)
-    else:
-        existing_lead = _find_existing_lead_by_phone(phone_number)
+    existing_lead = (
+        (selected_type, candidates[selected_type])
+        if selected_type in {"CRM Lead", "Lead"}
+        else None
+    )
+    if not policy and not existing_lead:
+        existing_lead = (
+            ("CRM Lead", existing_crm_lead) if existing_crm_lead else indexed_lead
+        )
     if existing_lead:
         lead_doctype, lead_name = existing_lead
     else:
@@ -761,17 +1192,27 @@ def _link_or_create_master_record(
         contact_updates["display_name"] = display_name
     _set_contact_fields(contact, contact_updates)
 
-    convo.linked_reference_doctype = lead_doctype
-    convo.linked_reference_name = lead_name
-    assert_ai_doctype_permission("Chat Conversation", "read")
-    if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
-        convo.linked_crm_lead = None
+    if lead_doctype == "CRM Lead":
+        set_conversation_crm_lead(convo, lead_name)
+    else:
+        convo.linked_reference_doctype = lead_doctype
+        convo.linked_reference_name = lead_name
     conversation_updates = {
         "linked_reference_doctype": convo.linked_reference_doctype,
         "linked_reference_name": convo.linked_reference_name,
     }
+    assert_ai_doctype_permission("Chat Conversation", "read")
     if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
         conversation_updates["linked_crm_lead"] = getattr(convo, "linked_crm_lead", None)
+
+    if lead_doctype == "CRM Lead":
+        _finalize_crm_lead_after_inbound(
+            conversation,
+            lead_name,
+            raw_payload=raw_payload,
+            message_name=message_name,
+            convo=convo,
+        )
 
     _set_conversation_fields(convo, conversation_updates)
 
@@ -798,6 +1239,74 @@ def _set_contact_fields(contact, updates: Dict[str, Any]) -> None:
     )
     for key, value in updates.items():
         setattr(contact, key, value)
+
+
+def _link_patient_to_conversation(
+    *,
+    conversation: str,
+    convo,
+    contact,
+    patient_name: str,
+    phone_number: str,
+    display_name: Optional[str] = None,
+) -> None:
+    """Patient linking is disabled for the ShipKia customer flow."""
+    return
+
+    contact_updates = {
+        "linked_patient": patient_name,
+        "source_doctype": "Patient",
+        "source_name": patient_name,
+    }
+    if display_name and not contact.display_name:
+        contact_updates["display_name"] = display_name
+    _set_contact_fields(contact, contact_updates)
+
+    try:
+        from wa_chat_hub.identity import reconcile_conversation_identity
+
+        reconcile_conversation_identity(
+            conversation,
+            patient=patient_name,
+            crm_lead=getattr(convo, "linked_crm_lead", None),
+            source="inbound_phone_match",
+        )
+        convo.reload()
+    except Exception:
+        frappe.log_error(
+            frappe.get_traceback(),
+            "WA Chat Hub Patient Identity Reconciliation Failed",
+        )
+        return
+
+    _apply_vobiz_patient_routing(
+        conversation,
+        patient_name,
+        getattr(convo, "channel_account", None),
+    )
+    try:
+        from wa_chat_hub.interakt.contact_sync import enqueue_push_for_conversation
+
+        enqueue_push_for_conversation(conversation)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "Interakt Contact Push Enqueue Failed")
+
+
+def _mark_conversation_patient_ambiguous(convo) -> None:
+    """Patient routing is disabled for the ShipKia customer flow."""
+    return
+
+    meta = frappe.get_meta("Chat Conversation")
+    updates = {
+        "linked_patient": None,
+        "party_type": "Patient",
+        "identity_status": "Ambiguous",
+        "agent_profile": None,
+        "routing_reason": "patient_identity:ambiguous_phone_match",
+        "last_identity_sync_at": now_datetime(),
+    }
+    updates = {key: value for key, value in updates.items() if meta.has_field(key)}
+    _set_conversation_fields(convo, updates)
 
 
 def _set_conversation_fields(convo, updates: Dict[str, Any]) -> None:
@@ -869,7 +1378,7 @@ def _sync_crm_lead_pipeline_for_channel(lead_name: str, channel_account: Optiona
 
 def _inbound_lead_first_name(display_name: Optional[str], phone_number: str) -> str:
     text = (display_name or "").strip()
-    if text and text != phone_number and re.search(r"[A-Za-z0-9]", text):
+    if text and text != phone_number:
         return text.split()[0][:140]
     return phone_number[-10:] if len(phone_number) >= 10 else phone_number
 
@@ -948,7 +1457,7 @@ def _create_lead_for_inbound(
     try:
         assert_ai_doctype_permission(doctype, "read")
         meta = frappe.get_meta(doctype)
-        lead_title = _inbound_lead_first_name(display_name, phone_number)
+        lead_title = display_name or phone_number
         first_name = _inbound_lead_first_name(display_name, phone_number)
 
         if meta.has_field("first_name"):
@@ -968,10 +1477,7 @@ def _create_lead_for_inbound(
             if platform_value:
                 payload["sr_lead_platform"] = platform_value
 
-        if doctype == "Lead":
-            if meta.has_field("status") and not payload.get("status"):
-                payload["status"] = "Open"
-        elif doctype == "CRM Lead":
+        if doctype == "CRM Lead":
             if meta.has_field("status") and not payload.get("status"):
                 payload["status"] = _default_crm_lead_status()
 
@@ -1005,8 +1511,6 @@ def _create_lead_for_inbound(
         with _crm_lead_field_guard_bypass(doctype == "CRM Lead"):
             safe_ai_insert(doc)
         return doc.name
-    except WAChatHubSecurityError:
-        return None
     except Exception:
         frappe.log_error(
             _lead_creation_error_details(frappe.get_traceback(), payload, context),
@@ -1015,6 +1519,99 @@ def _create_lead_for_inbound(
         return None
 
 
+def _available_phone_index_filters(meta, phone_fields: list[str], phone_number: str) -> list[tuple[str, str]]:
+    """Return exact, index-friendly phone predicates in deterministic priority order."""
+    normalized = normalize_phone(phone_number)
+    canonical = _canonical_phone(phone_number)
+    if not normalized:
+        return []
+
+    last10 = normalized[-10:] if len(normalized) >= 10 else normalized
+    filters: list[tuple[str, str]] = []
+    seen = set()
+
+    for fieldname in PHONE_CANONICAL_INDEX_FIELDS:
+        if meta.has_field(fieldname) and fieldname not in seen:
+            filters.append((fieldname, canonical if fieldname == "vobiz_normalized_phone" else last10))
+            seen.add(fieldname)
+
+    for source_field in phone_fields:
+        fieldname = PHONE_INDEX_FIELD_BY_SOURCE.get(source_field)
+        if fieldname and meta.has_field(fieldname) and fieldname not in seen:
+            filters.append((fieldname, last10))
+            seen.add(fieldname)
+
+    return filters
+
+
+def _phone_rows(doctype: str, fieldname: str, value: str, *, limit: int):
+    return safe_ai_get_all(
+        doctype,
+        filters={fieldname: value},
+        fields=["name"],
+        order_by="modified desc",
+        limit_page_length=limit,
+    )
+
+
+def _indexed_phone_rows(doctype: str, fieldname: str, value: str, *, limit: int):
+    """Exact bounded lookup; no sort is needed when resolving identity."""
+    return safe_ai_get_all(
+        doctype,
+        filters={fieldname: value},
+        fields=["name"],
+        limit_page_length=limit,
+    )
+
+
+def _find_indexed_phone_match_names(
+    doctype: str,
+    phone_fields: list[str],
+    phone_number: str,
+    *,
+    limit: int = 2,
+) -> set[str]:
+    """Return zero, one, or multiple exact normalized matches without wildcard scans."""
+    matches: set[str] = set()
+    try:
+        if not safe_ai_exists("DocType", doctype):
+            return matches
+
+        assert_ai_doctype_permission(doctype, "read")
+        meta = frappe.get_meta(doctype)
+        normalized = normalize_phone(phone_number)
+        if not normalized:
+            return matches
+
+        bounded_limit = max(2, min(int(limit or 2), 10))
+        for fieldname, value in _available_phone_index_filters(meta, phone_fields, normalized):
+            rows = _indexed_phone_rows(
+                doctype,
+                fieldname,
+                value,
+                limit=bounded_limit,
+            )
+            matches.update(row.name for row in rows if row.get("name"))
+            if len(matches) >= bounded_limit:
+                break
+    except WAChatHubSecurityError:
+        return set()
+    return matches
+
+
+
+def find_indexed_phone_match_names(
+    doctype: str,
+    phone_fields: list[str],
+    phone_number: str,
+    *,
+    limit: int = 2,
+) -> set[str]:
+    """Public bounded exact phone-key lookup for policy-driven workflows."""
+    return _find_indexed_phone_match_names(
+        doctype, phone_fields, phone_number, limit=limit
+    )
+
 def _find_by_phone(doctype: str, phone_fields: list[str], phone_number: str) -> Optional[str]:
     try:
         if not safe_ai_exists("DocType", doctype):
@@ -1022,29 +1619,51 @@ def _find_by_phone(doctype: str, phone_fields: list[str], phone_number: str) -> 
 
         assert_ai_doctype_permission(doctype, "read")
         meta = frappe.get_meta(doctype)
+        normalized = normalize_phone(phone_number)
+        if not normalized:
+            return None
+
+        # Exact checks are cheap and preserve matches for already-normalized source fields.
         for fieldname in phone_fields:
             if not meta.has_field(fieldname):
                 continue
-            exact = safe_ai_get_value(doctype, {fieldname: phone_number}, "name")
-            if exact:
-                return exact
+            rows = _phone_rows(doctype, fieldname, normalized, limit=1)
+            if rows:
+                return rows[0].name
 
-            last10 = phone_number[-10:] if len(phone_number) >= 10 else phone_number
-            candidates = safe_ai_get_all(
-                doctype,
-                filters={fieldname: ["like", f"%{last10}%"]},
-                fields=["name", fieldname],
-                limit_page_length=20,
-            )
-            for row in candidates:
-                value = normalize_phone(row.get(fieldname))
-                if not value:
-                    continue
-                if value == phone_number or value.endswith(last10):
-                    return row.name
+        for fieldname, value in _available_phone_index_filters(meta, phone_fields, normalized):
+            rows = _phone_rows(doctype, fieldname, value, limit=1)
+            if rows:
+                return rows[0].name
     except WAChatHubSecurityError:
         return None
     return None
+
+
+def _find_phone_match_names(doctype: str, phone_fields: list[str], phone_number: str) -> set[str]:
+    matches: set[str] = set()
+    try:
+        if not safe_ai_exists("DocType", doctype):
+            return matches
+
+        assert_ai_doctype_permission(doctype, "read")
+        meta = frappe.get_meta(doctype)
+        normalized = normalize_phone(phone_number)
+        if not normalized:
+            return matches
+
+        for fieldname in phone_fields:
+            if not meta.has_field(fieldname):
+                continue
+            exact_rows = _phone_rows(doctype, fieldname, normalized, limit=50)
+            matches.update(row.name for row in exact_rows if row.get("name"))
+
+        for fieldname, value in _available_phone_index_filters(meta, phone_fields, normalized):
+            rows = _phone_rows(doctype, fieldname, value, limit=50)
+            matches.update(row.name for row in rows if row.get("name"))
+    except WAChatHubSecurityError:
+        return set()
+    return matches
 
 
 def _get_lead_pipeline_fieldname(lead_doctype: str) -> Optional[str]:
@@ -1066,20 +1685,27 @@ def _preferred_lead_doctype() -> Optional[str]:
     try:
         if safe_ai_exists("DocType", "Lead"):
             return "Lead"
+        if safe_ai_exists("DocType", "CRM Lead"):
+            return "CRM Lead"
     except WAChatHubSecurityError:
         return None
     return None
 
 
 def _find_existing_lead_by_phone(phone_number: str) -> Optional[tuple[str, str]]:
-    try:
-        if not safe_ai_exists("DocType", "Lead"):
-            return None
-    except WAChatHubSecurityError:
-        return None
-    found = _find_by_phone("Lead", ["mobile_no", "phone", "whatsapp_no", "custom_whatsapp_number"], phone_number)
-    if found:
-        return "Lead", found
+    for doctype in ("Lead", "CRM Lead"):
+        try:
+            exists = safe_ai_exists("DocType", doctype)
+        except WAChatHubSecurityError:
+            continue
+        if not exists:
+            continue
+        if doctype == "CRM Lead":
+            found = _find_primary_crm_lead_by_phone(phone_number)
+        else:
+            found = _find_by_phone(doctype, ["mobile_no", "phone", "custom_whatsapp_number"], phone_number)
+        if found:
+            return doctype, found
     return None
 
 
@@ -1108,6 +1734,12 @@ def _find_primary_crm_lead_by_phone(phone_number: str) -> Optional[str]:
 
 def _normalize_existing_lead_link(convo) -> None:
     """If record points to Lead but name exists in CRM Lead, relink to CRM Lead route."""
+    if getattr(convo, "linked_reference_doctype", None) == "Lead":
+        if getattr(convo, "linked_crm_lead", None) and frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
+            convo.linked_crm_lead = None
+            _set_conversation_fields(convo, {"linked_crm_lead": None})
+        return
+
     try:
         if not safe_ai_exists("DocType", "CRM Lead"):
             return
@@ -1159,9 +1791,7 @@ def _sanitize_contact_links(contact) -> None:
     if changed:
         _set_contact_fields(
             contact,
-            {
-                "linked_lead": getattr(contact, "linked_lead", None),
-            },
+            {"linked_lead": getattr(contact, "linked_lead", None)},
         )
 
 

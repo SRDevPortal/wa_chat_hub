@@ -1,145 +1,130 @@
-"""Lightweight customer language detection for multilingual WhatsApp auto-replies."""
+"""Policy-driven customer language detection for WhatsApp auto-replies."""
 
 from __future__ import annotations
 
 import re
 from typing import Any, Dict, List, Optional
 
-# Unicode script ranges (Indian languages + Arabic for Urdu)
-_SCRIPT_RANGES = (
-    ("hi", "Hindi", r"[\u0900-\u097F]"),
-    ("bn", "Bengali", r"[\u0980-\u09FF]"),
-    ("pa", "Punjabi", r"[\u0A00-\u0A7F]"),
-    ("gu", "Gujarati", r"[\u0A80-\u0AFF]"),
-    ("or", "Odia", r"[\u0B00-\u0B7F]"),
-    ("ta", "Tamil", r"[\u0B80-\u0BFF]"),
-    ("te", "Telugu", r"[\u0C00-\u0C7F]"),
-    ("kn", "Kannada", r"[\u0C80-\u0CFF]"),
-    ("ml", "Malayalam", r"[\u0D00-\u0D7F]"),
-    ("ur", "Urdu", r"[\u0600-\u06FF]"),
-)
+from wa_chat_hub.policy import policy_section
 
-_HINGLISH_MARKERS = frozenset(
-    {
-        "aap",
-        "aapka",
-        "aapki",
-        "hai",
-        "hain",
-        "ho",
-        "kya",
-        "kyun",
-        "kaise",
-        "kab",
-        "kahan",
-        "mujhe",
-        "mere",
-        "mera",
-        "mein",
-        "main",
-        "nahi",
-        "nahin",
-        "haan",
-        "ji",
-        "dhanyavad",
-        "shukriya",
-        "namaste",
-        "rate",
-        "shipping",
-        "pickup",
-        "delivery",
-        "order",
-        "callback",
-        "bataiye",
-        "bataye",
-        "chahiye",
-        "sakta",
-        "sakte",
-        "kripya",
-        "please",
-    }
-)
 
-DEFAULT_MULTILINGUAL_POLICY = """# Multilingual replies
-- Match the language and script of the customer's latest message (Hindi, Hinglish, English, Tamil, etc.).
-- Sound like a native speaker chatting on WhatsApp — natural, not translated or formal.
-- Do not add an English disclaimer or corporate intro unless the customer used English and asked for it."""
+def _language_policy(channel_account: str | None) -> dict[str, Any]:
+    return policy_section(channel_account, "language_policy")
 
 
 def _letter_count(text: str) -> int:
-    letters = re.findall(r"\S", text)
-    return len(letters) or 1
+    return sum(1 for char in text if not char.isspace()) or 1
 
 
-def _script_ratio(text: str, pattern: str) -> float:
-    return len(re.findall(pattern, text)) / _letter_count(text)
+def _script_ratio(text: str, start: int, end: int) -> float:
+    return sum(1 for char in text if start <= ord(char) <= end) / _letter_count(text)
 
 
-def _hinglish_score(text: str) -> float:
+def _roman_score(text: str, markers: set[str]) -> float:
     tokens = re.findall(r"[a-zA-Z']+", text.lower())
-    if not tokens:
+    if not tokens or not markers:
         return 0.0
-    hits = sum(1 for token in tokens if token in _HINGLISH_MARKERS)
-    return hits / len(tokens)
+    return sum(1 for token in tokens if token in markers) / len(tokens)
 
 
-def detect_customer_language(text: str) -> Dict[str, Any]:
-    """Infer the customer's language from their latest message text."""
+def _safe_ratio(value: Any, fallback: float) -> float:
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def detect_customer_language(
+    text: str,
+    *,
+    channel_account: str | None = None,
+    policy: dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """Infer language only from the Channel Account's configured policy."""
     text = (text or "").strip()
-    if not text:
-        return {"code": "en", "label": "English", "reply_instruction": "Reply in English."}
+    config = dict(policy) if isinstance(policy, dict) else _language_policy(channel_account)
+    if not config:
+        return {"code": "auto", "label": "customer's language", "reply_instruction": ""}
 
-    best_code, best_label, best_ratio = "en", "English", 0.0
-    for code, label, pattern in _SCRIPT_RANGES:
-        ratio = _script_ratio(text, pattern)
+    default_code = str(config.get("default_language") or "auto").strip() or "auto"
+    default_label = str(config.get("default_language_label") or default_code).strip()
+    if not text:
+        return {
+            "code": default_code,
+            "label": default_label,
+            "reply_instruction": str(config.get("default_reply_instruction") or "").strip(),
+        }
+
+    best_code, best_label, best_ratio = default_code, default_label, 0.0
+    for item in config.get("script_ranges") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            start = int(str(item.get("start") or ""), 16)
+            end = int(str(item.get("end") or ""), 16)
+        except ValueError:
+            continue
+        ratio = _script_ratio(text, start, end)
         if ratio > best_ratio:
             best_ratio = ratio
-            best_code, best_label = code, label
+            best_code = str(item.get("code") or default_code)
+            best_label = str(item.get("label") or best_code)
 
-    if best_ratio >= 0.15:
+    if best_ratio >= _safe_ratio(config.get("script_ratio_threshold"), 1.0):
+        template = str(config.get("script_reply_instruction") or "").strip()
         return {
             "code": best_code,
             "label": best_label,
-            "reply_instruction": f"Reply in {best_label} using the same script as the customer.",
+            "reply_instruction": template.format(language=best_label) if template else "",
         }
 
-    hinglish = _hinglish_score(text)
-    ascii_ratio = len(re.findall(r"[a-zA-Z]", text)) / _letter_count(text)
-    if hinglish >= 0.12 and ascii_ratio >= 0.5:
+    markers = {
+        str(value).strip().lower()
+        for value in config.get("roman_markers") or []
+        if str(value).strip()
+    }
+    roman_score = _roman_score(text, markers)
+    ascii_ratio = sum(1 for char in text if char.isascii() and char.isalpha()) / _letter_count(text)
+    if (
+        roman_score >= _safe_ratio(config.get("roman_marker_ratio_threshold"), 1.0)
+        and ascii_ratio >= _safe_ratio(config.get("roman_ascii_ratio_threshold"), 0.0)
+    ):
         return {
-            "code": "hi-latn",
-            "label": "Hindi (Hinglish / Roman)",
-            "reply_instruction": "Reply in Hinglish (Hindi written in English letters), matching the customer's tone.",
+            "code": str(config.get("roman_language_code") or "auto"),
+            "label": str(config.get("roman_language_label") or "customer's language"),
+            "reply_instruction": str(config.get("roman_reply_instruction") or "").strip(),
         }
 
-    if ascii_ratio >= 0.6:
+    if ascii_ratio >= _safe_ratio(config.get("ascii_ratio_threshold"), 1.0):
         return {
-            "code": "en",
-            "label": "English",
-            "reply_instruction": "Reply in English.",
+            "code": str(config.get("ascii_language_code") or default_code),
+            "label": str(config.get("ascii_language_label") or default_label),
+            "reply_instruction": str(config.get("ascii_reply_instruction") or "").strip(),
         }
 
     return {
         "code": "auto",
         "label": "customer's language",
-        "reply_instruction": "Detect the customer's language from their message and reply in that same language.",
+        "reply_instruction": str(config.get("auto_reply_instruction") or "").strip(),
     }
 
 
 def resolve_language_from_history(
     latest_text: str,
     history: Optional[List[Dict[str, Any]]] = None,
+    *,
+    channel_account: str | None = None,
+    policy: dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    """Prefer the latest inbound text; fall back to recent customer messages."""
+    """Prefer latest inbound text, then bounded history supplied by the caller."""
     if str(latest_text or "").strip():
-        return detect_customer_language(latest_text)
-
-    if history:
-        for row in reversed(history):
-            if row.get("direction") == "Inbound" and str(row.get("body") or "").strip():
-                return detect_customer_language(str(row["body"]))
-
-    return detect_customer_language("")
+        return detect_customer_language(latest_text, channel_account=channel_account, policy=policy)
+    for row in reversed(history or []):
+        if row.get("direction") == "Inbound" and str(row.get("body") or "").strip():
+            return detect_customer_language(
+                str(row["body"]), channel_account=channel_account, policy=policy
+            )
+    return detect_customer_language("", channel_account=channel_account, policy=policy)
 
 
 def append_multilingual_instructions(
@@ -148,14 +133,17 @@ def append_multilingual_instructions(
     *,
     custom_policy: str | None = None,
     history: Optional[List[Dict[str, Any]]] = None,
+    channel_account: str | None = None,
 ) -> str:
-    policy = (custom_policy or "").strip() or DEFAULT_MULTILINGUAL_POLICY
-    lang = resolve_language_from_history(customer_text, history)
-    hint = lang.get("reply_instruction") or "Reply in the customer's language."
-
-    return (
-        f"{system_prompt}\n\n{policy}\n\n"
-        f"# Language for this reply\n"
-        f"Detected customer language: {lang.get('label', 'unknown')} ({lang.get('code', 'auto')}).\n"
-        f"{hint}"
+    config = _language_policy(channel_account)
+    policy_text = (custom_policy or "").strip() or str(config.get("prompt_policy") or "").strip()
+    language = resolve_language_from_history(
+        customer_text, history, channel_account=channel_account, policy=config
     )
+    blocks = [system_prompt]
+    if policy_text:
+        blocks.append(policy_text)
+    hint = str(language.get("reply_instruction") or "").strip()
+    if hint:
+        blocks.append(hint)
+    return "\n\n".join(block for block in blocks if str(block or "").strip())

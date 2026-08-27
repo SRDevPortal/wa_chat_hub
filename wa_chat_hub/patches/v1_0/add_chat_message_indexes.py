@@ -113,6 +113,17 @@ def ensure_chat_conversation_indexes() -> None:
                 ["contact", "linked_crm_lead"],
                 index_name="idx_chat_conversation_contact_crm_lead",
             )
+        if frappe.db.has_column("Chat Conversation", "linked_patient"):
+            frappe.db.add_index(
+                "Chat Conversation",
+                ["linked_patient", "modified"],
+                index_name="idx_chat_conversation_linked_patient",
+            )
+            frappe.db.add_index(
+                "Chat Conversation",
+                ["party_type", "identity_status", "status"],
+                index_name="idx_chat_conversation_ai_route",
+            )
         if frappe.db.has_column("Chat Conversation", "linked_reference_doctype") and frappe.db.has_column(
             "Chat Conversation", "linked_reference_name"
         ):

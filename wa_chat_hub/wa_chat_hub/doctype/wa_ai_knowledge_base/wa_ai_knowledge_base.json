@@ -8,22 +8,14 @@
   "kb_type",
   "chat_channel_account",
   "department",
+  "medical_department",
   "source_path",
   "source_url",
   "content",
   "priority",
-  "is_active",
-  "company"
+  "is_active"
  ],
  "fields": [
-  {
-   "fieldname": "company",
-   "fieldtype": "Link",
-   "in_list_view": 1,
-   "in_standard_filter": 1,
-   "label": "Company",
-   "options": "AI Company"
-  },
   {
    "fieldname": "kb_label",
    "fieldtype": "Data",
@@ -46,8 +38,17 @@
   },
   {
    "fieldname": "department",
-   "fieldtype": "Data",
-   "label": "Department"
+   "fieldtype": "Link",
+   "label": "Department",
+   "options": "Department"
+  },
+  {
+   "description": "Department used for optional routing and knowledge filtering.",
+   "fieldname": "medical_department",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Department",
+   "options": "Department"
   },
   {
    "fieldname": "source_path",
@@ -92,6 +93,5 @@
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
- "track_changes": 1,
- "modified": "2026-07-16 00:00:00.000000"
+ "track_changes": 1
 }

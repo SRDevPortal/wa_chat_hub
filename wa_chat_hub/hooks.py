@@ -6,12 +6,11 @@ app_email = "admin@example.com"
 app_license = "MIT"
 
 app_include_css = ["/assets/wa_chat_hub/css/wa_chat_hub.css"]
-app_include_js = [
-    "/assets/wa_chat_hub/js/remote_attachment_links.js",
-]
+app_include_js = ["/assets/wa_chat_hub/js/remote_attachment_links.js"]
 
 after_install = "wa_chat_hub.setup_workspace.run"
 after_migrate = "wa_chat_hub.migrate.after_migrate"
+before_tests = "wa_chat_hub.tests.utils.before_tests"
 
 fixtures = [
     {"dt": "DocType", "filters": [["module", "=", "WA Chat Hub"]]},
@@ -25,9 +24,7 @@ doctype_list_js = {
     "CRM Lead": "public/js/reference_open_chat_list.js",
 }
 
-doctype_js = {
-    "Lead": "public/js/lead_chat_popup.js",
-}
+doctype_js = {}
 
 permission_query_conditions = {
     "Chat Conversation": "wa_chat_hub.permissions.chat_conversation_pqc",
@@ -45,21 +42,16 @@ doc_events = {
     "Chat Message": {
         "after_insert": [
             "wa_chat_hub.api.ai_bot.on_message_received",
+            "wa_chat_hub.lead_ai.on_chat_message_after_insert",
         ],
     },
-}
-
-ignore_links_on_delete = [
-    "ShipKia Bot QA Finding",
-]
-
-scheduler_events = {
-    "cron": {
-        "* * * * *": [
-            "wa_chat_hub.shipkia_qualification.process_pending_qualifications",
-        ],
-        "0 */3 * * *": [
-            "wa_chat_hub.shipkia_bot_qa.run_scheduled_qa",
-        ],
+    "CRM Lead": {
+        "validate": "wa_chat_hub.maintenance.phone_backfill.sync_phone_keys",
+    },
+    "Lead": {
+        "validate": "wa_chat_hub.maintenance.phone_backfill.sync_phone_keys",
+    },
+    "Customer": {
+        "validate": "wa_chat_hub.maintenance.phone_backfill.sync_phone_keys",
     },
 }

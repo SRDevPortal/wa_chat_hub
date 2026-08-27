@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import frappe
 from pymysql.err import InterfaceError, OperationalError
 from redis.exceptions import ConnectionError as RedisConnectionError
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
 
-MODULE = "wa_chat_hub"
 DB_CONNECTION_ERROR_CODES = {2006, 2013}
 MESSAGING_WINDOW_BACKFILL_JOB_ID = "wa_chat_hub_messaging_window_backfill"
 
@@ -57,32 +54,38 @@ def _background_queue_available(queue: str) -> bool:
 
 
 def after_migrate() -> None:
-    """Keep WA Chat Hub standard doctypes and workspace synced after migrate."""
-    sync_standard_doctypes()
-    _sync_chat_conversation_schema()
+    """Refresh the workspace after schema synchronization.
+
+    Schema setup and data backfills belong in versioned patches so they run once
+    per site instead of on every ``bench migrate``.
+    """
     try:
         from wa_chat_hub.setup_workspace import run as setup_workspace
 
         setup_workspace()
     except Exception:
         _safe_log_error("WA Chat Hub Workspace Sync Failed")
-    ensure_lead_scoring_fields()
-    ensure_shipkia_ai_lead_fields()
-    ensure_shipkia_aggregator_check_fields()
-    ensure_shipkia_route_fields()
-    ensure_shipkia_conversation_state_fields()
-    ensure_chat_message_indexes()
-    migrate_conversation_crm_lead_links()
-    backfill_messaging_windows()
+    ensure_app_update_setting()
 
 
-def _sync_chat_conversation_schema() -> None:
-    """Ensure messaging window columns exist on tabChat Conversation."""
+def backfill_indexed_phone_keys() -> None:
     try:
-        frappe.reload_doc("wa_chat_hub", "doctype", "Chat Conversation", force=True)
-        frappe.clear_cache(doctype="Chat Conversation")
+        settings = frappe.get_cached_doc("WA Chat Hub Settings")
+        if settings.meta.has_field("enable_indexed_phone_lookup") and settings.enable_indexed_phone_lookup:
+            return
+        if not _background_queue_available("long"):
+            return
+        frappe.enqueue(
+            "wa_chat_hub.maintenance.phone_backfill.run_indexed_phone_backfill",
+            queue="long",
+            timeout=1800,
+            enqueue_after_commit=True,
+            job_id="wa_chat_hub_indexed_phone_backfill_0",
+            deduplicate=True,
+            doctype_index=0,
+        )
     except Exception:
-        _safe_log_error("Chat Conversation Schema Sync Failed")
+        _safe_log_error("Indexed Phone Backfill Enqueue Failed")
 
 
 def backfill_messaging_windows() -> None:
@@ -109,19 +112,6 @@ def backfill_messaging_windows() -> None:
         _safe_log_error("Messaging Window Backfill Enqueue Failed")
         if _is_db_connection_error(exc) and frappe.db:
             _recover_db_connection()
-
-
-def sync_standard_doctypes() -> None:
-    doctype_dir = Path(__file__).parent / "wa_chat_hub" / "doctype"
-    if not doctype_dir.exists():
-        return
-
-    for json_file in sorted(doctype_dir.glob("*/*.json")):
-        doctype_name = json_file.parent.name
-        try:
-            frappe.reload_doc(MODULE, "doctype", doctype_name, force=True)
-        except Exception:
-            _safe_log_error(f"WA Chat Hub DocType Sync Failed: {doctype_name}")
 
 
 def ensure_lead_scoring_fields() -> None:
@@ -167,238 +157,11 @@ def ensure_lead_scoring_fields() -> None:
         create_custom_fields(custom_fields, update=True)
 
 
-def ensure_shipkia_ai_lead_fields() -> None:
-    if not frappe.db.exists("DocType", "Lead"):
-        return
-
-    custom_fields = {
-        "Lead": [
-            {
-                "fieldname": "shipkia_ai_section",
-                "label": "ShipKia AI Qualification",
-                "fieldtype": "Section Break",
-                "insert_after": "lead_temperature",
-                "collapsible": 0,
-            },
-            {
-                "fieldname": "shipkia_ai_qualified",
-                "label": "Qualified via AI",
-                "fieldtype": "Check",
-                "insert_after": "shipkia_ai_section",
-                "in_list_view": 1,
-                "in_standard_filter": 1,
-                "default": "0",
-                "read_only": 1,
-            },
-            {
-                "fieldname": "shipkia_ai_lead_temperature",
-                "label": "AI Lead Temperature",
-                "fieldtype": "Select",
-                "insert_after": "shipkia_ai_qualified",
-                "in_list_view": 1,
-                "in_standard_filter": 1,
-                "options": "Cold\nWarm\nHot",
-                "default": "Cold",
-                "read_only": 1,
-            },
-            {
-                "fieldname": "shipkia_ai_qualification_status",
-                "label": "AI Qualification Stage",
-                "fieldtype": "Select",
-                "insert_after": "shipkia_ai_lead_temperature",
-                "in_list_view": 1,
-                "in_standard_filter": 1,
-                "options": "New\nIn Progress\nQualified\nNeeds Human Review\nNot Qualified",
-                "default": "New",
-                "read_only": 1,
-            },
-            {
-                "fieldname": "shipkia_ai_qualification_score",
-                "label": "AI Qualification Score",
-                "fieldtype": "Float",
-                "insert_after": "shipkia_ai_qualification_status",
-                "in_list_view": 1,
-                "in_standard_filter": 1,
-                "default": "0",
-                "precision": "2",
-                "read_only": 1,
-            },
-            {
-                "fieldname": "shipkia_ai_context_complete",
-                "label": "AI Context Complete",
-                "fieldtype": "Check",
-                "insert_after": "shipkia_ai_qualification_score",
-                "in_list_view": 1,
-                "in_standard_filter": 1,
-                "default": "0",
-                "read_only": 1,
-            },
-            {
-                "fieldname": "shipkia_ai_onboarding_assisted",
-                "label": "AI Onboarding Assisted",
-                "fieldtype": "Check",
-                "insert_after": "shipkia_ai_context_complete",
-                "in_list_view": 1,
-                "in_standard_filter": 1,
-                "default": "0",
-                "read_only": 1,
-            },
-            {
-                "fieldname": "shipkia_ai_onboarding_stage",
-                "label": "AI Onboarding Stage",
-                "fieldtype": "Select",
-                "insert_after": "shipkia_ai_onboarding_assisted",
-                "in_list_view": 1,
-                "in_standard_filter": 1,
-                "options": "Not Started\nDetails Collected\nSignup Link Sent\nAccount Created\nFirst Shipment Done",
-                "default": "Not Started",
-                "read_only": 1,
-            },
-            {
-                "fieldname": "shipkia_ai_column_break",
-                "fieldtype": "Column Break",
-                "insert_after": "shipkia_ai_onboarding_stage",
-            },
-            {
-                "fieldname": "shipkia_ai_last_action",
-                "label": "AI Last Action",
-                "fieldtype": "Data",
-                "insert_after": "shipkia_ai_column_break",
-                "in_list_view": 1,
-                "read_only": 1,
-            },
-            {
-                "fieldname": "shipkia_ai_last_qualified_at",
-                "label": "AI Last Qualified At",
-                "fieldtype": "Datetime",
-                "insert_after": "shipkia_ai_last_action",
-                "in_standard_filter": 1,
-            },
-            {
-                "fieldname": "shipkia_ai_messages_count",
-                "label": "AI Messages Count",
-                "fieldtype": "Int",
-                "insert_after": "shipkia_ai_last_qualified_at",
-                "default": "0",
-            },
-            {
-                "fieldname": "shipkia_ai_details_collected",
-                "label": "AI Details Collected",
-                "fieldtype": "Int",
-                "insert_after": "shipkia_ai_messages_count",
-                "default": "0",
-            },
-            {
-                "fieldname": "shipkia_ai_last_message_at",
-                "label": "AI Last Message At",
-                "fieldtype": "Datetime",
-                "insert_after": "shipkia_ai_details_collected",
-            },
-            {
-                "fieldname": "shipkia_ai_pending_qualification_at",
-                "label": "AI Pending Qualification At",
-                "fieldtype": "Datetime",
-                "insert_after": "shipkia_ai_last_message_at",
-                "hidden": 1,
-            },
-            {
-                "fieldname": "shipkia_ai_qualification_fingerprint",
-                "label": "AI Qualification Fingerprint",
-                "fieldtype": "Data",
-                "insert_after": "shipkia_ai_pending_qualification_at",
-                "hidden": 1,
-            },
-            {
-                "fieldname": "shipkia_ai_qualification_reason",
-                "label": "AI Qualification Reason",
-                "fieldtype": "Small Text",
-                "insert_after": "shipkia_ai_qualification_fingerprint",
-            },
-        ]
-    }
-    create_custom_fields(custom_fields, update=True)
-
-
-def ensure_shipkia_aggregator_check_fields() -> None:
-    if not frappe.db.exists("DocType", "Lead"):
-        return
-
-    create_custom_fields(
-        {
-            "Lead": [
-                {
-                    "fieldname": "shipkia_current_aggregator_verified",
-                    "label": "Current Aggregator Verified",
-                    "fieldtype": "Check",
-                    "insert_after": "shipkia_current_aggregator_name",
-                    "in_list_view": 1,
-                    "in_standard_filter": 1,
-                    "default": "0",
-                },
-                {
-                    "fieldname": "shipkia_current_aggregator_raw",
-                    "label": "Current Aggregator Raw",
-                    "fieldtype": "Data",
-                    "insert_after": "shipkia_current_aggregator_verified",
-                    "description": "Original aggregator text shared by the WhatsApp lead when it is not recognized.",
-                },
-            ]
-        },
-        update=True,
-    )
-
-
-def ensure_shipkia_route_fields() -> None:
-    if not frappe.db.exists("DocType", "Lead"):
-        return
-
-    create_custom_fields(
-        {
-            "Lead": [
-                {
-                    "fieldname": "shipkia_delivery_city",
-                    "label": "Delivery City",
-                    "fieldtype": "Data",
-                    "insert_after": "shipkia_pickup_pincode",
-                    "description": "Destination city shared by the WhatsApp lead for starting-rate checks.",
-                },
-            ]
-        },
-        update=True,
-    )
-
-
-def ensure_shipkia_conversation_state_fields() -> None:
-    if not frappe.db.exists("DocType", "Chat Conversation"):
-        return
-
-    create_custom_fields(
-        {
-            "Chat Conversation": [
-                {
-                    "fieldname": "shipkia_last_bot_question",
-                    "label": "ShipKia Last Bot Question",
-                    "fieldtype": "Data",
-                    "insert_after": "ai_summary",
-                    "hidden": 1,
-                    "no_copy": 1,
-                },
-                {
-                    "fieldname": "shipkia_pending_slots",
-                    "label": "ShipKia Pending Slots",
-                    "fieldtype": "Small Text",
-                    "insert_after": "shipkia_last_bot_question",
-                    "hidden": 1,
-                    "no_copy": 1,
-                },
-            ]
-        },
-        update=True,
-    )
-
-
 def ensure_chat_message_indexes() -> None:
     try:
+        from wa_chat_hub.patches.v1_0.add_customer_indexed_phone_lookup import (
+            ensure_customer_phone_lookup_schema,
+        )
         from wa_chat_hub.patches.v1_0.add_chat_message_indexes import (
             ensure_chat_contact_channel_profile_indexes,
             ensure_chat_contact_indexes,
@@ -414,8 +177,76 @@ def ensure_chat_message_indexes() -> None:
         ensure_chat_contact_channel_profile_indexes()
         ensure_crm_lead_indexes()
         ensure_reference_phone_indexes()
+        ensure_customer_phone_lookup_schema()
     except Exception:
         _safe_log_error("Chat Message Index Sync Failed")
+
+
+def ensure_app_update_indexes() -> None:
+    """Keep filtered update-log history reads index-backed."""
+    table_name = "tabWA App Update Log"
+    index_name = "idx_wa_update_script_executed_at"
+    table_exists = frappe.db.sql(
+        """
+        SELECT 1
+        FROM information_schema.TABLES
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+        LIMIT 1
+        """,
+        table_name,
+    )
+    if not table_exists:
+        return
+    exists = frappe.db.sql(
+        """
+        SELECT COUNT(*)
+        FROM information_schema.STATISTICS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = %s
+          AND INDEX_NAME = %s
+        """,
+        (table_name, index_name),
+    )[0][0]
+    if exists:
+        return
+    frappe.db.sql(
+        f"""
+        ALTER TABLE `{table_name}`
+        ADD INDEX `{index_name}` (`update_script`, `executed_at`),
+        ALGORITHM=INPLACE, LOCK=NONE
+        """
+    )
+
+
+def ensure_app_update_setting() -> None:
+    if not frappe.db.exists("DocType", "WA Chat Hub Settings"):
+        return
+    initialized = frappe.db.get_single_value(
+        "WA Chat Hub Settings", "app_update_system_initialized"
+    )
+    if not initialized:
+        frappe.db.set_single_value("WA Chat Hub Settings", "enable_app_update_system", 1)
+        frappe.db.set_single_value("WA Chat Hub Settings", "app_update_system_initialized", 1)
+
+
+def backfill_channel_account_medical_departments() -> None:
+    """Copy existing account pipeline-map medical departments into the account default."""
+    if not frappe.db.exists("DocType", "Chat Channel Account"):
+        return
+    if not frappe.get_meta("Chat Channel Account").has_field("default_medical_department"):
+        return
+    if not frappe.db.exists("DocType", "WA Channel Pipeline Map"):
+        return
+    statement = """
+        UPDATE `tabChat Channel Account` cca
+        INNER JOIN `tabWA Channel Pipeline Map` wpm
+            ON wpm.chat_channel_account = cca.name
+           AND wpm.is_active = 1
+        SET cca.default_medical_department = wpm.sr_medical_department
+        WHERE {condition}
+    """
+    frappe.db.sql(statement.format(condition="cca.default_medical_department IS NULL"))
+    frappe.db.sql(statement.format(condition="cca.default_medical_department = ''"))
 
 
 def migrate_conversation_crm_lead_links() -> None:

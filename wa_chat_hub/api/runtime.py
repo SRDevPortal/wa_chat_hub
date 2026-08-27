@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import mimetypes
 import time
 
 import frappe
 import requests
 from frappe import _
+from frappe.utils import cint
 from frappe.utils.file_manager import save_file
 
 from wa_chat_hub.interakt.templates_api import (
     fetch_approved_templates,
+    find_approved_template,
+    resolve_approved_template,
     resolve_channel_account_from_conversation,
 )
 from wa_chat_hub.outbound import send_interakt_template_message, send_outbound_message
@@ -16,6 +20,8 @@ from wa_chat_hub.permissions import ensure_can_read_conversation
 from wa_chat_hub.services import append_message
 from wa_chat_hub.security import safe_ai_get_doc, safe_ai_set_value, set_ai_security_context, set_service_user_context
 from wa_chat_hub.task_logger import elapsed, task_log
+
+TEMPLATE_MEDIA_PREVIEW_MAX_BYTES = 20 * 1024 * 1024
 
 
 @frappe.whitelist()
@@ -357,6 +363,46 @@ def get_interakt_templates(conversation=None, channel_account=None, force_refres
     }
 
 
+@frappe.whitelist()
+def get_interakt_template_header_media(conversation, template_name, language_code="en"):
+    """Proxy approved template media so browser CSP never blocks its preview."""
+    ensure_can_read_conversation(conversation)
+    channel_account = resolve_channel_account_from_conversation(conversation)
+    templates = fetch_approved_templates(channel_account, force_refresh=False)
+    template = find_approved_template(templates, template_name, language_code)
+    if not template:
+        frappe.throw(_("Approved Interakt template not found"))
+
+    header_format = str(template.get("header_format") or "").strip().upper()
+    media_url = str(template.get("header_media_url") or "").strip()
+    if header_format not in {"IMAGE", "VIDEO", "DOCUMENT"} or not media_url:
+        frappe.throw(_("Template has no previewable header media"))
+
+    response = requests.get(media_url, timeout=25, stream=True)
+    response.raise_for_status()
+    content_length = cint(response.headers.get("content-length"))
+    if content_length and content_length > TEMPLATE_MEDIA_PREVIEW_MAX_BYTES:
+        frappe.throw(_("Template header media is too large to preview"))
+
+    chunks = []
+    total = 0
+    for chunk in response.iter_content(chunk_size=64 * 1024):
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > TEMPLATE_MEDIA_PREVIEW_MAX_BYTES:
+            frappe.throw(_("Template header media is too large to preview"))
+        chunks.append(chunk)
+
+    file_name = template.get("header_media_file_name") or "template-header-media"
+    content_type = response.headers.get("content-type") or mimetypes.guess_type(file_name)[0]
+    frappe.response["type"] = "download"
+    frappe.response["filename"] = file_name
+    frappe.response["filecontent"] = b"".join(chunks)
+    frappe.response["content_type"] = content_type or "application/octet-stream"
+    frappe.response["display_content_as"] = "inline"
+
+
 @frappe.whitelist(methods=["POST"])
 def send_template_message():
     payload = frappe.local.form_dict or {}
@@ -383,6 +429,8 @@ def send_template_message():
         "campaign_id": payload.get("campaign_id"),
         "template_category": payload.get("template_category"),
     }
+    channel_account = resolve_channel_account_from_conversation(conversation)
+    template = resolve_approved_template(channel_account, template)
 
     try:
         outbound = send_interakt_template_message(conversation, template)

@@ -8,21 +8,11 @@
  "field_order": [
   "server_label",
   "is_active",
-  "company",
   "server_url",
-  "authorization_header",
   "transport_type",
   "department"
  ],
  "fields": [
-  {
-   "fieldname": "company",
-   "fieldtype": "Link",
-   "in_list_view": 1,
-   "in_standard_filter": 1,
-   "label": "Company",
-   "options": "AI Company"
-  },
   {
    "fieldname": "server_label",
    "fieldtype": "Data",
@@ -47,12 +37,6 @@
    "reqd": 1
   },
   {
-   "description": "Optional HTTP Authorization header used for MCP HTTP tools. Example: token key:secret",
-   "fieldname": "authorization_header",
-   "fieldtype": "Password",
-   "label": "Authorization Header"
-  },
-  {
    "default": "HTTP",
    "fieldname": "transport_type",
    "fieldtype": "Select",
@@ -62,13 +46,14 @@
   {
    "description": "Optional. Leave blank for all departments.",
    "fieldname": "department",
-   "fieldtype": "Data",
-   "label": "Department"
+   "fieldtype": "Link",
+   "label": "Department",
+   "options": "Department"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-07-16 00:00:00.000000",
+ "modified": "2026-05-21 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "WA Chat Hub",
  "name": "WA MCP Server",

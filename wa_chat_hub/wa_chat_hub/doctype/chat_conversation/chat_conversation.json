@@ -5,7 +5,6 @@
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
-  "company",
   "channel_account",
   "contact",
   "department",
@@ -21,6 +20,19 @@
   "unread_count",
   "ai_summary",
   "linked_crm_lead",
+  "party_type",
+  "identity_status",
+  "agent_profile",
+  "department_source",
+  "department_confidence",
+  "routing_reason",
+  "routing_version",
+  "last_identity_sync_at",
+  "pending_request_message",
+  "active_ai_workflow",
+  "ai_workflow_state",
+  "workflow_expires_at",
+  "workflow_last_message",
   "linked_reference_doctype",
   "linked_reference_name",
   "sb_messaging_window",
@@ -39,14 +51,6 @@
  ],
  "fields": [
   {
-   "fieldname": "company",
-   "fieldtype": "Link",
-   "in_list_view": 1,
-   "in_standard_filter": 1,
-   "label": "Company",
-   "options": "AI Company"
-  },
-  {
    "fieldname": "channel_account",
    "fieldtype": "Link",
    "in_list_view": 1,
@@ -64,8 +68,9 @@
   },
   {
    "fieldname": "department",
-   "fieldtype": "Data",
-   "label": "Department"
+   "fieldtype": "Link",
+   "label": "Department",
+   "options": "Department"
   },
   {
    "fieldname": "assigned_to",
@@ -146,8 +151,101 @@
   },
   {
    "fieldname": "linked_crm_lead",
+   "fieldtype": "Link",
+   "label": "CRM Lead",
+   "options": "CRM Lead"
+  },
+  {
+   "default": "Unknown",
+   "fieldname": "party_type",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Party Type",
+   "options": "Unknown\nLead\nCustomer",
+   "read_only": 1
+  },
+  {
+   "default": "Unverified",
+   "fieldname": "identity_status",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Identity Status",
+   "options": "Unverified\nMatched",
+   "read_only": 1
+  },
+  {
+   "fieldname": "agent_profile",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "AI Agent Profile",
+   "options": "WA AI Agent Profile",
+   "read_only": 1
+  },
+  {
+   "fieldname": "department_source",
    "fieldtype": "Data",
-   "label": "CRM Lead"
+   "label": "Department Source",
+   "read_only": 1
+  },
+  {
+   "fieldname": "department_confidence",
+   "fieldtype": "Float",
+   "label": "Department Confidence",
+   "precision": "2",
+   "read_only": 1
+  },
+  {
+   "fieldname": "routing_reason",
+   "fieldtype": "Small Text",
+   "label": "AI Routing Reason",
+   "read_only": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "routing_version",
+   "fieldtype": "Int",
+   "label": "Routing Version",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_identity_sync_at",
+   "fieldtype": "Datetime",
+   "label": "Last Identity Sync At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "pending_request_message",
+   "fieldtype": "Link",
+   "label": "Pending Request Message",
+   "options": "Chat Message",
+   "read_only": 1
+  },
+  {
+   "fieldname": "active_ai_workflow",
+   "fieldtype": "Link",
+   "label": "Active AI Workflow",
+   "options": "WA AI Workflow",
+   "read_only": 1
+  },
+  {
+   "fieldname": "ai_workflow_state",
+   "fieldtype": "Code",
+   "label": "AI Workflow State",
+   "options": "JSON",
+   "read_only": 1
+  },
+  {
+   "fieldname": "workflow_expires_at",
+   "fieldtype": "Datetime",
+   "label": "Workflow Expires At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "workflow_last_message",
+   "fieldtype": "Link",
+   "label": "Workflow Last Message",
+   "options": "Chat Message",
+   "read_only": 1
   },
   {
    "fieldname": "linked_reference_doctype",
@@ -244,7 +342,7 @@
   }
  ],
  "links": [],
- "modified": "2026-07-16 00:00:00.000000",
+ "modified": "2026-05-20 20:00:00.000000",
  "modified_by": "Administrator",
  "module": "WA Chat Hub",
  "name": "Chat Conversation",
@@ -269,5 +367,5 @@
  "sort_order": "DESC",
  "states": [],
  "title_field": "contact",
- "track_changes": 1
+ "track_changes": 0
 }

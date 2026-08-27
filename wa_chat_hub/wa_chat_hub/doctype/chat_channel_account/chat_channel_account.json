@@ -14,8 +14,9 @@
   "connector_status",
   "default_team",
   "is_active",
-  "company",
+  "ai_policy_bundle",
   "interakt_config",
+  "outbound_pipelines",
   "interakt_api_key",
   "interakt_base_url",
   "interakt_webhook_secret",
@@ -34,14 +35,6 @@
  ],
  "fields": [
   {
-   "fieldname": "company",
-   "fieldtype": "Link",
-   "in_list_view": 1,
-   "in_standard_filter": 1,
-   "label": "Company",
-   "options": "AI Company"
-  },
-  {
    "fieldname": "account_name",
    "fieldtype": "Data",
    "in_list_view": 1,
@@ -59,8 +52,9 @@
   },
   {
    "fieldname": "department",
-   "fieldtype": "Data",
-   "label": "Department"
+   "fieldtype": "Link",
+   "label": "Department",
+   "options": "Department"
   },
   {
    "fieldname": "phone_number",
@@ -99,10 +93,26 @@
    "label": "Is Active"
   },
   {
+   "search_index": 1,
+   "description": "Versioned business policy for identity, routing, replies, scoring, media, providers, runtime and permissions.",
+   "fieldname": "ai_policy_bundle",
+   "fieldtype": "Link",
+   "label": "AI Policy Bundle",
+   "options": "WA AI Policy Bundle"
+  },
+  {
    "depends_on": "eval:doc.channel_type == 'Interakt'",
    "fieldname": "interakt_config",
    "fieldtype": "Section Break",
    "label": "Interakt API Config"
+  },
+  {
+   "depends_on": "eval:doc.channel_type == 'Interakt'",
+   "description": "CRM Lead pipelines that use this Interakt account when an agent starts a new WhatsApp conversation.",
+   "fieldname": "outbound_pipelines",
+   "fieldtype": "Table",
+   "label": "Pipelines",
+   "options": "Chat Channel Account Pipeline"
   },
   {
    "depends_on": "eval:doc.channel_type == 'Interakt'",
@@ -208,7 +218,7 @@
   }
  ],
  "links": [],
- "modified": "2026-07-16 00:00:00.000000",
+ "modified": "2026-04-09 12:53:06.496849",
  "modified_by": "Administrator",
  "module": "WA Chat Hub",
  "name": "Chat Channel Account",

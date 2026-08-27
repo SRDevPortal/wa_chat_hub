@@ -1,0 +1,382 @@
+from types import SimpleNamespace
+from unittest import TestCase
+from unittest.mock import MagicMock, patch
+
+from wa_chat_hub.identity import (
+    _matching_patient_phone_field,
+    _normalized_phone,
+    _phones_from_text,
+    _claims_current_chat_number,
+    expire_conversation_verification,
+    reconcile_conversation_identity,
+    verify_patient_identity_by_agent,
+    verify_patient_identity_from_inbound_message,
+)
+from wa_chat_hub.tests.policy_fixtures import IDENTITY_POLICY, TEST_POLICY
+
+
+class TestPatientIdentityVerification(TestCase):
+    def setUp(self):
+        self.policy_patcher = patch(
+            "wa_chat_hub.identity.get_conversation_policy", return_value=TEST_POLICY
+        )
+        self.policy_patcher.start()
+        self.addCleanup(self.policy_patcher.stop)
+
+    @patch("wa_chat_hub.identity.verify_patient_identity_from_inbound_message")
+    @patch("wa_chat_hub.identity.frappe")
+    def test_agent_verification_validates_latest_inbound_message(self, frappe, verify_from_message):
+        frappe.db.exists.return_value = True
+        frappe.get_doc.return_value = SimpleNamespace(
+            linked_patient="PAT-1",
+            linked_crm_lead=None,
+        )
+        frappe.get_all.return_value = ["MSG-LATEST"]
+        verify_from_message.return_value = {"verified": False, "reason": "evidence_missing"}
+
+        result = verify_patient_identity_by_agent(
+            patient="PAT-1",
+            conversation="CONV-1",
+        )
+
+        self.assertFalse(result["verified"])
+        verify_from_message.assert_called_once_with("CONV-1", "MSG-LATEST")
+
+    @patch("wa_chat_hub.identity.frappe")
+    def test_expired_verification_resets_to_matched(self, frappe):
+        frappe.db.exists.return_value = True
+        frappe.get_doc.return_value = SimpleNamespace(
+            identity_status="Verified",
+            verification_completed_at="2026-08-03 12:00:00",
+            linked_patient="PAT-1",
+            linked_reference_doctype="Patient",
+            linked_reference_name="PAT-1",
+        )
+        frappe.get_meta.return_value.has_field.return_value = True
+
+        result = expire_conversation_verification(
+            "CONV-1",
+            validity_hours=24,
+            current_time="2026-08-04 12:00:01",
+        )
+
+        self.assertTrue(result["expired"])
+        values = frappe.db.set_value.call_args.args[2]
+        self.assertEqual(values["identity_status"], "Matched")
+        self.assertIsNone(values["verification_completed_at"])
+        self.assertEqual(values["routing_reason"], "patient_verification_expired")
+
+    @patch("wa_chat_hub.identity.frappe")
+    def test_verification_remains_valid_inside_window(self, frappe):
+        frappe.db.exists.return_value = True
+        frappe.get_doc.return_value = SimpleNamespace(
+            identity_status="Verified",
+            verification_completed_at="2026-08-04 11:00:00",
+            linked_patient="PAT-1",
+        )
+
+        result = expire_conversation_verification(
+            "CONV-1",
+            validity_hours=24,
+            current_time="2026-08-04 12:00:00",
+        )
+
+        self.assertFalse(result["expired"])
+        self.assertEqual(result["reason"], "verification_still_valid")
+        frappe.db.set_value.assert_not_called()
+
+    @patch("wa_chat_hub.identity.frappe")
+    def test_zero_validity_explicitly_disables_expiry(self, frappe):
+        frappe.db.exists.return_value = True
+        frappe.get_doc.return_value = SimpleNamespace(identity_status="Verified")
+
+        result = expire_conversation_verification("CONV-1", validity_hours=0)
+
+        self.assertFalse(result["expired"])
+        self.assertEqual(result["reason"], "expiry_disabled")
+        frappe.db.set_value.assert_not_called()
+
+    @patch("wa_chat_hub.identity.frappe")
+    def test_missing_verification_timestamp_is_reset(self, frappe):
+        frappe.db.exists.return_value = True
+        frappe.get_doc.return_value = SimpleNamespace(
+            identity_status="Verified",
+            verification_completed_at=None,
+            linked_patient="PAT-1",
+            linked_reference_doctype="Patient",
+            linked_reference_name="PAT-1",
+        )
+        frappe.get_meta.return_value.has_field.return_value = True
+
+        result = expire_conversation_verification(
+            "CONV-1",
+            validity_hours=24,
+            current_time="2026-08-04 12:00:00",
+        )
+
+        self.assertTrue(result["expired"])
+        self.assertEqual(result["reason"], "verification_timestamp_missing")
+
+    @patch("wa_chat_hub.identity.now_datetime", return_value="2026-07-28 13:00:00")
+    @patch("wa_chat_hub.identity.frappe")
+    def test_routine_reconciliation_never_downgrades_verified_patient(
+        self, frappe, _now
+    ):
+        frappe.db.exists.return_value = True
+        frappe.get_doc.return_value = SimpleNamespace(
+            linked_patient="PAT-1",
+            linked_reference_doctype="Patient",
+            linked_reference_name="PAT-1",
+            linked_crm_lead="LEAD-1",
+            identity_status="Verified",
+        )
+        conversation_meta = MagicMock()
+        conversation_meta.has_field.return_value = True
+        patient_meta = MagicMock()
+        patient_meta.has_field.return_value = False
+        frappe.get_meta.side_effect = [conversation_meta, patient_meta]
+
+        result = reconcile_conversation_identity(
+            "CONV-1",
+            patient="PAT-1",
+            source="inbound",
+        )
+
+        self.assertEqual(result["values"]["identity_status"], "Verified")
+        self.assertEqual(
+            frappe.db.set_value.call_args.args[2]["identity_status"],
+            "Verified",
+        )
+
+    def test_normalizes_country_code_and_formatting(self):
+        self.assertEqual(
+            _normalized_phone("+91 90000-00001", IDENTITY_POLICY), "9000000001"
+        )
+
+    def test_extracts_phone_but_not_short_date_parts(self):
+        self.assertEqual(
+            _phones_from_text(
+                "Example User\nJuly 22 1992\nMy number is +91 90000 00001",
+                IDENTITY_POLICY,
+            ),
+            {"9000000001"},
+        )
+
+    def test_recognizes_current_chat_number_ownership_statements(self):
+        for text in (
+            "This is my number",
+            "This is my WhatsApp number",
+            "Yahi mera number hai",
+            "Ye mera number h",
+            "Ye mera no h",
+            "Current number is mine",
+        ):
+            self.assertTrue(_claims_current_chat_number(text, IDENTITY_POLICY), text)
+        self.assertFalse(_claims_current_chat_number("hello", IDENTITY_POLICY))
+        self.assertFalse(
+            _claims_current_chat_number("what is my number", IDENTITY_POLICY)
+        )
+
+    @patch("wa_chat_hub.identity.frappe")
+    def test_matches_patient_mobile_or_phone(self, frappe):
+        frappe.get_meta.return_value.has_field.return_value = True
+        frappe.db.get_value.return_value = {
+            "mobile": "9876543210",
+            "phone": "+91 90000 00001",
+        }
+
+        self.assertEqual(
+            _matching_patient_phone_field(
+                "HLC-PAT-2026-00001", "9876543210", IDENTITY_POLICY
+            ),
+            "mobile",
+        )
+        self.assertEqual(
+            _matching_patient_phone_field(
+                "HLC-PAT-2026-00001", "9000000001", IDENTITY_POLICY
+            ),
+            "phone",
+        )
+
+    @patch("wa_chat_hub.identity.frappe")
+    @patch("wa_chat_hub.identity._matching_patient_phone_field")
+    @patch("wa_chat_hub.identity.reconcile_conversation_identity")
+    @patch("wa_chat_hub.agent_router.persist_agent_route")
+    @patch("wa_chat_hub.agent_router.resolve_agent_route")
+    def test_verifies_only_on_three_way_match(
+        self,
+        resolve_route,
+        persist_route,
+        reconcile,
+        matching_patient_phone,
+        frappe,
+    ):
+        frappe.db.exists.return_value = True
+        frappe.db.get_value.return_value = "919000000001"
+        frappe.get_doc.side_effect = [
+            SimpleNamespace(
+                identity_status="Matched",
+                linked_patient="HLC-PAT-2026-00001",
+                linked_crm_lead=None,
+                linked_reference_doctype="Patient",
+                linked_reference_name="HLC-PAT-2026-00001",
+                contact="919000000001",
+            ),
+            SimpleNamespace(
+                conversation="1",
+                direction="Inbound",
+                body="Example User, my number is 9000000001",
+            ),
+        ]
+        matching_patient_phone.return_value = "mobile"
+        reconcile.return_value = {"changed": True}
+        resolve_route.return_value = SimpleNamespace(agent_profile="Patient Care Agent")
+
+        result = verify_patient_identity_from_inbound_message("1", "1111")
+
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["reason"], "three_way_phone_match")
+        self.assertEqual(result["patient_phone_field"], "mobile")
+        reconcile.assert_called_once_with(
+            "1",
+            patient="HLC-PAT-2026-00001",
+            source="patient_phone_match",
+            verified=True,
+        )
+        persist_route.assert_called_once()
+
+    @patch("wa_chat_hub.identity.frappe")
+    @patch("wa_chat_hub.identity._matching_patient_phone_field")
+    @patch("wa_chat_hub.identity.reconcile_conversation_identity")
+    @patch("wa_chat_hub.agent_router.persist_agent_route")
+    @patch("wa_chat_hub.agent_router.resolve_agent_route")
+    def test_verifies_when_conversation_id_types_differ(
+        self,
+        resolve_route,
+        persist_route,
+        reconcile,
+        matching_patient_phone,
+        frappe,
+    ):
+        frappe.db.exists.return_value = True
+        frappe.db.get_value.return_value = "919000000001"
+        frappe.get_doc.side_effect = [
+            SimpleNamespace(
+                name=1,
+                identity_status="Matched",
+                linked_patient="HLC-PAT-2026-00001",
+                linked_crm_lead=None,
+                linked_reference_doctype="Patient",
+                linked_reference_name="HLC-PAT-2026-00001",
+                contact="919000000001",
+            ),
+            SimpleNamespace(
+                conversation="1",
+                direction="Inbound",
+                body="9000000001",
+            ),
+        ]
+        matching_patient_phone.return_value = "mobile"
+        reconcile.return_value = {"changed": True}
+        resolve_route.return_value = SimpleNamespace(agent_profile="Patient Care Agent")
+
+        result = verify_patient_identity_from_inbound_message(1, "1111")
+
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["reason"], "three_way_phone_match")
+        persist_route.assert_called_once()
+
+    @patch("wa_chat_hub.identity.frappe")
+    @patch("wa_chat_hub.identity.reconcile_conversation_identity")
+    def test_does_not_verify_when_supplied_phone_differs(self, reconcile, frappe):
+        frappe.db.exists.return_value = True
+        frappe.db.get_value.return_value = "919000000001"
+        frappe.get_doc.side_effect = [
+            SimpleNamespace(
+                identity_status="Matched",
+                linked_patient="HLC-PAT-2026-00001",
+                linked_crm_lead=None,
+                linked_reference_doctype="Patient",
+                linked_reference_name="HLC-PAT-2026-00001",
+                contact="919000000001",
+            ),
+            SimpleNamespace(
+                conversation="1",
+                direction="Inbound",
+                body="My number is 9876543210",
+            ),
+        ]
+
+        result = verify_patient_identity_from_inbound_message("1", "1111")
+
+        self.assertFalse(result["verified"])
+        self.assertEqual(result["reason"], "supplied_phone_mismatch")
+        reconcile.assert_not_called()
+
+    @patch("wa_chat_hub.identity.frappe")
+    @patch("wa_chat_hub.identity.reconcile_conversation_identity")
+    def test_does_not_verify_when_message_has_no_phone(self, reconcile, frappe):
+        frappe.db.exists.return_value = True
+        frappe.db.get_value.return_value = "919000000001"
+        frappe.get_doc.side_effect = [
+            SimpleNamespace(
+                identity_status="Matched",
+                linked_patient="HLC-PAT-2026-00001",
+                linked_crm_lead=None,
+                linked_reference_doctype="Patient",
+                linked_reference_name="HLC-PAT-2026-00001",
+                contact="919000000001",
+            ),
+            SimpleNamespace(
+                conversation="1",
+                direction="Inbound",
+                body="My name is Example User",
+            ),
+        ]
+
+        result = verify_patient_identity_from_inbound_message("1", "1111")
+
+        self.assertFalse(result["verified"])
+        self.assertEqual(result["reason"], "current_number_ownership_not_confirmed")
+        reconcile.assert_not_called()
+
+    @patch("wa_chat_hub.identity.frappe")
+    @patch("wa_chat_hub.identity._matching_patient_phone_field")
+    @patch("wa_chat_hub.identity.reconcile_conversation_identity")
+    @patch("wa_chat_hub.agent_router.persist_agent_route")
+    @patch("wa_chat_hub.agent_router.resolve_agent_route")
+    def test_verifies_explicit_current_chat_number_ownership(
+        self,
+        resolve_route,
+        persist_route,
+        reconcile,
+        matching_patient_phone,
+        frappe,
+    ):
+        frappe.db.exists.return_value = True
+        frappe.db.get_value.return_value = "919000000002"
+        frappe.get_doc.side_effect = [
+            SimpleNamespace(
+                identity_status="Matched",
+                linked_patient="PAT-1",
+                linked_crm_lead=None,
+                linked_reference_doctype="Patient",
+                linked_reference_name="PAT-1",
+                contact="919000000002",
+            ),
+            SimpleNamespace(
+                conversation="1",
+                direction="Inbound",
+                body="Yahi mera number hai",
+            ),
+        ]
+        matching_patient_phone.return_value = "mobile"
+        reconcile.return_value = {"changed": True}
+        resolve_route.return_value = SimpleNamespace(agent_profile="Patient Care Agent")
+
+        result = verify_patient_identity_from_inbound_message("1", "MSG-1")
+
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["reason"], "current_chat_number_ownership_match")
+        reconcile.assert_called_once()
+        persist_route.assert_called_once()

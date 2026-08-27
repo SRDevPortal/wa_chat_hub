@@ -8,22 +8,16 @@
  "field_order": [
   "tool_name",
   "is_active",
-  "company",
+  "configuration_version",
+  "access_mode",
   "description",
   "server",
   "endpoint_url",
   "http_method",
-  "parameters_schema"
+  "parameters_schema",
+  "execution_config"
  ],
  "fields": [
-  {
-   "fieldname": "company",
-   "fieldtype": "Link",
-   "in_list_view": 1,
-   "in_standard_filter": 1,
-   "label": "Company",
-   "options": "AI Company"
-  },
   {
    "description": "Unique tool id exposed to the AI (OpenAI function name).",
    "fieldname": "tool_name",
@@ -39,6 +33,23 @@
    "fieldtype": "Check",
    "in_list_view": 1,
    "label": "Is Active"
+  },
+  {
+   "default": "1",
+   "description": "Increment only when applying an intentional seed-managed configuration upgrade.",
+   "fieldname": "configuration_version",
+   "fieldtype": "Int",
+   "label": "Configuration Version",
+   "reqd": 1
+  },
+  {
+   "default": "Read",
+   "description": "Choose whether this MCP tool is intended only to read data or can write/update data.",
+   "fieldname": "access_mode",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Access Mode",
+   "options": "Read\nWrite"
   },
   {
    "fieldname": "description",
@@ -72,11 +83,18 @@
    "fieldtype": "Code",
    "label": "Parameters Schema",
    "options": "JSON"
+  },
+  {
+   "description": "Optional JSON behavior config used by generic MCP handlers. This lets admins change supported MCP behavior from UI without editing code.",
+   "fieldname": "execution_config",
+   "fieldtype": "Code",
+   "label": "Execution Config",
+   "options": "JSON"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-07-16 00:00:00.000000",
+ "modified": "2026-05-21 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "WA Chat Hub",
  "name": "WA MCP Tool Endpoint",

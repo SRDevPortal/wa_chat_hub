@@ -22,6 +22,7 @@ def get_active_knowledge_base(
     context: str | None = None,
     department: str | None = None,
     channel_account: str | None = None,
+    allowed_names: set[str] | None = None,
 ):
     fields = _knowledge_base_fields()
     if context:
@@ -38,20 +39,23 @@ def get_active_knowledge_base(
         return _filter_knowledge_rows(rows, department=department, channel_account=channel_account)
 
     filters = {"is_active": 1}
-    if department:
-        filters["department"] = ["in", ["", department]]
+    if allowed_names:
+        filters["name"] = ["in", sorted(allowed_names)]
     if channel_account and "chat_channel_account" in fields:
         filters["chat_channel_account"] = ["in", ["", channel_account]]
-    return safe_ai_get_all(
+    rows = safe_ai_get_all(
         "WA AI Knowledge Base",
         filters=filters,
         fields=fields,
         order_by="priority desc, modified desc",
     )
+    return _filter_knowledge_rows(rows, department=department, channel_account=channel_account)
 
 
 def _knowledge_base_fields() -> list[str]:
     fields = ["name", "kb_label", "kb_type", "source_path", "source_url", "department", "priority", "content"]
+    if frappe.get_meta("WA AI Knowledge Base").has_field("medical_department"):
+        fields.insert(6, "medical_department")
     if frappe.get_meta("WA AI Knowledge Base").has_field("chat_channel_account"):
         fields.insert(3, "chat_channel_account")
     return fields
@@ -65,7 +69,7 @@ def _filter_knowledge_rows(
 ):
     result = []
     for row in rows:
-        row_department = row.get("department")
+        row_department = row.get("medical_department") or row.get("department")
         row_channel_account = row.get("chat_channel_account")
         if department and row_department and row_department != department:
             continue

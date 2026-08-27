@@ -8,7 +8,6 @@
  "field_order": [
   "context_name",
   "is_active",
-  "company",
   "routing_section",
   "pipeline",
   "channel_account",
@@ -26,14 +25,6 @@
   "knowledge_bases"
  ],
  "fields": [
-  {
-   "fieldname": "company",
-   "fieldtype": "Link",
-   "in_list_view": 1,
-   "in_standard_filter": 1,
-   "label": "Company",
-   "options": "AI Company"
-  },
   {
    "fieldname": "context_name",
    "fieldtype": "Data",
@@ -73,8 +64,9 @@
   },
   {
    "fieldname": "department",
-   "fieldtype": "Data",
-   "label": "Department"
+   "fieldtype": "Link",
+   "label": "Department",
+   "options": "Department"
   },
   {
    "fieldname": "ai_section",
@@ -97,8 +89,7 @@
    "default": "1",
    "fieldname": "medical_extraction_enabled",
    "fieldtype": "Check",
-   "hidden": 1,
-   "label": "Legacy Extraction Enabled"
+   "label": "Extraction Enabled"
   },
   {
    "default": "1",
@@ -144,7 +135,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-07-16 00:00:00.000000",
+ "modified": "2026-05-19 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "WA Chat Hub",
  "name": "WA Channel Context",

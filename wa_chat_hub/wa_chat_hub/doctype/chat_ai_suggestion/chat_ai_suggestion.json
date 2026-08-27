@@ -4,7 +4,6 @@
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
-  "company",
   "conversation",
   "suggestion_type",
   "content",
@@ -13,14 +12,6 @@
   "applied_reference_name"
  ],
  "fields": [
-  {
-   "fieldname": "company",
-   "fieldtype": "Link",
-   "in_list_view": 1,
-   "in_standard_filter": 1,
-   "label": "Company",
-   "options": "AI Company"
-  },
   {
    "fieldname": "conversation",
    "fieldtype": "Link",
@@ -73,6 +64,5 @@
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
- "track_changes": 1,
- "modified": "2026-07-16 00:00:00.000000"
+ "track_changes": 1
 }

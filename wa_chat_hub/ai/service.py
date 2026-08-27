@@ -7,8 +7,9 @@ from wa_chat_hub.security import safe_ai_get_all, safe_ai_insert
 
 import frappe
 
-PROMPT_SYSTEM = """You are a ShipKia WhatsApp sales/support copilot for ERPNext.
-Never invent exact courier rates. Prefer summarization, intent extraction, routing, structured drafting, and concise sales/support reply suggestions.
+PROMPT_SYSTEM = """You are a healthcare-safe WhatsApp copilot for ERPNext.
+Never provide diagnosis or medication instructions unless explicitly allowed by approved workflow.
+Prefer summarization, intent extraction, routing, structured drafting, and safe reply suggestions.
 """
 
 
@@ -37,12 +38,12 @@ def create_ai_suggestion(conversation: str, suggestion_type: str, content: str) 
 
 def heuristic_intent_and_department(messages: List[Dict[str, str]]) -> Dict[str, str]:
     text = "\n".join([(m.get("body") or "") for m in messages]).lower()
-    if any(word in text for word in ["rate", "rates", "price", "pricing", "cod", "prepaid", "rto"]):
-        return {"intent": "Rate Inquiry", "department_hint": "Sales"}
-    if any(word in text for word in ["order", "delivery", "parcel", "shipped", "tracking", "ndr"]):
-        return {"intent": "Shipping Support", "department_hint": "Support"}
-    if any(word in text for word in ["aggregator", "shiprocket", "monthly", "orders", "d2c", "b2c"]):
-        return {"intent": "Aggregator Onboarding", "department_hint": "Sales"}
+    if any(word in text for word in ["appointment", "book", "consult"]):
+        return {"intent": "Appointment", "department_hint": "General"}
+    if any(word in text for word in ["order", "delivery", "parcel", "shipped"]):
+        return {"intent": "Order Support", "department_hint": "Support"}
+    if any(word in text for word in ["skin", "acne", "eczema"]):
+        return {"intent": "Medical Inquiry", "department_hint": "Skin"}
     return {"intent": "General Inquiry", "department_hint": "General"}
 
 
@@ -61,8 +62,8 @@ def generate_reply_draft(conversation: str) -> Dict[str, str]:
     intent = heuristic_intent_and_department(messages)
     content = (
         f"Draft reply ({intent['intent']}): "
-        "Thanks for reaching out to ShipKia. We’ve noted your request and a team member will assist you shortly. "
-        "If needed, please share your business/store name, monthly shipments, current aggregator, pickup and delivery route, package weight, and payment mode."
+        "Thank you for reaching out. We’ve noted your request and a relevant team member will assist you shortly. "
+        "If needed, please share your name, concern, and any previous patient ID."
     )
     name = create_ai_suggestion(conversation, "Reply Draft", content)
     return {"name": name, "content": content}

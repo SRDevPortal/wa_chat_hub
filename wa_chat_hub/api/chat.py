@@ -11,6 +11,7 @@ from frappe import _
 from frappe.desk.form import assign_to
 from frappe.utils import cint, now_datetime
 
+from wa_chat_hub.audit import record_conversation_change
 from wa_chat_hub.messaging.attribution import get_conversation_attribution
 from wa_chat_hub.messaging.windows import get_messaging_window_state
 from wa_chat_hub.permissions import can_read_crm_lead
@@ -18,46 +19,19 @@ from wa_chat_hub.permissions import conversation_access_sql_condition
 from wa_chat_hub.permissions import ensure_can_read_conversation
 from wa_chat_hub.permissions import filter_accessible_conversation_rows
 from wa_chat_hub.permissions import filter_accessible_reference_names
-from wa_chat_hub.services import append_message, build_erp_actions, conversation_update_lock, mark_conversation_read
+from wa_chat_hub.services import (
+    _available_phone_index_filters,
+    append_message,
+    build_erp_actions,
+    conversation_update_lock,
+    mark_conversation_read,
+)
 from wa_chat_hub.services import normalize_phone
 from wa_chat_hub.task_logger import elapsed, task_log
 
-CHAT_HUB_SCOPE_DOCTYPES = {"CRM Lead", "Lead"}
+CHAT_HUB_SCOPE_DOCTYPES = {"CRM Lead", "Lead", "Patient", "Patient Encounter"}
 MEDIA_PROXY_MAX_BYTES = 20 * 1024 * 1024
 MEDIA_PROXY_CONTENT_TYPES = {"Image", "Video", "Audio", "Document", "Sticker"}
-
-
-def _current_company() -> str:
-    try:
-        from confluence_ai.tenant import get_current_company
-
-        return get_current_company() or ""
-    except Exception:
-        return ""
-
-
-def _company_filter(doctype: str) -> dict:
-    company = _current_company()
-    if not company:
-        return {}
-    try:
-        if not frappe.db.has_column(doctype, "company"):
-            return {}
-    except Exception:
-        return {}
-    return {"company": company}
-
-
-def _company_sql(doctype: str, alias: str) -> str:
-    company = _current_company()
-    if not company:
-        return "1=1"
-    try:
-        if not frappe.db.has_column(doctype, "company"):
-            return "1=1"
-    except Exception:
-        return "1=1"
-    return f"`{alias}`.`company` = {frappe.db.escape(company)}"
 
 
 def _chat_hub_scope_key(user: str | None = None) -> str:
@@ -137,7 +111,7 @@ def ingest_message():
 def get_channel_accounts():
     rows = frappe.get_all(
         "Chat Channel Account",
-        filters={"is_active": 1, **_company_filter("Chat Channel Account")},
+        filters={"is_active": 1},
         fields=["name", "account_name", "channel_type", "phone_number", "connector_status"],
         order_by="account_name asc",
     )
@@ -165,6 +139,12 @@ CONVERSATION_LIST_FIELDS = [
 
 MAX_REFERENCE_STATUS_NAMES = 500
 CONVERSATION_CACHE_TTL = 5
+CONVERSATION_SEARCH_CACHE_TTL = 10
+CONVERSATION_SEARCH_MIN_TEXT_LENGTH = 2
+CONVERSATION_SEARCH_MIN_PHONE_LENGTH = 4
+CONVERSATION_SEARCH_MAX_QUERY_LENGTH = 140
+CONVERSATION_SEARCH_SOURCE_LIMIT = 100
+CONVERSATION_SEARCH_CANDIDATE_LIMIT = 2000
 REFERENCE_STATUS_CACHE_TTL = 5
 REFERENCE_CHAT_STATUS_ENABLED = False
 
@@ -193,7 +173,6 @@ def _short_cache_set(key: str, value, ttl: int) -> None:
 def _api_cache_key(prefix: str, payload: dict) -> str:
     data = {
         "user": frappe.session.user,
-        "company": _current_company(),
         **payload,
     }
     return "wa_chat_hub:" + prefix + ":" + json.dumps(data, sort_keys=True, default=str)
@@ -219,7 +198,9 @@ def _conversation_list_filters(
         filters["channel_account"] = channel_account
     if reference_doctype and frappe.get_meta("Chat Conversation").has_field("linked_reference_doctype"):
         reference_doctype = str(reference_doctype).strip()
-        if reference_doctype == "CRM Lead":
+        if reference_doctype == "Patient":
+            filters["linked_reference_doctype"] = ["in", ["Patient", "Patient Encounter"]]
+        elif reference_doctype == "CRM Lead":
             filters["linked_reference_doctype"] = ["in", ["CRM Lead", "Lead"]]
         else:
             filters["linked_reference_doctype"] = reference_doctype
@@ -227,7 +208,6 @@ def _conversation_list_filters(
         temperature = str(lead_temperature).strip().title()
         if temperature in {"Hot", "Warm", "Cold"}:
             filters["lead_temperature"] = temperature
-    filters.update(_company_filter("Chat Conversation"))
     return filters
 
 
@@ -245,7 +225,7 @@ def _conversation_fetch_limit(limit) -> int:
 
 
 def _conversation_sql_rows(filters: dict, limit) -> list:
-    conditions = [conversation_access_sql_condition("c"), _company_sql("Chat Conversation", "c")]
+    conditions = [conversation_access_sql_condition("c")]
     values = {"limit": _conversation_fetch_limit(limit)}
 
     for index, (fieldname, value) in enumerate((filters or {}).items()):
@@ -266,7 +246,7 @@ def _conversation_sql_rows(filters: dict, limit) -> list:
     if has_last_message_time:
         select_fields.append("last_message_time")
     fields = ", ".join(f"c.`{fieldname}`" for fieldname in select_fields)
-    order_expression = "coalesce(c.`last_message_time`, c.`modified`)" if has_last_message_time else "c.`modified`"
+    order_expression = "c.`last_message_time`" if has_last_message_time else "c.`modified`"
     return frappe.db.sql(
         f"""
         select {fields}
@@ -315,37 +295,84 @@ def _enrich_conversation_rows(rows: list) -> list:
     return sorted(enriched, key=lambda row: str(row.get("last_message_time") or ""), reverse=True)
 
 
+def _phone_search_value(query: str) -> str:
+    compact = "".join(character for character in str(query or "") if character not in " +-()./")
+    if not compact.isdigit():
+        return ""
+    return normalize_phone(query)
+
+
 def _matching_contact_names(query: str) -> list[str]:
+    phone = _phone_search_value(query)
+    if phone:
+        return frappe.get_all(
+            "Chat Contact",
+            filters={"phone_number": phone},
+            pluck="name",
+            limit_page_length=CONVERSATION_SEARCH_SOURCE_LIMIT,
+        )
+
     q_like = f"%{query}%"
-    or_filters = [
-        ["display_name", "like", q_like],
-        ["phone_number", "like", q_like],
-        ["name", "like", q_like],
-    ]
-    phone = normalize_phone(query)
+    or_filters = [["display_name", "like", q_like], ["name", "like", q_like]]
     if phone and len(phone) >= 4:
-        last10 = phone[-10:]
-        or_filters.append(["phone_number", "like", f"%{last10}%"])
+        or_filters.append(["phone_number", "like", f"%{phone[-10:]}%"])
+    else:
+        or_filters.append(["phone_number", "like", q_like])
     return frappe.get_all(
         "Chat Contact",
-        filters=_company_filter("Chat Contact"),
         or_filters=or_filters,
         pluck="name",
-        limit_page_length=200,
+        limit_page_length=CONVERSATION_SEARCH_SOURCE_LIMIT,
     )
+
+
+def _indexed_reference_phone_names(doctype: str, phone_fields: list[str], query: str) -> list[str]:
+    meta = frappe.get_meta(doctype)
+    names = []
+    seen = set()
+    for fieldname, value in _available_phone_index_filters(meta, phone_fields, query):
+        for name in frappe.get_all(
+            doctype,
+            filters={fieldname: value},
+            pluck="name",
+            limit_page_length=CONVERSATION_SEARCH_SOURCE_LIMIT,
+        ):
+            if name not in seen:
+                names.append(name)
+                seen.add(name)
+                if len(names) >= CONVERSATION_SEARCH_SOURCE_LIMIT:
+                    return names
+    return names
 
 
 def _matching_reference_conversation_names(query: str, base_filters: dict) -> set[str]:
     names: set[str] = set()
     q_like = f"%{query}%"
+    phone = _phone_search_value(query)
 
     if frappe.db.exists("DocType", "CRM Lead"):
         lead_meta = frappe.get_meta("CRM Lead")
-        lead_or = [["lead_name", "like", q_like], ["name", "like", q_like]]
-        for fieldname in ("mobile_no", "phone", "mobile", "email"):
-            if lead_meta.has_field(fieldname):
-                lead_or.append([fieldname, "like", q_like])
-        lead_names = frappe.get_all("CRM Lead", or_filters=lead_or, pluck="name", limit_page_length=100)
+        lead_phone_fields = [
+            fieldname
+            for fieldname in ("mobile_no", "phone", "mobile", "custom_whatsapp_number")
+            if lead_meta.has_field(fieldname)
+        ]
+        lead_names = (
+            _indexed_reference_phone_names("CRM Lead", lead_phone_fields, phone) if phone else []
+        )
+        if not lead_names and not phone:
+            lead_or = [["lead_name", "like", q_like], ["name", "like", q_like]]
+            phone_like = f"%{phone[-10:]}%" if phone else q_like
+            for fieldname in lead_phone_fields:
+                lead_or.append([fieldname, "like", phone_like])
+            if lead_meta.has_field("email"):
+                lead_or.append(["email", "like", q_like])
+            lead_names = frappe.get_all(
+                "CRM Lead",
+                or_filters=lead_or,
+                pluck="name",
+                limit_page_length=CONVERSATION_SEARCH_SOURCE_LIMIT,
+            )
         if lead_names:
             conv_meta = frappe.get_meta("Chat Conversation")
             if conv_meta.has_field("linked_crm_lead"):
@@ -368,7 +395,151 @@ def _matching_reference_conversation_names(query: str, base_filters: dict) -> se
             ):
                 names.add(row)
 
+    if frappe.db.exists("DocType", "Patient"):
+        patient_meta = frappe.get_meta("Patient")
+        patient_phone_fields = [
+            fieldname
+            for fieldname in ("mobile", "mobile_no", "phone", "custom_whatsapp_number")
+            if patient_meta.has_field(fieldname)
+        ]
+        patient_names = (
+            _indexed_reference_phone_names("Patient", patient_phone_fields, phone) if phone else []
+        )
+        if not patient_names and not phone:
+            patient_or = [["patient_name", "like", q_like], ["name", "like", q_like]]
+            if patient_meta.has_field("sr_patient_id"):
+                patient_or.append(["sr_patient_id", "like", q_like])
+            phone_like = f"%{phone[-10:]}%" if phone else q_like
+            for fieldname in patient_phone_fields:
+                patient_or.append([fieldname, "like", phone_like])
+            patient_names = frappe.get_all(
+                "Patient",
+                or_filters=patient_or,
+                pluck="name",
+                limit_page_length=CONVERSATION_SEARCH_SOURCE_LIMIT,
+            )
+        if patient_names:
+            for row in frappe.get_all(
+                "Chat Conversation",
+                filters={
+                    **base_filters,
+                    "linked_reference_doctype": "Patient",
+                    "linked_reference_name": ["in", patient_names],
+                },
+                pluck="name",
+                limit_page_length=200,
+            ):
+                names.add(row)
+
     return names
+
+
+def _bounded_conversation_search_names(query: str, base_filters: dict, limit) -> set[str]:
+    """Search a recent, indexed conversation window instead of scanning every source table."""
+    conditions = [conversation_access_sql_condition("c")]
+    values = {
+        "query": f"%{query}%",
+        "candidate_limit": CONVERSATION_SEARCH_CANDIDATE_LIMIT,
+        "result_limit": _conversation_fetch_limit(limit),
+    }
+
+    for index, (fieldname, value) in enumerate((base_filters or {}).items()):
+        param = f"search_filter_{index}"
+        if isinstance(value, (list, tuple)) and len(value) == 2 and str(value[0]).lower() == "in":
+            options = tuple(value[1] or [])
+            if not options:
+                conditions.append("1 = 0")
+                continue
+            conditions.append(f"c.`{fieldname}` in %({param})s")
+            values[param] = options
+        else:
+            conditions.append(f"c.`{fieldname}` = %({param})s")
+            values[param] = value
+
+    conversation_meta = frappe.get_meta("Chat Conversation")
+    candidate_fields = [
+        "name",
+        "contact",
+        "linked_reference_doctype",
+        "linked_reference_name",
+        "last_message_preview",
+        "channel_account",
+        "modified",
+    ]
+    if conversation_meta.has_field("linked_crm_lead"):
+        candidate_fields.append("linked_crm_lead")
+    if _has_conversation_last_message_time():
+        candidate_fields.append("last_message_time")
+
+    order_field = "last_message_time" if "last_message_time" in candidate_fields else "modified"
+    search_conditions = [
+        "recent.`name` like %(query)s",
+        "recent.`linked_reference_name` like %(query)s",
+        "recent.`last_message_preview` like %(query)s",
+        "recent.`channel_account` like %(query)s",
+        "contact.`name` like %(query)s",
+        "contact.`display_name` like %(query)s",
+        "contact.`phone_number` like %(query)s",
+    ]
+    joins = ["left join `tabChat Contact` contact on contact.`name` = recent.`contact`"]
+
+    if "linked_crm_lead" in candidate_fields:
+        search_conditions.append("recent.`linked_crm_lead` like %(query)s")
+
+    if frappe.db.exists("DocType", "CRM Lead"):
+        lead_meta = frappe.get_meta("CRM Lead")
+        joins.append(
+            "left join `tabCRM Lead` lead on "
+            "lead.`name` = coalesce(nullif(recent.`linked_crm_lead`, ''), "
+            "case when recent.`linked_reference_doctype` in ('CRM Lead', 'Lead') "
+            "then recent.`linked_reference_name` end)"
+            if "linked_crm_lead" in candidate_fields
+            else "left join `tabCRM Lead` lead on "
+            "recent.`linked_reference_doctype` in ('CRM Lead', 'Lead') "
+            "and lead.`name` = recent.`linked_reference_name`"
+        )
+        for fieldname in ("name", "lead_name", "email", "mobile_no", "phone", "mobile", "custom_whatsapp_number"):
+            if fieldname == "name" or lead_meta.has_field(fieldname):
+                search_conditions.append(f"lead.`{fieldname}` like %(query)s")
+
+    if frappe.db.exists("DocType", "Patient"):
+        patient_meta = frappe.get_meta("Patient")
+        joins.append(
+            "left join `tabPatient` patient on recent.`linked_reference_doctype` = 'Patient' "
+            "and patient.`name` = recent.`linked_reference_name`"
+        )
+        for fieldname in (
+            "name",
+            "patient_name",
+            "sr_patient_id",
+            "mobile",
+            "mobile_no",
+            "phone",
+            "custom_whatsapp_number",
+        ):
+            if fieldname == "name" or patient_meta.has_field(fieldname):
+                search_conditions.append(f"patient.`{fieldname}` like %(query)s")
+
+    fields_sql = ", ".join(f"c.`{fieldname}`" for fieldname in candidate_fields)
+    rows = frappe.db.sql(
+        f"""
+        select recent.`name`
+        from (
+            select {fields_sql}
+            from `tabChat Conversation` c
+            where {" and ".join(f"({condition})" for condition in conditions)}
+            order by c.`{order_field}` desc
+            limit %(candidate_limit)s
+        ) recent
+        {" ".join(joins)}
+        where {" or ".join(f"({condition})" for condition in search_conditions)}
+        order by recent.`{order_field}` desc
+        limit %(result_limit)s
+        """,
+        values,
+        pluck=True,
+    )
+    return set(rows)
 
 
 @frappe.whitelist()
@@ -425,9 +596,9 @@ def search_conversations(
     reference_doctype=None,
     lead_temperature=None,
 ):
-    reference_doctype = _force_scoped_reference_doctype(reference_doctype)
     """Search conversations by phone, name, lead, patient, or message preview."""
-    q = (query or "").strip()
+    reference_doctype = _force_scoped_reference_doctype(reference_doctype)
+    q = (query or "").strip()[:CONVERSATION_SEARCH_MAX_QUERY_LENGTH]
     if not q:
         return get_conversations(
             limit=limit,
@@ -439,6 +610,29 @@ def search_conversations(
             lead_temperature=lead_temperature,
         )
 
+    phone = _phone_search_value(q)
+    if (phone and len(phone) < CONVERSATION_SEARCH_MIN_PHONE_LENGTH) or (
+        not phone and len(q) < CONVERSATION_SEARCH_MIN_TEXT_LENGTH
+    ):
+        return {"success": True, "result": []}
+
+    cache_key = _api_cache_key(
+        "search_conversations",
+        {
+            "query": q.casefold(),
+            "limit": _as_int(limit),
+            "status": status,
+            "assigned_to": assigned_to,
+            "department": department,
+            "channel_account": channel_account,
+            "reference_doctype": reference_doctype,
+            "lead_temperature": lead_temperature,
+        },
+    )
+    cached = _short_cache_get(cache_key)
+    if cached is not None:
+        return {"success": True, "result": cached}
+
     base_filters = _conversation_list_filters(
         status=status,
         assigned_to=assigned_to,
@@ -447,40 +641,28 @@ def search_conversations(
         reference_doctype=reference_doctype,
         lead_temperature=lead_temperature,
     )
-    q_like = f"%{q}%"
     matching: set[str] = set()
 
-    contact_names = _matching_contact_names(q)
-    if contact_names:
-        for name in frappe.get_all(
-            "Chat Conversation",
-            filters={**base_filters, "contact": ["in", contact_names]},
-            pluck="name",
-            limit_page_length=_conversation_fetch_limit(limit),
-        ):
-            matching.add(name)
-
-    conv_or_filters = [
-        ["name", "like", q_like],
-        ["linked_reference_name", "like", q_like],
-        ["last_message_preview", "like", q_like],
-        ["channel_account", "like", q_like],
-    ]
-    if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
-        conv_or_filters.append(["linked_crm_lead", "like", q_like])
-
-    for row in frappe.get_all(
-        "Chat Conversation",
-        filters=base_filters,
-        or_filters=conv_or_filters,
-        fields=["name"],
-        limit_page_length=_conversation_fetch_limit(limit),
-    ):
-        matching.add(row.name)
-
-    matching.update(_matching_reference_conversation_names(q, base_filters))
+    # Indexed exact phone lookups can find older conversations without scanning.
+    # Text and compatibility matching are restricted to a recent candidate window.
+    if phone:
+        contact_names = _matching_contact_names(q)
+        if contact_names:
+            matching.update(
+                frappe.get_all(
+                    "Chat Conversation",
+                    filters={**base_filters, "contact": ["in", contact_names]},
+                    pluck="name",
+                    limit_page_length=_conversation_fetch_limit(limit),
+                )
+            )
+        matching.update(_matching_reference_conversation_names(q, base_filters))
 
     if not matching:
+        matching.update(_bounded_conversation_search_names(q, base_filters, limit))
+
+    if not matching:
+        _short_cache_set(cache_key, [], CONVERSATION_SEARCH_CACHE_TTL)
         return {"success": True, "result": []}
 
     rows = frappe.get_all(
@@ -490,7 +672,9 @@ def search_conversations(
         order_by="modified desc",
         limit_page_length=_conversation_fetch_limit(limit),
     )
-    return {"success": True, "result": _enrich_conversation_rows(_limit_visible_rows(rows, limit))}
+    result = _enrich_conversation_rows(_limit_visible_rows(rows, limit))
+    _short_cache_set(cache_key, result, CONVERSATION_SEARCH_CACHE_TTL)
+    return {"success": True, "result": result}
 
 
 @frappe.whitelist()
@@ -625,9 +809,13 @@ def bulk_assign(conversations, user=None):
     if not names:
         frappe.throw(_("Select at least one conversation"))
 
+    updated = 0
     for name in names:
         _ensure_conversation_write(name)
         with conversation_update_lock(name):
+            previous = frappe.db.get_value("Chat Conversation", name, "assigned_to")
+            if (previous or None) == (user or None):
+                continue
             frappe.db.set_value("Chat Conversation", name, "assigned_to", user or None)
             assign_to.clear("Chat Conversation", name)
             if user:
@@ -641,9 +829,18 @@ def bulk_assign(conversations, user=None):
                     },
                     ignore_permissions=True,
                 )
+            record_conversation_change(
+                name,
+                "Assignment",
+                fieldname="assigned_to",
+                old_value=previous,
+                new_value=user,
+                source="wa_chat_hub.bulk_assign",
+            )
+            updated += 1
 
     frappe.db.commit()
-    return {"success": True, "updated": len(names)}
+    return {"success": True, "updated": updated}
 
 
 @frappe.whitelist(methods=["POST"])
@@ -662,13 +859,26 @@ def bulk_update(conversations, fieldname, value):
     if not names:
         frappe.throw(_("Select at least one conversation"))
 
+    updated = 0
     for name in names:
         _ensure_conversation_write(name)
         with conversation_update_lock(name):
+            previous = frappe.db.get_value("Chat Conversation", name, fieldname)
+            if previous == value:
+                continue
             frappe.db.set_value("Chat Conversation", name, fieldname, value)
+            record_conversation_change(
+                name,
+                "Status" if fieldname == "status" else "Priority",
+                fieldname=fieldname,
+                old_value=previous,
+                new_value=value,
+                source="wa_chat_hub.bulk_update",
+            )
+            updated += 1
 
     frappe.db.commit()
-    return {"success": True, "updated": len(names)}
+    return {"success": True, "updated": updated}
 
 
 @frappe.whitelist(methods=["POST"])
@@ -699,12 +909,9 @@ def add_external_outbound_message(conversation, body, delivery_status="Sent", ch
 
 @frappe.whitelist()
 def get_sidebar_context(conversation):
-    from wa_chat_hub.messaging.windows import _ensure_messaging_window_schema
-
     started = time.monotonic()
     task_log("chat", "sidebar_start", conversation=conversation)
     ensure_can_read_conversation(conversation)
-    _ensure_messaging_window_schema()
     convo = frappe.get_doc("Chat Conversation", conversation)
     try:
         convo.reload()
@@ -861,7 +1068,7 @@ def _crm_lead_reference_lookup(reference_names: list[str]) -> dict[str, str]:
 
 
 @frappe.whitelist()
-def get_conversation_for_reference(reference_doctype, reference_name):
+def get_conversation_for_reference(reference_doctype, reference_name, channel_account=None):
     if not reference_doctype or not reference_name:
         frappe.throw(_("reference_doctype and reference_name are required"))
     if reference_doctype == "CRM Lead" and not can_read_crm_lead(reference_name):
@@ -872,13 +1079,17 @@ def get_conversation_for_reference(reference_doctype, reference_name):
         ensure_can_read_conversation(conversation)
         return {"success": True, "conversation": conversation}
 
-    created = _try_create_conversation_for_reference(reference_doctype, reference_name)
+    created = _try_create_conversation_for_reference(
+        reference_doctype,
+        reference_name,
+        channel_account=channel_account,
+    )
     if created:
         ensure_can_read_conversation(created)
         return {"success": True, "conversation": created, "created": True}
 
     message = _("No WhatsApp conversation found for this record.")
-    if reference_doctype == "CRM Lead":
+    if reference_doctype in ("CRM Lead", "Lead", "Customer"):
         doc = _load_reference_doc(reference_doctype, reference_name)
         if doc and not _reference_has_phone(doc):
             message = _("Add a mobile number on this record to open WhatsApp chat.")
@@ -896,14 +1107,27 @@ def _load_reference_doc(reference_doctype: str, reference_name: str):
     return None
 
 
-def _try_create_conversation_for_reference(reference_doctype: str, reference_name: str) -> str | None:
+def _try_create_conversation_for_reference(
+    reference_doctype: str,
+    reference_name: str,
+    *,
+    channel_account: str | None = None,
+) -> str | None:
     try:
         if reference_doctype == "CRM Lead" and frappe.db.exists("CRM Lead", reference_name):
-            from wa_chat_hub.channel_resolver import get_or_create_mapped_lead_conversation
-
             lead = frappe.get_doc("CRM Lead", reference_name)
             if not _reference_has_phone(lead):
                 return None
+            if channel_account:
+                from wa_chat_hub.channel_resolver import get_or_create_lead_conversation_for_channel_account
+
+                return get_or_create_lead_conversation_for_channel_account(
+                    lead,
+                    channel_account,
+                )["conversation"]
+
+            from wa_chat_hub.channel_resolver import get_or_create_mapped_lead_conversation
+
             return get_or_create_mapped_lead_conversation(lead)["conversation"]
 
     except frappe.ValidationError:
@@ -961,17 +1185,6 @@ def _find_existing_conversation_by_phone(phone_number: str) -> str | None:
         pluck="name",
         limit_page_length=20,
     )
-    last10 = normalized[-10:] if len(normalized) >= 10 else normalized
-    for row in frappe.get_all(
-        "Chat Contact",
-        filters={"phone_number": ["like", f"%{last10}%"]},
-        fields=["name", "phone_number"],
-        limit_page_length=50,
-    ):
-        value = normalize_phone(row.get("phone_number"))
-        if value and (value == normalized or value.endswith(last10)):
-            if row.name not in contact_names:
-                contact_names.append(row.name)
 
     if not contact_names:
         return None
@@ -987,6 +1200,37 @@ def _find_existing_conversation_by_phone(phone_number: str) -> str | None:
         "name",
         order_by="modified desc",
     )
+
+
+@frappe.whitelist()
+def get_existing_conversation_for_patient(patient):
+    if not patient:
+        frappe.throw(_("patient is required"))
+    if not frappe.db.exists("Patient", patient):
+        frappe.throw(_("Patient {0} not found").format(patient))
+
+    linked = _conversation_for_reference("Patient", patient)
+    if linked:
+        ensure_can_read_conversation(linked)
+        return {"success": True, "conversation": linked, "matched_by": "reference"}
+
+    doc = frappe.get_doc("Patient", patient)
+    phone_numbers = _reference_phone_numbers(doc)
+    for phone_number in phone_numbers:
+        conversation = _find_existing_conversation_by_phone(phone_number)
+        if conversation:
+            ensure_can_read_conversation(conversation)
+            return {
+                "success": True,
+                "conversation": conversation,
+                "matched_by": "phone",
+                "phone_number": phone_number,
+            }
+
+    message = _("No existing WhatsApp chat found for this Patient number.")
+    if not phone_numbers:
+        message = _("Add a mobile number on this Patient to open WhatsApp chat.")
+    return {"success": False, "conversation": None, "message": message}
 
 
 @frappe.whitelist()
@@ -1060,6 +1304,29 @@ def get_reference_chat_statuses(reference_doctype, reference_names=None):
             reference_lookup.get(row.linked_reference_name, row.linked_reference_name),
             row,
         )
+
+    if reference_doctype == "Patient Encounter":
+        encounter_patient = {}
+        for enc in frappe.get_all(
+            "Patient Encounter",
+            filters={"name": ["in", allowed_names]},
+            fields=["name", "patient"],
+        ):
+            if enc.patient:
+                encounter_patient[enc.patient] = enc.name
+
+        if encounter_patient:
+            for row in frappe.get_all(
+                "Chat Conversation",
+                filters={
+                    "linked_reference_doctype": "Patient",
+                    "linked_reference_name": ["in", list(encounter_patient)],
+                },
+                fields=["name", "linked_reference_name", "unread_count", "modified"],
+            ):
+                encounter = encounter_patient.get(row.linked_reference_name)
+                if encounter:
+                    _accumulate_reference_chat_status(conv_stats, encounter, row)
 
     for name in names:
         stats = conv_stats.get(name)

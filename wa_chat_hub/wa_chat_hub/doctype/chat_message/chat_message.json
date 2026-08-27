@@ -5,7 +5,6 @@
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
-  "company",
   "conversation",
   "direction",
   "sender_type",
@@ -13,21 +12,17 @@
   "body",
   "media_url",
   "attachment_file",
-  "channel_message_id",
-  "provider_message_id",
-  "delivery_status",
+        "channel_message_id",
+        "provider_message_id",
+        "provider_name",
+        "provider_event_id",
+        "dedupe_key",
+        "received_at",
+        "delivery_status",
   "raw_payload",
   "raw_transport_payload"
  ],
  "fields": [
-  {
-   "fieldname": "company",
-   "fieldtype": "Link",
-   "in_list_view": 1,
-   "in_standard_filter": 1,
-   "label": "Company",
-   "options": "AI Company"
-  },
   {
    "fieldname": "conversation",
    "fieldtype": "Link",
@@ -84,6 +79,32 @@
    "label": "Provider Message ID"
   },
   {
+   "fieldname": "provider_name",
+   "fieldtype": "Data",
+   "label": "Provider",
+   "read_only": 1
+  },
+  {
+   "fieldname": "provider_event_id",
+   "fieldtype": "Data",
+   "label": "Provider Event ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "dedupe_key",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Dedupe Key",
+   "read_only": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "received_at",
+   "fieldtype": "Datetime",
+   "label": "Received At",
+   "read_only": 1
+  },
+  {
    "default": "Pending",
    "fieldname": "delivery_status",
    "fieldtype": "Select",
@@ -104,7 +125,7 @@
   }
  ],
  "links": [],
- "modified": "2026-07-16 00:00:00.000000",
+ "modified": "2026-04-09 10:53:50.557034",
  "modified_by": "Administrator",
  "module": "WA Chat Hub",
  "name": "Chat Message",
@@ -128,5 +149,5 @@
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
- "track_changes": 1
+ "track_changes": 0
 }

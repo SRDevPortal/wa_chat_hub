@@ -25,20 +25,3 @@ include = ["wa_chat_hub*"]
 
 [tool.bench.frappe-dependencies]
 frappe = ">=15.0.0,<16.0.0"
-
-[tool.pyright]
-venvPath = "../.."
-venv = "env"
-extraPaths = [
-    "../frappe",
-    "../erpnext",
-    "..",
-    "../../env/lib/python3.12/site-packages",
-    "../../env/lib64/python3.12/site-packages"
-]
-pythonVersion = "3.12"
-typeCheckingMode = "basic"
-reportMissingImports = false
-reportMissingModuleSource = false
-reportAttributeAccessIssue = false
-reportOptionalMemberAccess = false

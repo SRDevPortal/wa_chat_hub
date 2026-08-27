@@ -4,16 +4,23 @@
 
 .wa-chat-hub-page .layout-main-section-wrapper {
   margin-top: 0;
+  overflow: hidden;
+}
+
+.wa-chat-hub-page .layout-main-section {
+  overflow: hidden;
 }
 
 .wa-chat-hub-layout {
+  position: relative;
   display: grid;
   grid-template-columns: 420px minmax(520px, 1fr) 420px;
-  height: calc(100vh - 74px);
-  min-height: 680px;
+  height: calc(100vh - 56px);
+  min-height: 0;
   background: #f6f8fb;
   border-top: 1px solid #e5eaf0;
   transition: grid-template-columns 0.2s ease;
+  overflow: hidden;
 }
 
 .wa-chat-hub-layout.is-thread-empty {
@@ -34,9 +41,10 @@
 
 .wa-center-pane {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
   padding: 0 16px 14px;
   border-right: 1px solid #dde4ec;
+  overflow: hidden;
 }
 
 .wa-center-pane.is-empty {
@@ -1633,14 +1641,20 @@ body.wa-media-viewer-open {
   }
 
   .wa-right-pane {
-    display: none;
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 5;
+    width: min(420px, 92vw);
+    box-shadow: -8px 0 24px rgba(16, 24, 40, 0.12);
   }
 }
 
 @media (max-width: 860px) {
   .wa-chat-hub-layout {
     grid-template-columns: 1fr;
-    height: auto;
+    height: calc(100vh - 56px);
   }
 
   .wa-left-pane,

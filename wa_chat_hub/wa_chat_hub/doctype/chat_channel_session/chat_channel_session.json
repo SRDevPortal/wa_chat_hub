@@ -5,7 +5,6 @@
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
-  "company",
   "channel_account",
   "session_status",
   "session_id",
@@ -15,14 +14,6 @@
   "error_message"
  ],
  "fields": [
-  {
-   "fieldname": "company",
-   "fieldtype": "Link",
-   "in_list_view": 1,
-   "in_standard_filter": 1,
-   "label": "Company",
-   "options": "AI Company"
-  },
   {
    "fieldname": "channel_account",
    "fieldtype": "Link",
@@ -67,7 +58,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-07-16 00:00:00.000000",
+ "modified": "2026-05-21 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "WA Chat Hub",
  "name": "Chat Channel Session",
