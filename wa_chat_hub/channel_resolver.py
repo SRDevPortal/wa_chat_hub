@@ -182,19 +182,24 @@ def get_or_create_patient_conversation_for_channel_account(
     pipeline_map: str | None = None,
 ) -> dict[str, Any]:
     account = safe_ai_get_doc("Chat Channel Account", channel_account)
-    if not account.is_active or account.channel_type != "Interakt":
-        frappe.throw(_("WhatsApp channel {0} must be an active Interakt account.").format(channel_account))
+    if not account.is_active or account.channel_type not in {"Interakt", "Mobile App"}:
+        frappe.throw(
+            _("Channel {0} must be an active Interakt or Mobile App account.").format(
+                channel_account
+            )
+        )
 
     contact = get_or_create_patient_contact(patient)
-    ensure_interakt_contact_for_reference(
-        channel_account,
-        contact,
-        patient,
-        allow_unmapped=True,
-        pipeline_map_row={
-            "sr_medical_department": patient.get("sr_medical_department"),
-        },
-    )
+    if account.channel_type == "Interakt":
+        ensure_interakt_contact_for_reference(
+            channel_account,
+            contact,
+            patient,
+            allow_unmapped=True,
+            pipeline_map_row={
+                "sr_medical_department": patient.get("sr_medical_department"),
+            },
+        )
 
     conversation, created = _get_or_create_reference_conversation(
         contact=contact,

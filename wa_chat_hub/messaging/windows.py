@@ -347,6 +347,19 @@ def update_windows_on_message(
 
 def evaluate_send_permission(conversation: str, content_type: str) -> WindowDecision:
     """Return whether an outbound message type may be sent now."""
+    convo = safe_ai_get_doc("Chat Conversation", conversation)
+    channel_type = safe_ai_get_doc(
+        "Chat Channel Account", convo.channel_account
+    ).channel_type
+    if channel_type == "Mobile App":
+        return WindowDecision(
+            allowed=True,
+            mode="free_form",
+            reason="mobile_app_channel",
+            can_send_free_form=True,
+            can_send_template=False,
+        )
+
     normalized = str(content_type or "Text").strip().lower()
     if normalized in TEMPLATE_CONTENT_TYPES:
         return WindowDecision(

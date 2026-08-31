@@ -71,10 +71,22 @@ def send_outbound_message(
         content_type=content_type,
         has_media=1 if media_url else 0,
     )
-    evaluate_send_permission(conversation, content_type).ensure_allowed(content_type)
-    outbound = build_outbound_message_payload(conversation, body, content_type, media_url, file_name=file_name)
     convo = safe_ai_get_doc("Chat Conversation", conversation)
     account = safe_ai_get_doc("Chat Channel Account", convo.channel_account)
+    evaluate_send_permission(conversation, content_type).ensure_allowed(content_type)
+    if account.channel_type == "Mobile App":
+        return {
+            "channel_type": "Mobile App",
+            "channel_account": account.name,
+            "sent": True,
+            "delivery_status": "Sent",
+            "provider_message_id": None,
+            "transport": "mobile_app",
+        }
+
+    outbound = build_outbound_message_payload(
+        conversation, body, content_type, media_url, file_name=file_name
+    )
 
     try:
         if account.channel_type == "Interakt":

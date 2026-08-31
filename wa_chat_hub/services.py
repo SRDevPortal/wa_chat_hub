@@ -574,6 +574,9 @@ def _run_append_message_followups(payload: Dict[str, Any], result: Dict[str, str
         payload.get("phone_number") or payload.get("to") or payload.get("from")
     )
     direction = result.get("direction") or payload.get("direction", "Inbound")
+    is_mobile_app = str(
+        payload.get("provider_name") or payload.get("channel_type") or ""
+    ).strip().lower() == "mobile app"
 
     message = None
     if message_name:
@@ -588,7 +591,7 @@ def _run_append_message_followups(payload: Dict[str, Any], result: Dict[str, str
         except Exception:
             frappe.log_error(frappe.get_traceback(), "Outbound Attachment Link Failed")
 
-    if direction == "Inbound" and conversation and contact:
+    if direction == "Inbound" and conversation and contact and not is_mobile_app:
         try:
             _link_or_create_master_record(
                 conversation=conversation,
@@ -611,7 +614,7 @@ def _run_append_message_followups(payload: Dict[str, Any], result: Dict[str, str
         except Exception:
             frappe.log_error(frappe.get_traceback(), "Inbound Attachment Persistence Failed")
 
-    if direction == "Inbound":
+    if direction == "Inbound" and not is_mobile_app:
         try:
             _enqueue_lead_scoring(conversation)
         except Exception:
