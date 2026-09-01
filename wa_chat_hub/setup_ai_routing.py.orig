@@ -1,0 +1,89 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import frappe
+
+
+SEED_FILES = ("default_mcp_endpoints.json", "default_ai_routing.json")
+SEED_ORDER = (
+    "WA MCP Tool Endpoint",
+    "WA AI Intent",
+    "WA AI Workflow",
+    "WA AI Intent Route",
+)
+
+
+def seed_default_ai_routing() -> dict[str, int]:
+    """Insert missing bootstrap records without updating or reactivating existing ones."""
+    data: dict[str, list[dict]] = {}
+    for filename in SEED_FILES:
+        path = Path(frappe.get_app_path("wa_chat_hub", "config", filename))
+        source = json.loads(path.read_text(encoding="utf-8"))
+        for doctype, records in source.items():
+            data.setdefault(doctype, []).extend(records or [])
+    result: dict[str, int] = {}
+    for doctype in SEED_ORDER:
+        if not frappe.db.exists("DocType", doctype):
+            result[doctype] = 0
+            continue
+        created = 0
+        for values in data.get(doctype) or []:
+            name_field = {
+                "WA MCP Tool Endpoint": "tool_name",
+                "WA AI Intent": "intent_name",
+                "WA AI Workflow": "workflow_name",
+                "WA AI Intent Route": "route_name",
+            }[doctype]
+            name = str(values.get(name_field) or "").strip()
+            if not name or frappe.db.exists(doctype, name):
+                continue
+            doc_values = dict(values)
+            for fieldname in (
+                "parameters_schema",
+                "execution_config",
+                "fallback_match",
+                "definition",
+                "blocked_replies",
+            ):
+                if isinstance(doc_values.get(fieldname), (dict, list)):
+                    doc_values[fieldname] = json.dumps(doc_values[fieldname], ensure_ascii=False, indent=2)
+            frappe.get_doc({"doctype": doctype, **doc_values}).insert(ignore_permissions=True)
+            created += 1
+        result[doctype] = created
+    return result
+
+
+def ensure_default_route_blocked_replies() -> int:
+    """Backfill missing language maps without overwriting administrator changes."""
+    doctype = "WA AI Intent Route"
+    if not frappe.db.exists("DocType", doctype):
+        return 0
+    meta = frappe.get_meta(doctype)
+    if not meta.has_field("blocked_replies"):
+        return 0
+
+    path = Path(frappe.get_app_path("wa_chat_hub", "config", "default_ai_routing.json"))
+    source = json.loads(path.read_text(encoding="utf-8"))
+    updated = 0
+    for values in source.get(doctype) or []:
+        name = str(values.get("route_name") or "").strip()
+        replies = values.get("blocked_replies")
+        if (
+            not name
+            or not isinstance(replies, dict)
+            or not replies
+            or not frappe.db.exists(doctype, name)
+            or frappe.db.get_value(doctype, name, "blocked_replies")
+        ):
+            continue
+        frappe.db.set_value(
+            doctype,
+            name,
+            "blocked_replies",
+            json.dumps(replies, ensure_ascii=False, indent=2),
+            update_modified=False,
+        )
+        updated += 1
+    return updated
