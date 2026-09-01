@@ -452,3 +452,101 @@ def get_messages(
         },
     }
 
+
+@frappe.whitelist(allow_guest=True, methods=["POST"])
+def escalate(
+    external_id: str,
+    conversation: str,
+    profile_id: str | None = None,
+):
+    """Create a Desk Support Ticket for a verified mobile-chat conversation."""
+    _require_backend_token()
+    context = _resolve_context(external_id, profile_id)
+    convo = _assert_conversation_owner(conversation, context)
+
+    # Repeated taps return the existing open care-team request for this chat.
+    existing = None
+    for row in frappe.get_all(
+        "Support Ticket",
+        filters={
+            "user_id": str(context["user"].name),
+            "category": "AI Chat Care Team",
+            "status": ["not in", ["Resolved", "Closed"]],
+        },
+        fields=["name", "ticket_number", "metadata"],
+        order_by="creation desc",
+        limit_page_length=20,
+    ):
+        if str(convo.name) in str(row.metadata or ""):
+            existing = row
+            break
+
+    if existing:
+        return {
+            "success": True,
+            "data": {
+                "ticket": existing.name,
+                "ticket_number": existing.ticket_number or existing.name,
+                "created": False,
+            },
+        }
+
+    recent = _message_rows(str(convo.name), limit=30)
+    transcript = "\n".join(
+        f'{row.get("sender_type") or "User"}: {row.get("message") or row.get("media_url") or "Attachment"}'
+        for row in recent
+    )
+    user = context["user"]
+    ticket = frappe.get_doc(
+        {
+            "doctype": "Support Ticket",
+            "user_id": str(user.name),
+            "user_name": user.full_name,
+            "user_email": user.email,
+            "user_phone": user.phone,
+            "customer_name": user.full_name,
+            "phone": user.phone,
+            "email": user.email,
+            "subject": "Care-team assistance requested from AI chat",
+            "description": (
+                f"The user requested human care-team assistance from AI chat.\n\n"
+                f"Conversation: {convo.name}\nPatient: {context['patient'] or 'Not linked'}"
+                f"\n\nRecent chat transcript:\n{transcript}"
+            ),
+            "status": "Open",
+            "priority": "Medium",
+            "category": "AI Chat Care Team",
+            "metadata": frappe.as_json(
+                {
+                    "source": "mobile_ai_chat",
+                    "conversation": str(convo.name),
+                    "patient": context["patient"],
+                    "profile_id": str(profile_id or "").strip() or None,
+                }
+            ),
+        }
+    ).insert(ignore_permissions=True)
+
+    append_message(
+        {
+            "channel_account": convo.channel_account,
+            "phone_number": context["phone"],
+            "display_name": "SRIAAS Care Team",
+            "direction": "Outbound",
+            "sender_type": "Agent",
+            "content_type": "Text",
+            "body": f"Your care-team request has been created. Ticket: {ticket.ticket_number or ticket.name}.",
+            "provider_name": "Mobile App",
+            "provider_message_id": f"care-team-{ticket.name}",
+            "delivery_status": "Sent",
+        }
+    )
+    frappe.db.commit()
+    return {
+        "success": True,
+        "data": {
+            "ticket": ticket.name,
+            "ticket_number": ticket.ticket_number or ticket.name,
+            "created": True,
+        },
+    }
