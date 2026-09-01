@@ -1114,8 +1114,8 @@ def _try_create_conversation_for_reference(
     channel_account: str | None = None,
 ) -> str | None:
     try:
-        if reference_doctype == "CRM Lead" and frappe.db.exists("CRM Lead", reference_name):
-            lead = frappe.get_doc("CRM Lead", reference_name)
+        if reference_doctype in {"CRM Lead", "Lead"} and frappe.db.exists(reference_doctype, reference_name):
+            lead = frappe.get_doc(reference_doctype, reference_name)
             if not _reference_has_phone(lead):
                 return None
             if channel_account:

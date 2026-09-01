@@ -30,16 +30,18 @@ def get_or_create_lead_contact(lead) -> str:
     phone = _get_lead_phone(lead)
     normalized_phone = normalize_phone(phone)
     if not normalized_phone:
-        frappe.throw(_("No mobile number found for CRM Lead {0}.").format(lead.name))
+        frappe.throw(_("No mobile number found for {0} {1}.").format(lead.doctype, lead.name))
 
     contact_name = get_or_create_contact(
         phone_number=normalized_phone,
         display_name=_get_lead_display_name(lead),
     )
     updates = {
-        "source_doctype": "CRM Lead",
+        "source_doctype": lead.doctype,
         "source_name": lead.name,
     }
+    if lead.doctype == "Lead" and frappe.get_meta("Chat Contact").has_field("linked_lead"):
+        updates["linked_lead"] = lead.name
     safe_ai_set_value("Chat Contact", contact_name, updates)
     return contact_name
 
@@ -114,7 +116,7 @@ def get_or_create_lead_conversation_for_channel_account(
     conversation, created = _get_or_create_reference_conversation(
         contact=contact,
         channel_account=channel_account,
-        reference_doctype="CRM Lead",
+        reference_doctype=lead.doctype,
         reference_name=lead.name,
         department=_conversation_department_for_account(channel_account),
         defer_reference_link=True,
@@ -127,14 +129,15 @@ def get_or_create_lead_conversation_for_channel_account(
     except Exception:
         frappe.log_error(frappe.get_traceback(), "WA Lead AI Update On Open Failed")
 
-    try:
-        from wa_chat_hub.messaging.crm_lead_meta import sync_crm_lead_meta_from_conversation
+    if lead.doctype == "CRM Lead":
+        try:
+            from wa_chat_hub.messaging.crm_lead_meta import sync_crm_lead_meta_from_conversation
 
-        sync_crm_lead_meta_from_conversation(conversation, lead_name=lead.name)
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "CRM Lead Meta Sync On Map Failed")
+            sync_crm_lead_meta_from_conversation(conversation, lead_name=lead.name)
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "CRM Lead Meta Sync On Map Failed")
 
-    _link_crm_lead_on_conversation(conversation, lead.name)
+    _link_lead_on_conversation(conversation, lead.doctype, lead.name)
 
     return {
         "conversation": conversation,
@@ -299,15 +302,18 @@ def _conversation_department_for_account(channel_account: str) -> str | None:
     return safe_ai_get_value("Chat Channel Account", channel_account, "department")
 
 
-def _link_crm_lead_on_conversation(conversation: str, lead_name: str) -> None:
-    if not frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
-        return
+def _link_lead_on_conversation(conversation: str, lead_doctype: str, lead_name: str) -> None:
     updates = {
-        "linked_crm_lead": lead_name,
-        "linked_reference_doctype": "CRM Lead",
+        "linked_reference_doctype": lead_doctype,
         "linked_reference_name": lead_name,
     }
+    if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
+        updates["linked_crm_lead"] = lead_name if lead_doctype == "CRM Lead" else None
     safe_ai_set_value("Chat Conversation", conversation, updates, update_modified=False)
+
+
+def _link_crm_lead_on_conversation(conversation: str, lead_name: str) -> None:
+    _link_lead_on_conversation(conversation, "CRM Lead", lead_name)
 
 
 def _find_conversation_for_contact_on_channel(contact: str, channel_account: str, open_only: bool) -> str | None:

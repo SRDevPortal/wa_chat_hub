@@ -46,6 +46,29 @@ CITY_ALIASES = {
     "kolkta": "kolkata",
     "calcutta": "kolkata",
 }
+ROUTE_CONNECTOR_PATTERN = r"\b(?:from\s+)?([A-Za-z][A-Za-z .'-]{1,40}?)\s+(?:to|se)\s+([A-Za-z][A-Za-z .'-]{1,40})"
+HINGLISH_TO_FILLERS = {"me", "main", "mai", "mein", "m", "hum", "ham", "we"}
+NON_CITY_ROUTE_WORDS = {
+    "aggregator",
+    "courier",
+    "current",
+    "currently",
+    "hu",
+    "hoon",
+    "hai",
+    "use",
+    "using",
+    "krrha",
+    "krra",
+    "kar",
+    "karta",
+    "karte",
+    "shipmoro",
+    "shipro",
+    "shiprocket",
+    "nimbuspost",
+    "provider",
+}
 CITY_STATE = {
     "delhi": "Delhi",
     "gurgaon": "Haryana",
@@ -257,18 +280,39 @@ def parse_zone(text: str | None) -> str | None:
 def parse_route_cities(text: str | None) -> tuple[str, str] | None:
     matches = list(
         re.finditer(
-            r"\b(?:from\s+)?([A-Za-z][A-Za-z .'-]{1,40}?)\s+(?:to|se)\s+([A-Za-z][A-Za-z .'-]{1,40})",
+            ROUTE_CONNECTOR_PATTERN,
             str(text or ""),
             flags=re.IGNORECASE,
         )
     )
     if not matches:
         return None
-    pickup = _normalize_city(matches[-1].group(1))
-    delivery = _normalize_city(matches[-1].group(2))
-    if not _is_city_candidate(pickup) or not _is_city_candidate(delivery):
-        return None
-    return pickup, delivery
+    for match in reversed(matches):
+        pickup_raw = match.group(1)
+        delivery_raw = match.group(2)
+        if not _looks_like_real_route_match(pickup_raw, delivery_raw, str(text or "")):
+            continue
+        pickup = _normalize_city(pickup_raw)
+        delivery = _normalize_city(delivery_raw)
+        if _is_city_candidate(pickup) and _is_city_candidate(delivery):
+            return pickup, delivery
+    return None
+
+
+def _looks_like_real_route_match(pickup: str, delivery: str, full_text: str) -> bool:
+    pickup_words = re.findall(r"[a-z]+", str(pickup or "").lower())
+    delivery_words = re.findall(r"[a-z]+", str(delivery or "").lower())
+    all_words = set(pickup_words + delivery_words)
+    if not pickup_words or not delivery_words:
+        return False
+    if pickup_words[-1] in HINGLISH_TO_FILLERS:
+        return False
+    if all_words & NON_CITY_ROUTE_WORDS:
+        return False
+    normalized_full = re.sub(r"\s+", " ", str(full_text or "").strip().lower())
+    if re.search(r"\b(?:use|using|aggregator|provider|courier)\b", normalized_full):
+        return bool(_known_city_from_phrase(pickup) and _known_city_from_phrase(delivery))
+    return True
 
 
 def estimate_zone_for_route(pickup_city: str, delivery_city: str) -> str:
@@ -535,6 +579,23 @@ def _is_city_candidate(city: str | None) -> bool:
         "chahiye",
         "dijea",
         "dijiye",
+        "aggregator",
+        "provider",
+        "current",
+        "currently",
+        "use",
+        "using",
+        "hu",
+        "hoon",
+        "hai",
+        "krrha",
+        "krra",
+        "karta",
+        "karte",
+        "shipmoro",
+        "shipro",
+        "shiprocket",
+        "nimbuspost",
     }
     words = set(value.split())
     if words & blocked_words:

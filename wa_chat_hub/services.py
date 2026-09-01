@@ -1197,6 +1197,8 @@ def _link_or_create_master_record(
     else:
         convo.linked_reference_doctype = lead_doctype
         convo.linked_reference_name = lead_name
+        if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
+            convo.linked_crm_lead = None
     conversation_updates = {
         "linked_reference_doctype": convo.linked_reference_doctype,
         "linked_reference_name": convo.linked_reference_name,
@@ -1204,6 +1206,8 @@ def _link_or_create_master_record(
     assert_ai_doctype_permission("Chat Conversation", "read")
     if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
         conversation_updates["linked_crm_lead"] = getattr(convo, "linked_crm_lead", None)
+
+    _set_conversation_fields(convo, conversation_updates)
 
     if lead_doctype == "CRM Lead":
         _finalize_crm_lead_after_inbound(
@@ -1213,8 +1217,13 @@ def _link_or_create_master_record(
             message_name=message_name,
             convo=convo,
         )
-
-    _set_conversation_fields(convo, conversation_updates)
+    else:
+        _finalize_lead_after_inbound(
+            conversation,
+            lead_doctype,
+            lead_name,
+            convo=convo,
+        )
 
     try:
         from wa_chat_hub.interakt.contact_sync import enqueue_push_for_conversation
@@ -1350,6 +1359,30 @@ def _finalize_crm_lead_after_inbound(
         auto_update_lead_from_conversation(lead_name, conversation=conversation)
     except Exception:
         frappe.log_error(frappe.get_traceback(), "WA Lead AI Auto Update Failed")
+    _sync_linked_lead_context_after_inbound(conversation)
+
+
+def _finalize_lead_after_inbound(
+    conversation: str,
+    lead_doctype: str,
+    lead_name: str,
+    *,
+    convo=None,
+) -> None:
+    """Sync inbound WhatsApp context into the linked ERPNext Lead."""
+    if not lead_name or lead_doctype != "Lead":
+        return
+    _sync_linked_lead_context_after_inbound(conversation)
+
+
+def _sync_linked_lead_context_after_inbound(conversation: str) -> None:
+    try:
+        from wa_chat_hub.ai.lead_scoring import score_and_sync_conversation, sync_to_linked_lead
+
+        score_and_sync_conversation(conversation)
+        sync_to_linked_lead(conversation)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "WA Chat Hub Linked Lead Context Sync Failed")
 
 
 def _sync_crm_lead_pipeline_for_channel(lead_name: str, channel_account: Optional[str]) -> None:
@@ -1507,6 +1540,9 @@ def _create_lead_for_inbound(
                 "WA Channel Pipeline Mapping",
             )
 
+        if doctype == "Lead":
+            _delete_stale_contact_lead_links_for_phone(phone_number)
+
         doc = frappe.get_doc(payload)
         with _crm_lead_field_guard_bypass(doctype == "CRM Lead"):
             safe_ai_insert(doc)
@@ -1517,6 +1553,41 @@ def _create_lead_for_inbound(
             "WA Chat Hub Inbound Lead Create Failed",
         )
         return None
+
+
+def _delete_stale_contact_lead_links_for_phone(phone_number: str) -> int:
+    normalized = normalize_phone(phone_number)
+    if not normalized:
+        return 0
+    last10 = normalized[-10:] if len(normalized) >= 10 else normalized
+    rows = frappe.db.sql(
+        """
+        SELECT dl.name, dl.link_doctype, dl.link_name
+        FROM `tabDynamic Link` dl
+        INNER JOIN `tabContact` c ON c.name = dl.parent
+        WHERE dl.parenttype = 'Contact'
+          AND dl.link_doctype IN ('Lead', 'CRM Lead')
+          AND (
+            COALESCE(c.mobile_no, '') LIKE %(phone_like)s
+            OR COALESCE(c.phone, '') LIKE %(phone_like)s
+            OR EXISTS (
+                SELECT 1
+                FROM `tabContact Phone` cp
+                WHERE cp.parent = c.name
+                  AND COALESCE(cp.phone, '') LIKE %(phone_like)s
+            )
+          )
+        """,
+        {"phone_like": f"%{last10}%"},
+        as_dict=True,
+    )
+    deleted = 0
+    for row in rows:
+        if row.link_name and frappe.db.exists(row.link_doctype, row.link_name):
+            continue
+        frappe.delete_doc("Dynamic Link", row.name, ignore_permissions=True, force=True)
+        deleted += 1
+    return deleted
 
 
 def _available_phone_index_filters(meta, phone_fields: list[str], phone_number: str) -> list[tuple[str, str]]:

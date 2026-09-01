@@ -12,16 +12,56 @@ after_install = "wa_chat_hub.setup_workspace.run"
 after_migrate = "wa_chat_hub.migrate.after_migrate"
 before_tests = "wa_chat_hub.tests.utils.before_tests"
 
+lead_custom_fieldnames = [
+    "lead_score",
+    "lead_lan",
+    "lead_temperature",
+    "shipkia_section",
+    "shipkia_business_type",
+    "shipkia_business_name",
+    "shipkia_monthly_shipments",
+    "shipkia_current_aggregator_status",
+    "shipkia_current_aggregator_name",
+    "shipkia_current_aggregator_raw",
+    "shipkia_current_aggregator_verified",
+    "shipkia_current_shipping_rate",
+    "shipkia_rto_percentage",
+    "shipkia_route_column_break",
+    "shipkia_pickup_city",
+    "shipkia_delivery_city",
+    "shipkia_average_weight",
+    "shipkia_rate_shared",
+    "shipkia_ai_qualification_score",
+    "shipkia_ai_messages_count",
+    "shipkia_ai_details_collected",
+    "shipkia_ai_last_message_at",
+    "shipkia_context_updated_at",
+    "shipkia_context_completed",
+    "shipkia_ai_context_complete",
+    "shipkia_requirement_details",
+    "shipkia_status_column_break",
+    "shipkia_lead_temperature",
+    "shipkia_ai_lead_temperature",
+    "shipkia_qualification_status",
+    "shipkia_ai_qualification_status",
+    "shipkia_ai_onboarding_stage",
+    "shipkia_ai_onboarding_assisted",
+    "shipkia_sales_stage",
+    "shipkia_lead_source",
+    "shipkia_first_contact_channel",
+]
+
 fixtures = [
     {"dt": "DocType", "filters": [["module", "=", "WA Chat Hub"]]},
     {"dt": "Page", "filters": [["module", "=", "WA Chat Hub"]]},
     {"dt": "Workspace", "filters": [["module", "=", "WA Chat Hub"]]},
-    {"dt": "Custom Field", "filters": [["dt", "=", "Lead"], ["fieldname", "in", ["lead_score", "lead_lan", "lead_temperature"]]]},
+    {"dt": "Custom Field", "filters": [["dt", "=", "Lead"], ["fieldname", "in", lead_custom_fieldnames]]},
     {"dt": "Custom Field", "filters": [["dt", "=", "CRM Lead"], ["fieldname", "in", ["lead_score", "lead_lan", "lead_temperature"]]]},
 ]
 
 doctype_list_js = {
     "CRM Lead": "public/js/reference_open_chat_list.js",
+    "Lead": "public/js/reference_open_chat_list.js",
 }
 
 doctype_js = {}

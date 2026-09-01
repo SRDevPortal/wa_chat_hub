@@ -54,17 +54,14 @@ def _background_queue_available(queue: str) -> bool:
 
 
 def after_migrate() -> None:
-    """Refresh the workspace after schema synchronization.
-
-    Schema setup and data backfills belong in versioned patches so they run once
-    per site instead of on every ``bench migrate``.
-    """
+    """Refresh workspace and idempotent WA Chat Hub custom fields after migrate."""
     try:
         from wa_chat_hub.setup_workspace import run as setup_workspace
 
         setup_workspace()
     except Exception:
         _safe_log_error("WA Chat Hub Workspace Sync Failed")
+    ensure_lead_scoring_fields()
     ensure_app_update_setting()
 
 
@@ -115,6 +112,218 @@ def backfill_messaging_windows() -> None:
 
 
 def ensure_lead_scoring_fields() -> None:
+    shipkia_lead_fields = [
+        {
+            "fieldname": "shipkia_section",
+            "label": "ShipKia WhatsApp",
+            "fieldtype": "Section Break",
+            "insert_after": "lead_temperature",
+            "collapsible": 1,
+        },
+        {
+            "fieldname": "shipkia_business_type",
+            "label": "ShipKia Business Type",
+            "fieldtype": "Data",
+            "insert_after": "shipkia_section",
+            "in_standard_filter": 1,
+        },
+        {
+            "fieldname": "shipkia_business_name",
+            "label": "ShipKia Business Name",
+            "fieldtype": "Data",
+            "insert_after": "shipkia_business_type",
+        },
+        {
+            "fieldname": "shipkia_monthly_shipments",
+            "label": "ShipKia Monthly Shipments",
+            "fieldtype": "Int",
+            "insert_after": "shipkia_business_name",
+            "in_list_view": 1,
+            "in_standard_filter": 1,
+        },
+        {
+            "fieldname": "shipkia_current_aggregator_status",
+            "label": "ShipKia Current Aggregator Status",
+            "fieldtype": "Data",
+            "insert_after": "shipkia_monthly_shipments",
+        },
+        {
+            "fieldname": "shipkia_current_aggregator_name",
+            "label": "ShipKia Current Aggregator Name",
+            "fieldtype": "Data",
+            "insert_after": "shipkia_current_aggregator_status",
+        },
+        {
+            "fieldname": "shipkia_current_aggregator_raw",
+            "label": "ShipKia Current Aggregator Raw",
+            "fieldtype": "Small Text",
+            "insert_after": "shipkia_current_aggregator_name",
+        },
+        {
+            "fieldname": "shipkia_current_aggregator_verified",
+            "label": "ShipKia Current Aggregator Verified",
+            "fieldtype": "Check",
+            "insert_after": "shipkia_current_aggregator_raw",
+        },
+        {
+            "fieldname": "shipkia_current_shipping_rate",
+            "label": "ShipKia Current Shipping Rate",
+            "fieldtype": "Currency",
+            "insert_after": "shipkia_current_aggregator_verified",
+        },
+        {
+            "fieldname": "shipkia_rto_percentage",
+            "label": "ShipKia RTO Percentage",
+            "fieldtype": "Percent",
+            "insert_after": "shipkia_current_shipping_rate",
+        },
+        {
+            "fieldname": "shipkia_route_column_break",
+            "label": "ShipKia Route",
+            "fieldtype": "Column Break",
+            "insert_after": "shipkia_rto_percentage",
+        },
+        {
+            "fieldname": "shipkia_pickup_city",
+            "label": "ShipKia Pickup City",
+            "fieldtype": "Data",
+            "insert_after": "shipkia_route_column_break",
+            "in_standard_filter": 1,
+        },
+        {
+            "fieldname": "shipkia_delivery_city",
+            "label": "ShipKia Delivery City",
+            "fieldtype": "Data",
+            "insert_after": "shipkia_pickup_city",
+            "in_standard_filter": 1,
+        },
+        {
+            "fieldname": "shipkia_average_weight",
+            "label": "ShipKia Average Weight",
+            "fieldtype": "Float",
+            "insert_after": "shipkia_delivery_city",
+        },
+        {
+            "fieldname": "shipkia_rate_shared",
+            "label": "ShipKia Rate Shared",
+            "fieldtype": "Check",
+            "insert_after": "shipkia_average_weight",
+        },
+        {
+            "fieldname": "shipkia_ai_qualification_score",
+            "label": "ShipKia AI Qualification Score",
+            "fieldtype": "Float",
+            "insert_after": "shipkia_rate_shared",
+            "precision": "2",
+        },
+        {
+            "fieldname": "shipkia_ai_messages_count",
+            "label": "ShipKia AI Messages Count",
+            "fieldtype": "Int",
+            "insert_after": "shipkia_ai_qualification_score",
+        },
+        {
+            "fieldname": "shipkia_ai_details_collected",
+            "label": "ShipKia AI Details Collected",
+            "fieldtype": "Int",
+            "insert_after": "shipkia_ai_messages_count",
+        },
+        {
+            "fieldname": "shipkia_ai_last_message_at",
+            "label": "ShipKia AI Last Message At",
+            "fieldtype": "Datetime",
+            "insert_after": "shipkia_ai_details_collected",
+        },
+        {
+            "fieldname": "shipkia_context_updated_at",
+            "label": "ShipKia Context Updated At",
+            "fieldtype": "Datetime",
+            "insert_after": "shipkia_ai_last_message_at",
+        },
+        {
+            "fieldname": "shipkia_context_completed",
+            "label": "ShipKia Context Completed",
+            "fieldtype": "Check",
+            "insert_after": "shipkia_context_updated_at",
+        },
+        {
+            "fieldname": "shipkia_ai_context_complete",
+            "label": "ShipKia AI Context Complete",
+            "fieldtype": "Check",
+            "insert_after": "shipkia_context_completed",
+        },
+        {
+            "fieldname": "shipkia_requirement_details",
+            "label": "ShipKia Requirement Details",
+            "fieldtype": "Small Text",
+            "insert_after": "shipkia_ai_context_complete",
+        },
+        {
+            "fieldname": "shipkia_status_column_break",
+            "label": "ShipKia Status",
+            "fieldtype": "Column Break",
+            "insert_after": "shipkia_requirement_details",
+        },
+        {
+            "fieldname": "shipkia_lead_temperature",
+            "label": "ShipKia Lead Temperature",
+            "fieldtype": "Select",
+            "insert_after": "shipkia_status_column_break",
+            "options": "Cold\nWarm\nHot",
+            "in_standard_filter": 1,
+        },
+        {
+            "fieldname": "shipkia_ai_lead_temperature",
+            "label": "ShipKia AI Lead Temperature",
+            "fieldtype": "Select",
+            "insert_after": "shipkia_lead_temperature",
+            "options": "Cold\nWarm\nHot",
+        },
+        {
+            "fieldname": "shipkia_qualification_status",
+            "label": "ShipKia Qualification Status",
+            "fieldtype": "Data",
+            "insert_after": "shipkia_ai_lead_temperature",
+            "in_standard_filter": 1,
+        },
+        {
+            "fieldname": "shipkia_ai_qualification_status",
+            "label": "ShipKia AI Qualification Status",
+            "fieldtype": "Data",
+            "insert_after": "shipkia_qualification_status",
+        },
+        {
+            "fieldname": "shipkia_ai_onboarding_stage",
+            "label": "ShipKia AI Onboarding Stage",
+            "fieldtype": "Data",
+            "insert_after": "shipkia_ai_qualification_status",
+        },
+        {
+            "fieldname": "shipkia_ai_onboarding_assisted",
+            "label": "ShipKia AI Onboarding Assisted",
+            "fieldtype": "Check",
+            "insert_after": "shipkia_ai_onboarding_stage",
+        },
+        {
+            "fieldname": "shipkia_sales_stage",
+            "label": "ShipKia Sales Stage",
+            "fieldtype": "Data",
+            "insert_after": "shipkia_ai_onboarding_assisted",
+            "in_standard_filter": 1,
+        },
+        {
+            "fieldname": "shipkia_lead_source",
+            "label": "ShipKia Lead Source",
+            "fieldtype": "Data",
+            "insert_after": "shipkia_sales_stage",
+        },
+        {
+            "fieldname": "shipkia_first_contact_channel",
+            "label": "ShipKia First Contact Channel",
+            "fieldtype": "Data",
+            "insert_after": "shipkia_lead_source",
+        },
+    ]
     specs = {
         "Lead": "source",
         "CRM Lead": "status",
@@ -153,8 +362,28 @@ def ensure_lead_scoring_fields() -> None:
                 "default": "Cold",
             },
         ]
+        if doctype == "Lead":
+            custom_fields[doctype].extend(shipkia_lead_fields)
+    custom_fields = _only_missing_custom_fields(custom_fields)
     if custom_fields:
         create_custom_fields(custom_fields, update=True)
+
+
+def _only_missing_custom_fields(custom_fields: dict[str, list[dict]]) -> dict[str, list[dict]]:
+    missing_fields = {}
+    for doctype, fields in (custom_fields or {}).items():
+        for field in fields or []:
+            fieldname = field.get("fieldname")
+            if not fieldname:
+                continue
+            existing = frappe.db.get_value(
+                "Custom Field",
+                {"dt": doctype, "fieldname": fieldname},
+                "name",
+            )
+            if not existing:
+                missing_fields.setdefault(doctype, []).append(field)
+    return missing_fields
 
 
 def ensure_chat_message_indexes() -> None:

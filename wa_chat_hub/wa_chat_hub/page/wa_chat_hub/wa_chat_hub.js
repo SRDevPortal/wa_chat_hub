@@ -76,7 +76,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     }
     wrapper.wa_chat_hub_initialized = true;
 
-    const cssVersion = '20260708-chat-scroll-drawer-layout-v1';
+    const cssVersion = '20260901-shipkia-ui-polish-v1';
     const existingCss = document.querySelector('link[data-wa-chat-hub-css="1"]');
     if (existingCss && existingCss.getAttribute('data-wa-chat-hub-version') !== cssVersion) {
         existingCss.remove();

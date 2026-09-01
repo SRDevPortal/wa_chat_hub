@@ -85,6 +85,7 @@ AUTOPILOT_MEDIA_BURST_GAP_SECONDS = 90
 AUTOPILOT_MEDIA_SETTLE_SECONDS = 5
 LOW_CONTEXT_INPUT_CHAR_BUDGET = 6500
 LOW_CONTEXT_SYSTEM_CHAR_BUDGET = 4200
+SHIPKIA_ONBOARDING_URL = "https://auth.shipkia.com/signup"
 
 
 def _log_ai_timing(event: str, **fields) -> None:
@@ -167,7 +168,7 @@ def schedule_autopilot_for_message(message_name: str) -> None:
                 trigger_message_id=message_name,
                 enqueue_after_commit=True,
                 now=False,
-                job_id=f"wa_ai_autopilot_conversation_{doc.conversation}",
+                job_id=f"wa_ai_autopilot_conversation_{doc.conversation}_{message_name}",
                 deduplicate=True,
             )
             _log_ai_timing(
@@ -513,6 +514,18 @@ def process_message(message_id, skip_batch_wait: bool = False):
         )
         return
 
+    direct_shipkia_scope_reply = _direct_shipkia_scope_reply(body_text, history_before_current, conversation=conversation)
+    if direct_shipkia_scope_reply:
+        mode = _deliver_or_draft_ai_reply(conversation, direct_shipkia_scope_reply, settings, message_id) or "duplicate_skip"
+        _log_ai_timing(
+            "direct_shipkia_scope_reply",
+            conversation=conversation,
+            message=message_id,
+            mode=mode,
+            intent=intent_decision.intent,
+        )
+        return
+
     direct_rate_reply = build_rate_reply_for_message(body_text, history_before_current)
     if direct_rate_reply:
         direct_rate_reply = _attach_shipkia_sales_next_step(
@@ -530,7 +543,7 @@ def process_message(message_id, skip_batch_wait: bool = False):
         )
         return
 
-    direct_shipkia_info_reply = _direct_shipkia_info_reply(body_text, history_before_current)
+    direct_shipkia_info_reply = _direct_shipkia_info_reply(body_text, history_before_current, conversation=conversation)
     if direct_shipkia_info_reply:
         mode = _deliver_or_draft_ai_reply(conversation, direct_shipkia_info_reply, settings, message_id) or "duplicate_skip"
         _log_ai_timing(
@@ -542,7 +555,7 @@ def process_message(message_id, skip_batch_wait: bool = False):
         )
         return
 
-    direct_shipkia_sales_reply = _direct_shipkia_sales_reply(body_text, history_before_current)
+    direct_shipkia_sales_reply = _direct_shipkia_sales_reply(body_text, history_before_current, conversation=conversation)
     if direct_shipkia_sales_reply:
         mode = _deliver_or_draft_ai_reply(conversation, direct_shipkia_sales_reply, settings, message_id) or "duplicate_skip"
         _log_ai_timing(
@@ -616,6 +629,8 @@ def process_message(message_id, skip_batch_wait: bool = False):
         "Never ask business/store name, monthly shipments, and current shipping provider/aggregator together. "
         "Never ask pickup city, delivery city, and weight together. "
         "For general ShipKia/service/feature questions, always mention order confirmation and NDR workflows. "
+        "Stay strictly within ShipKia, shipping, courier, logistics, COD, rates, NDR, RTO, tracking, and onboarding topics. "
+        "If the customer asks for unrelated content such as jokes, emojis, entertainment, news, coding, general knowledge, or personal advice, politely say you can help with ShipKia shipping support and ask one relevant ShipKia question. "
         "If intent is unclear, ask exactly one concise clarification question. "
         "Never claim that a write action completed unless the server returned success."
     )
@@ -833,13 +848,6 @@ def _direct_shipkia_greeting_reply(body_text: str, history=None) -> str:
     text = str(body_text or "").strip().lower()
     if not _is_plain_greeting(text):
         return ""
-    prior_inbound = [
-        row for row in (history or [])
-        if str(_history_value(row, "direction") or "").strip() == "Inbound"
-        and str(_history_value(row, "body") or "").strip()
-    ]
-    if prior_inbound:
-        return ""
     return "Hi, welcome to ShipKia. Kaise help kar sakta hoon?"
 
 
@@ -852,11 +860,11 @@ def _is_plain_greeting(text: str) -> bool:
     )
 
 
-def _direct_shipkia_info_reply(body_text: str, history=None) -> str:
+def _direct_shipkia_info_reply(body_text: str, history=None, conversation: str | None = None) -> str:
     text = str(body_text or "").strip().lower()
     if not _looks_like_shipkia_info_question(text):
         return ""
-    details = _shipkia_details_with_current(history, body_text)
+    details = _shipkia_details_with_current(history, body_text, conversation=conversation)
     if re.search(r"\brto\b", text):
         next_question = _shipkia_next_sales_question(details, body_text, prefer_context="rto") or "Aapka approx RTO percentage kitna chal raha hai?"
         return (
@@ -904,22 +912,97 @@ def _looks_like_shipkia_info_question(text: str) -> bool:
     return bool(has_shipkia_topic or (has_workflow_topic and has_info_intent))
 
 
-def _direct_shipkia_sales_reply(body_text: str, history=None) -> str:
+def _direct_shipkia_scope_reply(body_text: str, history=None, conversation: str | None = None) -> str:
+    text = str(body_text or "").strip().lower()
+    if not text:
+        return ""
+    if _is_plain_greeting(text):
+        return ""
+    if _looks_like_answer_to_recent_sales_question(history, body_text):
+        return ""
+    if _is_shipkia_domain_message(text):
+        return ""
+    if _looks_like_off_topic_request(text):
+        details = _shipkia_details_with_current(history, body_text, conversation=conversation)
+        next_question = _shipkia_next_sales_question(details, body_text, prefer_context="general") or "Aapka main shipping challenge kya hai?"
+        return f"Main ShipKia shipping aur logistics support ke liye hoon. {next_question}"
+    return ""
+
+
+def _is_shipkia_domain_message(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(shipkia|shipping|shipment|shipments|order|orders|courier|logistics|aggregator|pickup|delivery|cod|prepaid|rate|rates|price|pricing|charge|charges|zone|rto|ndr|tracking|awb|return|non delivery|onboarding|signup|account|business|store|monthly|shiprocket|shipmoro|shipro|nimbuspost|delhivery)\b",
+            str(text or "").lower(),
+        )
+    )
+
+
+def _looks_like_off_topic_request(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return False
+    off_topic_terms = (
+        "emoji",
+        "joke",
+        "shayari",
+        "poem",
+        "song",
+        "lyrics",
+        "story",
+        "movie",
+        "cricket",
+        "weather",
+        "news",
+        "recipe",
+        "coding",
+        "code",
+        "homework",
+        "translate",
+        "general knowledge",
+        "gk",
+        "horoscope",
+        "love",
+        "dating",
+        "game",
+    )
+    if any(re.search(rf"\b{re.escape(term)}\b", normalized) for term in off_topic_terms):
+        return True
+    return bool(
+        re.search(r"\b(kya kya kar sakte ho|what can you do|tum kya kar sakte ho)\b", normalized)
+        and not _is_shipkia_domain_message(normalized)
+    )
+
+
+def _direct_shipkia_sales_reply(body_text: str, history=None, conversation: str | None = None) -> str:
     text = str(body_text or "").strip().lower()
     if not text:
         return ""
 
-    details = _shipkia_details_with_current(history, body_text)
+    details = _shipkia_details_with_current(history, body_text, conversation=conversation)
+    if _customer_requests_onboarding_link(text, history):
+        return _shipkia_signup_link_reply(details)
     if _customer_consents_to_onboarding(text) and _recent_bot_asked_onboarding_consent(history):
         return _shipkia_signup_link_reply(details)
+    if _is_shipkia_continue_nudge(text):
+        next_question = _shipkia_next_sales_question(details, body_text, prefer_context="lead")
+        if next_question:
+            return next_question
+    if _looks_like_shipment_count_correction_for_sales(text) and details.monthly_shipments is not None:
+        next_question = _shipkia_next_sales_question(details, body_text, prefer_context="lead")
+        if next_question:
+            return f"Got it, approx {details.monthly_shipments} monthly shipments noted. {next_question}"
 
     if _looks_like_answer_to_recent_sales_question(history, body_text) and not _shipping_challenge_answer_is_pain(history, text):
-        collected_rate_reply = _shipkia_collected_route_rate_reply(details)
+        collected_rate_reply = _shipkia_collected_route_rate_reply(details, body_text, history)
         if collected_rate_reply:
             return _attach_shipkia_sales_next_step(collected_rate_reply, body_text, history)
-        next_question = _shipkia_next_sales_question(details, body_text)
+        reply_context = "rto" if _recent_bot_asked_rto_percentage(history) else ""
+        next_question = _shipkia_next_sales_question(details, body_text, prefer_context=reply_context)
         if next_question:
             return f"{_shipkia_fact_acknowledgement(details, history)} {next_question}".strip()
+        if reply_context == "rto":
+            return f"{_shipkia_fact_acknowledgement(details, history)} {_shipkia_ready_to_onboard_reply(details)}".strip()
         return _shipkia_ready_to_onboard_reply(details)
 
     if _looks_like_shipkia_pain_point(text):
@@ -951,7 +1034,7 @@ def _direct_shipkia_sales_reply(body_text: str, history=None) -> str:
     return ""
 
 
-def _shipkia_details_with_current(history, body_text: str):
+def _shipkia_details_with_current(history, body_text: str, conversation: str | None = None):
     rows = [
         {
             "direction": _history_value(row, "direction"),
@@ -961,7 +1044,95 @@ def _shipkia_details_with_current(history, body_text: str):
         for row in (history or [])
     ]
     rows.append({"direction": "Inbound", "body": str(body_text or ""), "creation": None})
-    return _extract_shipkia_lead_details(rows)
+    details = _extract_shipkia_lead_details(rows)
+    return _merge_shipkia_details_from_linked_lead(details, conversation)
+
+
+def _merge_shipkia_details_from_linked_lead(details, conversation: str | None = None):
+    if not conversation:
+        return details
+    try:
+        lead_name = _shipkia_linked_lead_for_conversation(conversation)
+        if not lead_name or not safe_ai_exists("Lead", lead_name):
+            return details
+        if details.business_type is None:
+            details.business_type = _shipkia_lead_field(lead_name, "shipkia_business_type") or None
+        if not details.business_name:
+            details.business_name = _shipkia_lead_field(lead_name, "shipkia_business_name") or None
+        if details.monthly_shipments is None:
+            monthly_shipments = _shipkia_lead_field(lead_name, "shipkia_monthly_shipments")
+            if monthly_shipments:
+                details.monthly_shipments = int(float(monthly_shipments))
+        if details.aggregator_status is None:
+            details.aggregator_status = _shipkia_lead_field(lead_name, "shipkia_current_aggregator_status") or None
+        if not details.aggregator_name:
+            details.aggregator_name = (
+                _shipkia_lead_field(lead_name, "shipkia_current_shipping_aggregator")
+                or _shipkia_lead_field(lead_name, "shipkia_current_aggregator_name")
+                or None
+            )
+        if details.current_shipping_rate is None:
+            current_rate = _shipkia_lead_field(lead_name, "shipkia_current_shipping_rate")
+            if current_rate:
+                details.current_shipping_rate = float(current_rate)
+        if details.rto_percentage is None:
+            rto_percentage = _shipkia_lead_field(lead_name, "shipkia_rto_percentage")
+            if rto_percentage is not None:
+                details.rto_percentage = float(rto_percentage)
+    except Exception:
+        return details
+    return details
+
+
+def _shipkia_linked_lead_for_conversation(conversation: str) -> str:
+    contact_name = safe_ai_get_value("Chat Conversation", conversation, "contact")
+    contact = None
+    if contact_name:
+        contact = safe_ai_get_value(
+            "Chat Contact",
+            contact_name,
+            ["linked_lead", "source_doctype", "source_name", "phone_number"],
+            as_dict=True,
+        ) or {}
+        linked_lead = str(contact.get("linked_lead") or "").strip()
+        if linked_lead:
+            return linked_lead
+        if str(contact.get("source_doctype") or "").strip() == "Lead":
+            source_name = str(contact.get("source_name") or "").strip()
+            if source_name:
+                return source_name
+    phone_number = str((contact or {}).get("phone_number") or "").strip()
+    if phone_number:
+        last10 = re.sub(r"\D+", "", phone_number)[-10:]
+        if last10:
+            lead = safe_ai_get_all(
+                "Lead",
+                filters={"mobile_no": ["like", "%" + last10]},
+                fields=["name"],
+                order_by="modified desc",
+                limit=1,
+            )
+            if lead:
+                return str(lead[0].name)
+    return ""
+
+
+def _shipkia_lead_field(lead_name: str, fieldname: str):
+    if not lead_name or not fieldname:
+        return None
+    if not frappe.db.has_column("Lead", fieldname):
+        return None
+    return safe_ai_get_value("Lead", lead_name, fieldname)
+
+
+def _is_shipkia_continue_nudge(text: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9\u0900-\u097F]+", " ", str(text or "").lower()).strip()
+    return bool(
+        re.fullmatch(
+            r"(bolo|boliye|btao|batao|bataye|bataiye|haan bolo|ha bolo|yes tell|tell me|continue|next|aage|aage bolo|go ahead)",
+            normalized,
+        )
+    )
 
 
 def _history_value(row, fieldname: str):
@@ -981,10 +1152,15 @@ def _looks_like_answer_to_recent_sales_question(history, body_text: str) -> bool
     text = str(body_text or "").strip().lower()
     if not last or not text:
         return False
+    if _is_plain_greeting(text):
+        return False
     if _looks_like_customer_question_instead_of_answer(body_text):
         return False
     sales_markers = (
         "business b2c hai ya d2c",
+        "business type kya hai",
+        "business type",
+        "b2c, d2c",
         "business/store name",
         "business name",
         "store name",
@@ -1045,13 +1221,37 @@ def _looks_like_customer_question_instead_of_answer(text: str) -> bool:
 
 def _looks_like_crisp_sales_answer(text: str) -> bool:
     normalized = re.sub(r"[^a-z0-9.%\u0900-\u097F]+", " ", str(text or "").lower()).strip()
+    if _looks_like_business_type_answer(normalized):
+        return True
     if re.fullmatch(r"(b2c|d2c|yes|yeah|yep|ha|haan|han|no|nhi|nahi|nahin)", normalized):
         return True
     if re.fullmatch(r"(?:around|approx|approximately|lagbhag)?\s*\d[\d,]*(?:\.\d+)?\s*(?:k|thousand|lakh|lac|%|percent|percentage|per|kg|kgs|g|gm|grams?)?", normalized):
         return True
-    if re.fullmatch(r"(shiprocket|shipro|shipkaro|shipyaari|nimbuspost|pickrr|delhivery|ithink|ithink logistics|shipprime|ship prime)", normalized):
+    if re.fullmatch(r"(shiprocket|shipro|shipmozo|shipmoro|shipkaro|shipyaari|nimbuspost|pickrr|delhivery|ithink|ithink logistics|shipprime|ship prime)", normalized):
         return True
     return False
+
+
+def _looks_like_business_type_answer(text: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9\u0900-\u097F]+", " ", str(text or "").lower()).strip()
+    if not normalized:
+        return False
+    return bool(
+        re.fullmatch(
+            r"(b2c|d2c|b2b|wholesale|wholesaler|retail|retailer|manufacturing|manufacturer|factory|reseller|distributor|distribution|marketplace|marketplace seller|amazon|flipkart|meesho|social commerce|instagram seller|whatsapp seller|export|exporter|import|importer|trading|trader|service|services|service business|other|others|not listed|alag)",
+            normalized,
+        )
+    )
+
+
+def _looks_like_shipment_count_correction_for_sales(text: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
+    if not normalized:
+        return False
+    return bool(
+        re.search(r"\d", normalized)
+        and re.search(r"\b(shipment|shipments|order|orders|daily|day|weekly|week|monthly|month|per day|not monthly)\b", normalized)
+    )
 
 
 def _shipping_challenge_answer_is_pain(history, text: str) -> bool:
@@ -1064,11 +1264,11 @@ def _shipkia_fact_acknowledgement(details, history=None) -> str:
     if "rto percentage" in last and details.rto_percentage is not None:
         return f"Got it, {details.rto_percentage:g}% RTO noted."
     if "monthly shipments" in last and details.monthly_shipments is not None:
-        return f"Got it, {details.monthly_shipments} monthly shipments noted."
+        return f"Got it, approx {details.monthly_shipments} monthly shipments noted."
     if ("business/store name" in last or "business name" in last or "store name" in last) and details.business_name:
         return f"Thanks, {details.business_name} noted."
-    if "b2c" in last and details.business_type:
-        return f"Got it, {details.business_type} business hai."
+    if ("b2c" in last or "business type" in last) and details.business_type:
+        return f"Got it, {details.business_type} noted."
     if ("shipping aggregator" in last or "current aggregator" in last) and details.aggregator_name:
         return f"Got it, {details.aggregator_name} noted."
     if "500g shipment" in last and details.current_shipping_rate is not None:
@@ -1080,6 +1280,7 @@ def _shipkia_next_sales_question(details, body_text: str = "", prefer_context: s
     text = str(body_text or "").lower()
     context = str(prefer_context or "").lower()
     rate_context = bool(details.asked_for_rates or _customer_asked_rate_quote(text))
+    suppress_stale_rate_context = context in {"rto", "lead"}
 
     if context == "rto" and details.rto_percentage is None:
         return "Aapka approx RTO percentage kitna chal raha hai?"
@@ -1087,18 +1288,18 @@ def _shipkia_next_sales_question(details, body_text: str = "", prefer_context: s
         return "Aap currently 500g shipment ka approx rate kitna pay kar rahe hain?"
     if context == "general" and not re.search(r"\b(rto|rate|rates|price|pricing|charges|saste|cheap|cost)\b", text):
         return "Aapka main shipping challenge kya hai?"
-    if rate_context and not details.pickup_city:
+    if rate_context and not suppress_stale_rate_context and not details.pickup_city:
         return "Starting rate check karne ke liye pickup city share kar dijiye."
-    if rate_context and not details.delivery_city:
+    if rate_context and not suppress_stale_rate_context and not details.delivery_city:
         return "Delivery city kaunsi rahegi?"
-    if rate_context and not details.average_weight:
+    if rate_context and not suppress_stale_rate_context and not details.average_weight:
         return "Approx shipment weight kitna rahega?"
     if re.search(r"\brto\b", text) and details.rto_percentage is None:
         return "Aapka approx RTO percentage kitna chal raha hai?"
     if re.search(r"\b(rate|rates|price|pricing|charges|saste|cheap|cost)\b", text) and details.current_shipping_rate is None and not _customer_asked_rate_quote(text):
         return "Aap currently 500g shipment ka approx rate kitna pay kar rahe hain?"
     if details.business_type is None:
-        return "Aapka business B2C hai ya D2C?"
+        return "Aapka business type kya hai? B2C, D2C, wholesale, retail, manufacturing, reseller ya other - jo applicable ho bata dijiye."
     if not details.business_name:
         return "Aap business/store name share kar dijiye."
     if details.monthly_shipments is None:
@@ -1112,12 +1313,25 @@ def _shipkia_next_sales_question(details, body_text: str = "", prefer_context: s
     return ""
 
 
-def _shipkia_collected_route_rate_reply(details) -> str:
+def _shipkia_collected_route_rate_reply(details, body_text: str = "", history=None) -> str:
     if not (details.asked_for_rates and details.pickup_city and details.delivery_city and details.average_weight):
+        return ""
+    text = str(body_text or "").strip().lower()
+    if re.search(r"\brto\b|(?:\d+(?:\.\d+)?\s*(?:%|percent|percentage|per)\b)", text):
+        return ""
+    if not (_customer_asked_rate_quote(text) or _recent_bot_asked_rate_completion(history)):
         return ""
     return build_rate_reply_for_message(
         f"{details.pickup_city} to {details.delivery_city} {details.average_weight} rate batao",
         [],
+    )
+
+
+def _recent_bot_asked_rate_completion(history) -> bool:
+    last = _last_outbound_text(history).lower()
+    return bool(
+        re.search(r"\b(approx shipment weight|shipment weight|weight kitna)\b", last)
+        and re.search(r"\b(rate|rates|zone|starting rate)\b", last)
     )
 
 
@@ -1142,10 +1356,7 @@ def _history_or_text_mentions_rates(text: str) -> bool:
 
 def _shipkia_ready_to_onboard_reply(details) -> str:
     if details.business_type and details.business_name and details.monthly_shipments is not None:
-        return (
-            "Perfect, enough details mil gaye. Main aapko ShipKia onboarding ke next step ke liye guide kar sakta hoon. "
-            "Kya aap account setup start karna chahenge?"
-        )
+        return _shipkia_signup_link_reply(details)
     next_question = _shipkia_next_sales_question(details)
     if next_question:
         return f"Bilkul, onboarding me help kar dunga. {next_question}"
@@ -1153,11 +1364,9 @@ def _shipkia_ready_to_onboard_reply(details) -> str:
 
 
 def _shipkia_signup_link_reply(details) -> str:
-    if not (details.business_type and details.business_name and details.monthly_shipments is not None):
-        return _shipkia_ready_to_onboard_reply(details)
     return (
-        "Great. Aap ShipKia account yahan create kar sakte hain: https://auth.shipkia.com/signup\n\n"
-        "Registration page open ho jaye to message kar dijiye, main setup me guide kar dunga."
+        f"Bilkul. ShipKia onboarding link: {SHIPKIA_ONBOARDING_URL}\n\n"
+        "Aap account create kar lijiye. Form me help chahiye ho to yahin message kar dena."
     )
 
 
@@ -1179,6 +1388,9 @@ def _align_reply_with_shipkia_sales_flow(reply: str, body_text: str, history=Non
     details = _shipkia_details_with_current(history, body_text)
     next_question = _shipkia_next_sales_question(details, body_text)
 
+    if _customer_requests_onboarding_link(body_text, history) or _reply_refuses_shipkia_onboarding_link(cleaned):
+        return _shipkia_signup_link_reply(details)
+
     if _looks_like_premature_signup_reply(cleaned, details):
         return _shipkia_ready_to_onboard_reply(details)
 
@@ -1199,6 +1411,8 @@ def _shipkia_provider_failure_reply(body_text: str, history=None) -> str:
     if _is_plain_greeting(text):
         return "Hi, welcome to ShipKia. Kaise help kar sakta hoon?"
     details = _shipkia_details_with_current(history, body_text)
+    if _customer_requests_onboarding_link(text, history):
+        return _shipkia_signup_link_reply(details)
     if _customer_consents_to_onboarding(text) and _recent_bot_asked_onboarding_consent(history):
         return _shipkia_signup_link_reply(details)
     next_question = _shipkia_next_sales_question(details, body_text)
@@ -1224,7 +1438,52 @@ def _customer_consents_to_onboarding(text: str) -> bool:
         "kar do",
         "start karo",
         "chalo",
-    }
+    } or bool(
+        re.search(
+            r"\b(onboard|onboarding|signup|sign up|register|account)\b.{0,45}\b(start|kar|karo|krdo|krna|krne|karna|karni|create|bana|banana|setup|chahiye|chaiye)\b",
+            normalized,
+        )
+    )
+
+
+def _customer_requests_onboarding_link(text: str, history=None) -> bool:
+    if _customer_directly_requests_onboarding_link(text):
+        return True
+    return _customer_requests_generic_link(text) and _recent_context_mentions_onboarding(history)
+
+
+def _customer_directly_requests_onboarding_link(text: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9\u0900-\u097F]+", " ", str(text or "").lower()).strip()
+    if not normalized:
+        return False
+    if re.search(r"\b(onboarding|signup|sign up|register|registration|account)\b.{0,45}\blink\b", normalized):
+        return True
+    if re.search(r"\blink\b.{0,45}\b(onboarding|signup|sign up|register|registration|account)\b", normalized):
+        return True
+    return bool(
+        re.search(
+            r"\b(onboard|onboarding|signup|sign up|register|registration|account)\b.{0,55}\b(provide|send|share|de|do|dedo|dijiye|dede|bhej|bhejo|chahiye|chaiye|create|bana|banana|start|karna|karni|krna|krne|karo|krdo|setup)\b",
+            normalized,
+        )
+    )
+
+
+def _customer_requests_generic_link(text: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9\u0900-\u097F]+", " ", str(text or "").lower()).strip()
+    return bool(
+        re.search(r"\blink\b", normalized)
+        and re.search(r"\b(provide|send|share|de|do|dedo|dijiye|dede|bhej|bhejo|chahiye|chaiye|krdo|kar do)\b", normalized)
+    )
+
+
+def _recent_context_mentions_onboarding(history) -> bool:
+    recent = []
+    for row in list(history or [])[-8:]:
+        body = str(_history_value(row, "body") or "")
+        if body:
+            recent.append(body)
+    text = "\n".join(recent).lower()
+    return bool(re.search(r"\b(onboard|onboarding|signup|sign up|register|registration|account setup|account create)\b", text))
 
 
 def _recent_bot_asked_onboarding_consent(history) -> bool:
@@ -1243,6 +1502,16 @@ def _recent_bot_asked_callback_consent(history) -> bool:
     return bool(re.search(r"\b(callback|call back|call)\b.*\?", last))
 
 
+def _recent_bot_asked_rto_percentage(history) -> bool:
+    last = _last_outbound_text(history).lower()
+    return bool(
+        re.search(
+            r"\brto\b.{0,45}\b(percent|percentage|%)\b|\b(percent|percentage|%)\b.{0,45}\brto\b",
+            last,
+        )
+    )
+
+
 def _reply_has_customer_question(text: str) -> bool:
     return "?" in str(text or "") or _looks_like_customer_question_request(text)
 
@@ -1252,6 +1521,14 @@ def _looks_like_premature_signup_reply(text: str, details) -> bool:
     wants_signup = bool(re.search(r"\b(signup|sign up|account create|account setup|auth\\.shipkia|registration)\b", lower))
     has_minimum_fit = bool(details.business_type and details.business_name and details.monthly_shipments is not None)
     return wants_signup and not has_minimum_fit
+
+
+def _reply_refuses_shipkia_onboarding_link(text: str) -> bool:
+    lower = str(text or "").lower()
+    return bool(
+        re.search(r"\b(onboarding|signup|sign up|registration|account)\b.{0,80}\blink\b", lower)
+        and re.search(r"\b(nahi de sakta|cannot provide|can't provide|unable to provide|link nahi)\b", lower)
+    )
 
 
 def _reply_asks_generic_or_non_progress_question(text: str) -> bool:
@@ -2432,10 +2709,15 @@ def _deliver_ai_reply(conversation: str, response_text: str) -> None:
         outbound = send_outbound_message(conversation, response_text, "Text")
         delivery_status = outbound.get("delivery_status") or "Sent"
         channel_message_id = outbound.get("provider_message_id")
-    except Exception:
+    except Exception as exc:
         frappe.log_error(frappe.get_traceback(), "WA AI Autopilot Send Failed")
         delivery_status = "Failed"
-        outbound = {"sent": False, "error": "Interakt send failed"}
+        outbound = {
+            "sent": False,
+            "error": "Interakt send failed",
+            "error_type": exc.__class__.__name__,
+            "error_detail": str(exc)[:500],
+        }
 
     frappe.flags.wa_ai_outbound_reply = True
     frappe.local.wa_ai_outbound_reply = True

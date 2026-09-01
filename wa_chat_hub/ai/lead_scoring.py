@@ -26,6 +26,48 @@ CITY_ALIASES = {
     "calcutta": "Kolkata",
 }
 
+ROUTE_CONNECTOR_PATTERN = r"(?:from\s+)?([A-Za-z][A-Za-z .'-]{1,40}?)\s+(?:to|se)\s+([A-Za-z][A-Za-z .'-]{1,40})"
+HINGLISH_TO_FILLERS = {"me", "main", "mai", "mein", "m", "hum", "ham", "we"}
+NON_CITY_ROUTE_WORDS = {
+    "aggregator",
+    "courier",
+    "current",
+    "currently",
+    "hu",
+    "hoon",
+    "hai",
+    "use",
+    "using",
+    "krrha",
+    "krra",
+    "kar",
+    "karta",
+    "karte",
+    "shipmoro",
+    "shipmozo",
+    "shipro",
+    "shiprocket",
+    "nimbuspost",
+    "provider",
+}
+
+BUSINESS_TYPE_KEYWORDS = (
+    (r"\bd2c\b|\bdirect\s+to\s+consumer\b", "D2C"),
+    (r"\bb2c\b|\bbusiness\s+to\s+consumer\b", "B2C"),
+    (r"\bb2b\b|\bbusiness\s+to\s+business\b", "B2B"),
+    (r"\bwholesale(?:r)?\b", "Wholesale"),
+    (r"\bretail(?:er)?\b|\boffline\s+store\b", "Retail"),
+    (r"\bmanufactur(?:er|ing)\b|\bfactory\b", "Manufacturing"),
+    (r"\breseller\b", "Reseller"),
+    (r"\bdistributor\b|\bdistribution\b", "Distributor"),
+    (r"\bmarketplace\b|\bamazon\b|\bflipkart\b|\bmeesho\b", "Marketplace Seller"),
+    (r"\bsocial\s+commerce\b|\binstagram\b|\bwhatsapp\s+seller\b", "Social Commerce"),
+    (r"\bexport(?:er)?\b|\bimport(?:er)?\b", "Export/Import"),
+    (r"\btrading\b|\btrader\b", "Trading"),
+    (r"\bservice\s+business\b|\bservices\b", "Services"),
+    (r"\bother\b|\bothers\b|\bnot\s+listed\b|\balag\b", "Other"),
+)
+
 
 @dataclass
 class ScoreResult:
@@ -206,86 +248,95 @@ def _get_conversation_linked_lead(convo) -> Tuple[str, str] | None:
 
 def _build_lead_updates(meta, result: ScoreResult, details: ShipKiaLeadDetails) -> Dict[str, object]:
     updates: Dict[str, object] = {}
-    if meta.has_field("lead_score"):
-        updates["lead_score"] = result.lead_score
-    if meta.has_field("lead_lan"):
-        updates["lead_lan"] = result.lead_lan
-    if meta.has_field("lead_temperature"):
-        updates["lead_temperature"] = result.lead_temperature
-    if meta.has_field("shipkia_lead_temperature"):
-        updates["shipkia_lead_temperature"] = result.lead_temperature
-    if meta.has_field("shipkia_ai_lead_temperature"):
-        updates["shipkia_ai_lead_temperature"] = result.lead_temperature
+    _add_lead_update(meta, updates, "lead_score", result.lead_score)
+    _add_lead_update(meta, updates, "lead_lan", result.lead_lan)
+    _add_lead_update(meta, updates, "lead_temperature", result.lead_temperature)
+    _add_lead_update(meta, updates, "shipkia_lead_temperature", result.lead_temperature)
+    _add_lead_update(meta, updates, "shipkia_ai_lead_temperature", result.lead_temperature)
 
-    if details.business_type and meta.has_field("shipkia_business_type"):
-        updates["shipkia_business_type"] = details.business_type
+    _add_lead_update(meta, updates, "shipkia_business_type", details.business_type)
     if details.business_name:
-        if meta.has_field("shipkia_business_name"):
-            updates["shipkia_business_name"] = details.business_name
-        if meta.has_field("company_name"):
-            updates["company_name"] = details.business_name
-    if details.monthly_shipments is not None and meta.has_field("shipkia_monthly_shipments"):
-        updates["shipkia_monthly_shipments"] = details.monthly_shipments
-    if details.aggregator_status and meta.has_field("shipkia_current_aggregator_status"):
-        updates["shipkia_current_aggregator_status"] = details.aggregator_status
-    if details.aggregator_name and meta.has_field("shipkia_current_aggregator_name"):
-        updates["shipkia_current_aggregator_name"] = details.aggregator_name
-    if details.aggregator_raw and meta.has_field("shipkia_current_aggregator_raw"):
-        updates["shipkia_current_aggregator_raw"] = details.aggregator_raw
-    if details.aggregator_status and meta.has_field("shipkia_current_aggregator_verified"):
-        updates["shipkia_current_aggregator_verified"] = 1
-    if details.current_shipping_rate is not None and meta.has_field("shipkia_current_shipping_rate"):
-        updates["shipkia_current_shipping_rate"] = details.current_shipping_rate
-    if details.rto_percentage is not None and meta.has_field("shipkia_rto_percentage"):
-        updates["shipkia_rto_percentage"] = details.rto_percentage
-    if details.pickup_city and meta.has_field("shipkia_pickup_city"):
-        updates["shipkia_pickup_city"] = details.pickup_city
-    if details.delivery_city and meta.has_field("shipkia_delivery_city"):
-        updates["shipkia_delivery_city"] = details.delivery_city
-    if details.average_weight and meta.has_field("shipkia_average_weight"):
-        updates["shipkia_average_weight"] = details.average_weight
+        _add_lead_update(meta, updates, "shipkia_business_name", details.business_name)
+        _add_lead_update(meta, updates, "company_name", details.business_name)
+    _add_lead_update(meta, updates, "shipkia_monthly_shipments", details.monthly_shipments)
+    _add_lead_update(meta, updates, "shipkia_current_aggregator_status", details.aggregator_status)
+    _add_lead_update(meta, updates, "shipkia_current_aggregator_name", details.aggregator_name)
+    _add_lead_update(meta, updates, "shipkia_current_aggregator_raw", details.aggregator_raw)
+    if details.aggregator_status:
+        _add_lead_update(meta, updates, "shipkia_current_aggregator_verified", 1)
+    _add_lead_update(meta, updates, "shipkia_current_shipping_rate", details.current_shipping_rate)
+    _add_lead_update(meta, updates, "shipkia_rto_percentage", details.rto_percentage)
+    _add_lead_update(meta, updates, "shipkia_pickup_city", details.pickup_city)
+    _add_lead_update(meta, updates, "shipkia_delivery_city", details.delivery_city)
+    _add_lead_update(meta, updates, "shipkia_average_weight", details.average_weight)
     if details.rate_shared and meta.has_field("shipkia_rate_shared"):
         updates["shipkia_rate_shared"] = 1
 
-    if meta.has_field("shipkia_ai_qualification_score"):
-        updates["shipkia_ai_qualification_score"] = result.lead_score
-    if meta.has_field("shipkia_ai_messages_count"):
-        updates["shipkia_ai_messages_count"] = details.inbound_count
-    if meta.has_field("shipkia_ai_details_collected"):
-        updates["shipkia_ai_details_collected"] = details.collected_count
-    if details.latest_inbound_at and meta.has_field("shipkia_ai_last_message_at"):
-        updates["shipkia_ai_last_message_at"] = details.latest_inbound_at
-    if meta.has_field("shipkia_context_updated_at"):
-        updates["shipkia_context_updated_at"] = now_datetime()
-    if meta.has_field("shipkia_context_completed"):
-        updates["shipkia_context_completed"] = 1 if details.collected_count >= 5 else 0
-    if meta.has_field("shipkia_ai_context_complete"):
-        updates["shipkia_ai_context_complete"] = 1 if details.collected_count >= 5 else 0
-    if meta.has_field("shipkia_requirement_details"):
-        updates["shipkia_requirement_details"] = _build_requirement_summary(details)
+    _add_lead_update(meta, updates, "shipkia_ai_qualification_score", result.lead_score)
+    _add_lead_update(meta, updates, "shipkia_ai_messages_count", details.inbound_count)
+    _add_lead_update(meta, updates, "shipkia_ai_details_collected", details.collected_count)
+    _add_lead_update(meta, updates, "shipkia_ai_last_message_at", details.latest_inbound_at)
+    _add_lead_update(meta, updates, "shipkia_context_updated_at", now_datetime())
+    _add_lead_update(meta, updates, "shipkia_context_completed", 1 if details.collected_count >= 5 else 0)
+    _add_lead_update(meta, updates, "shipkia_ai_context_complete", 1 if details.collected_count >= 5 else 0)
+    _add_lead_update(meta, updates, "shipkia_requirement_details", _build_requirement_summary(details))
 
     qualification_status = _qualification_status(details)
-    if meta.has_field("shipkia_qualification_status"):
-        updates["shipkia_qualification_status"] = qualification_status
-    if meta.has_field("shipkia_ai_qualification_status"):
-        updates["shipkia_ai_qualification_status"] = qualification_status
-    if meta.has_field("shipkia_ai_onboarding_stage"):
-        updates["shipkia_ai_onboarding_stage"] = "Details Collected" if details.collected_count >= 5 else "In Progress"
+    _add_lead_update(meta, updates, "shipkia_qualification_status", qualification_status)
+    _add_lead_update(meta, updates, "shipkia_ai_qualification_status", qualification_status)
+    onboarding_stage = "Details Collected" if details.collected_count >= 5 else "In Progress"
+    _add_lead_update(
+        meta,
+        updates,
+        "shipkia_ai_onboarding_stage",
+        _coerce_select_value(meta, "shipkia_ai_onboarding_stage", onboarding_stage, fallback="Not Started"),
+    )
     if details.signup_requested and meta.has_field("shipkia_ai_onboarding_assisted"):
         updates["shipkia_ai_onboarding_assisted"] = 1
     if meta.has_field("shipkia_sales_stage"):
         if details.signup_requested:
-            updates["shipkia_sales_stage"] = "Demo / Signup Pending"
+            sales_stage = "Demo / Signup Pending"
         elif details.rate_shared:
-            updates["shipkia_sales_stage"] = "Rate Shared"
+            sales_stage = "Rate Shared"
         else:
-            updates["shipkia_sales_stage"] = "Qualified" if qualification_status == "Qualified" else "New Lead"
-    if meta.has_field("shipkia_lead_source"):
-        updates["shipkia_lead_source"] = "WhatsApp Inbound"
-    if meta.has_field("shipkia_first_contact_channel"):
-        updates["shipkia_first_contact_channel"] = "WhatsApp"
+            sales_stage = "Qualified" if qualification_status == "Qualified" else "New Lead"
+        _add_lead_update(meta, updates, "shipkia_sales_stage", sales_stage)
+    _add_lead_update(meta, updates, "shipkia_lead_source", "WhatsApp Inbound")
+    _add_lead_update(meta, updates, "shipkia_first_contact_channel", "WhatsApp")
 
     return updates
+
+
+def _add_lead_update(meta, updates: Dict[str, object], fieldname: str, value: object) -> None:
+    if value in (None, "") or not meta.has_field(fieldname):
+        return
+    if not _select_allows_value(meta, fieldname, value):
+        return
+    updates[fieldname] = value
+
+
+def _select_allows_value(meta, fieldname: str, value: object) -> bool:
+    field = meta.get_field(fieldname)
+    if not field or field.fieldtype != "Select":
+        return True
+    options = _select_options(field)
+    return not options or str(value).strip() in options
+
+
+def _coerce_select_value(meta, fieldname: str, value: str, fallback: str | None = None) -> str | None:
+    if _select_allows_value(meta, fieldname, value):
+        return value
+    if fallback and _select_allows_value(meta, fieldname, fallback):
+        return fallback
+    return None
+
+
+def _select_options(field) -> set[str]:
+    return {
+        option.strip()
+        for option in str(getattr(field, "options", "") or "").splitlines()
+        if option.strip()
+    }
 
 
 def _extract_shipkia_lead_details(history: List[Dict]) -> ShipKiaLeadDetails:
@@ -309,19 +360,39 @@ def _extract_shipkia_lead_details(history: List[Dict]) -> ShipKiaLeadDetails:
 
         inbound.append(row)
         customer_question = _looks_like_customer_question_instead_of_answer(body)
+        continue_nudge = _is_continue_nudge_text(body)
         if details.business_type is None:
             details.business_type = _extract_business_type(normalized_body)
+            if (
+                details.business_type is None
+                and _prompt_asked_business_type(last_outbound)
+                and not customer_question
+                and not continue_nudge
+            ):
+                details.business_type = _extract_business_type_short_answer(body)
         if details.business_name is None:
             details.business_name = _extract_business_name(body)
-            if details.business_name is None and _prompt_asked_business_name(last_outbound) and not customer_question:
+            if (
+                details.business_name is None
+                and _prompt_asked_business_name(last_outbound)
+                and not customer_question
+                and not continue_nudge
+            ):
                 details.business_name = _clean_short_answer(body).title() or None
-        if details.monthly_shipments is None:
-            details.monthly_shipments = _extract_monthly_shipments(normalized_body)
-            if details.monthly_shipments is None and _prompt_asked_monthly_shipments(last_outbound) and not customer_question:
-                details.monthly_shipments = _extract_plain_quantity(normalized_body)
+        extracted_monthly_shipments = _extract_monthly_shipments(normalized_body)
+        if (
+            extracted_monthly_shipments is None
+            and details.monthly_shipments is None
+            and _prompt_asked_monthly_shipments(last_outbound)
+            and not customer_question
+            and not continue_nudge
+        ):
+            extracted_monthly_shipments = _extract_plain_quantity(normalized_body)
+        if extracted_monthly_shipments is not None:
+            details.monthly_shipments = extracted_monthly_shipments
         if details.aggregator_status is None:
             status, name, raw = _extract_aggregator(normalized_body)
-            if not status and _prompt_asked_shipping_provider(last_outbound) and not customer_question:
+            if not status and _prompt_asked_shipping_provider(last_outbound) and not customer_question and not continue_nudge:
                 status, name, raw = _extract_provider_from_short_answer(body)
             details.aggregator_status = status
             details.aggregator_name = name
@@ -330,17 +401,23 @@ def _extract_shipkia_lead_details(history: List[Dict]) -> ShipKiaLeadDetails:
             details.current_shipping_rate = _extract_current_shipping_rate(normalized_body)
         if details.current_rate_zone is None:
             details.current_rate_zone = _extract_current_rate_zone(normalized_body)
-        if details.rto_percentage is None:
-            details.rto_percentage = _extract_rto_percentage(normalized_body)
-            if details.rto_percentage is None and _prompt_asked_rto_percentage(last_outbound) and not customer_question:
-                details.rto_percentage = _extract_plain_percentage(normalized_body)
+        extracted_rto_percentage = _extract_rto_percentage(normalized_body)
+        if (
+            extracted_rto_percentage is None
+            and _prompt_asked_rto_percentage(last_outbound)
+            and not customer_question
+            and not continue_nudge
+        ):
+            extracted_rto_percentage = _extract_plain_percentage(normalized_body)
+        if extracted_rto_percentage is not None:
+            details.rto_percentage = extracted_rto_percentage
         if details.pickup_city is None:
             details.pickup_city = _extract_pickup_city(body)
-            if details.pickup_city is None and _prompt_asked_pickup_city(last_outbound) and not customer_question:
+            if details.pickup_city is None and _prompt_asked_pickup_city(last_outbound) and not customer_question and not continue_nudge:
                 details.pickup_city = _extract_city_short_answer(body)
         if details.delivery_city is None:
             details.delivery_city = _extract_delivery_city(body)
-            if details.delivery_city is None and _prompt_asked_delivery_city(last_outbound) and not customer_question:
+            if details.delivery_city is None and _prompt_asked_delivery_city(last_outbound) and not customer_question and not continue_nudge:
                 details.delivery_city = _extract_city_short_answer(body)
         if details.average_weight is None:
             details.average_weight = _extract_average_weight(normalized_body)
@@ -359,6 +436,12 @@ def _extract_shipkia_lead_details(history: List[Dict]) -> ShipKiaLeadDetails:
     details.latest_inbound_at = inbound[-1].get("creation") if inbound else None
     details.inbound_count = len(inbound)
     return details
+
+
+def _prompt_asked_business_type(text: str) -> bool:
+    return bool(
+        re.search(r"\b(business|buisness).{0,35}(type|b2c|d2c|wholesale|retail|manufacturing|reseller)\b", text)
+    )
 
 
 def _prompt_asked_business_name(text: str) -> bool:
@@ -474,11 +557,13 @@ def _looks_like_customer_question_instead_of_answer(text: str) -> bool:
 
 def _looks_like_crisp_sales_answer(text: str) -> bool:
     normalized = re.sub(r"[^a-z0-9.%\u0900-\u097F]+", " ", str(text or "").lower()).strip()
+    if _extract_business_type(normalized):
+        return True
     if re.fullmatch(r"(b2c|d2c|yes|yeah|yep|ha|haan|han|no|nhi|nahi|nahin)", normalized):
         return True
     if re.fullmatch(r"(?:around|approx|approximately|lagbhag)?\s*\d[\d,]*(?:\.\d+)?\s*(?:k|thousand|lakh|lac|%|percent|percentage|per|kg|kgs|g|gm|grams?)?", normalized):
         return True
-    if re.fullmatch(r"(shiprocket|shipro|shipkaro|shipyaari|nimbuspost|pickrr|delhivery|ithink|ithink logistics|shipprime|ship prime)", normalized):
+    if re.fullmatch(r"(shiprocket|shipro|shipmozo|shipmoro|shipkaro|shipyaari|nimbuspost|pickrr|delhivery|ithink|ithink logistics|shipprime|ship prime)", normalized):
         return True
     return False
 
@@ -495,6 +580,16 @@ def _extract_plain_percentage(text: str) -> float | None:
         r"(?:around|approx|approximately|lagbhag)?\s*(\d+(?:\.\d+)?)\s*(?:%|percent|percentage|per)?",
         text,
     )
+    if not match:
+        match = re.search(
+            r"\b(\d+(?:\.\d+)?)\s*(?:%|percent|percentage|per)\b(?!\s*(?:day|din|month|mahina|week|hafte|shipment|shipments|order|orders)\b)",
+            text,
+        )
+    if not match:
+        match = re.search(
+            r"\b(?:abhi|currently|current|btaya|bataya|bola|chal|chl|rha|raha|hai|h|to)\b.{0,30}?\b(\d+(?:\.\d+)?)\b",
+            text,
+        )
     if not match:
         return None
     value = float(match.group(1))
@@ -515,6 +610,8 @@ def _extract_provider_from_short_answer(text: str) -> Tuple[str | None, str | No
     value = _clean_extracted_text(value)
     if not value or _normalize_text(value) in {"shipping", "aggregator", "provider", "courier"}:
         return None, None, None
+    if _looks_like_shipment_count_correction(value):
+        return None, None, None
     return "Yes", value.title(), value
 
 
@@ -530,11 +627,59 @@ def _asked_for_rate_quote(text: str) -> bool:
 
 
 def _extract_business_type(text: str) -> str | None:
-    if re.search(r"\bd2c\b", text):
-        return "D2C"
-    if re.search(r"\bb2c\b", text):
-        return "B2C"
+    normalized = _normalize_text(text)
+    for pattern, label in BUSINESS_TYPE_KEYWORDS:
+        if re.search(pattern, normalized):
+            return label
     return None
+
+
+def _extract_business_type_short_answer(text: str) -> str | None:
+    if _is_continue_nudge_text(text):
+        return None
+    extracted = _extract_business_type(text)
+    if extracted:
+        return extracted
+    value = _clean_extracted_text(text)
+    normalized = _normalize_text(value)
+    if not normalized:
+        return None
+    blocked = {
+        "yes",
+        "yeah",
+        "yep",
+        "ha",
+        "haan",
+        "han",
+        "no",
+        "nhi",
+        "nahi",
+        "nahin",
+        "none",
+        "rate",
+        "rates",
+        "price",
+        "pricing",
+        "pickup",
+        "delivery",
+        "city",
+        "shipkia",
+    }
+    if normalized in blocked or re.search(r"\b(rate|shipment|shipments|courier|aggregator|provider|rto)\b", normalized):
+        return None
+    if not re.search(r"[a-z]", normalized) or len(value) > 50:
+        return None
+    return value.title()
+
+
+def _is_continue_nudge_text(text: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9\u0900-\u097F]+", " ", str(text or "").lower()).strip()
+    return bool(
+        re.fullmatch(
+            r"(bolo|boliye|btao|batao|bataye|bataiye|haan bolo|ha bolo|yes tell|tell me|continue|next|aage|aage bolo|go ahead)",
+            normalized,
+        )
+    )
 
 
 def _extract_business_name(text: str) -> str | None:
@@ -553,6 +698,14 @@ def _extract_business_name(text: str) -> str | None:
 
 
 def _extract_monthly_shipments(text: str) -> int | None:
+    daily = _extract_periodic_shipments(text, ("daily", "per day", "day", "din", "roz"), 30)
+    if daily is not None:
+        return daily
+
+    weekly = _extract_periodic_shipments(text, ("weekly", "per week", "week", "hafte", "hafta"), 4)
+    if weekly is not None:
+        return weekly
+
     patterns = (
         r"(?:monthly|month|per month|mahine|mahina).{0,40}?(?:shipment|shipments|order|orders).{0,25}?(\d[\d,]*(?:\.\d+)?)\s*(k|thousand|lakh|lac)?",
         r"(?:shipment|shipments|order|orders).{0,25}?(?:around|approx|approximately|lagbhag)?\s*(\d[\d,]*(?:\.\d+)?)\s*(k|thousand|lakh|lac)?",
@@ -563,6 +716,30 @@ def _extract_monthly_shipments(text: str) -> int | None:
         if match:
             return int(_scaled_number(match.group(1), match.group(2) if match.lastindex and match.lastindex >= 2 else ""))
     return None
+
+
+def _extract_periodic_shipments(text: str, period_terms: tuple[str, ...], multiplier: int) -> int | None:
+    period_pattern = "|".join(re.escape(term) for term in period_terms)
+    patterns = (
+        rf"(\d[\d,]*(?:\.\d+)?)\s*(k|thousand|lakh|lac)?\s*(?:shipment|shipments|order|orders)?\s*(?:{period_pattern})\b",
+        rf"(?:{period_pattern})\s*(?:shipment|shipments|order|orders)?.{{0,20}}?(\d[\d,]*(?:\.\d+)?)\s*(k|thousand|lakh|lac)?",
+        rf"(?:shipment|shipments|order|orders).{{0,20}}?(\d[\d,]*(?:\.\d+)?)\s*(k|thousand|lakh|lac)?.{{0,20}}?(?:{period_pattern})\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return int(_scaled_number(match.group(1), match.group(2) if match.lastindex and match.lastindex >= 2 else "") * multiplier)
+    return None
+
+
+def _looks_like_shipment_count_correction(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    return bool(
+        re.search(r"\b(shipment|shipments|order|orders|monthly|month|daily|day|weekly|week|per day|per month|not monthly|din|roz)\b", normalized)
+        and re.search(r"\d", normalized)
+    )
 
 
 def _extract_aggregator(text: str) -> Tuple[str | None, str | None, str | None]:
@@ -577,6 +754,8 @@ def _extract_aggregator(text: str) -> Tuple[str | None, str | None, str | None]:
     known = {
         "shiprocket": "Shiprocket",
         "shipro": "Shipro",
+        "shipmozo": "Shipmozo",
+        "shipmoro": "Shipmozo",
         "ship prime": "Shipprime",
         "shipprime": "Shipprime",
         "nimbuspost": "NimbusPost",
@@ -649,29 +828,90 @@ def _extract_average_weight(text: str) -> str | None:
 
 def _extract_pickup_city(text: str) -> str | None:
     route = _extract_route_cities(text)
-    return route[0] if route else None
+    if route:
+        return route[0]
+    return _extract_labeled_city(text, "pickup")
 
 
 def _extract_delivery_city(text: str) -> str | None:
     route = _extract_route_cities(text)
-    return route[1] if route else None
+    if route:
+        return route[1]
+    return _extract_labeled_city(text, "delivery")
 
 
 def _extract_route_cities(text: str) -> Tuple[str, str] | None:
+    known_route = _extract_known_city_route(text)
+    if known_route:
+        return known_route
+
     matches = list(
         re.finditer(
-            r"\b(?:from\s+)?([A-Za-z][A-Za-z .'-]{1,40}?)\s+(?:to|se)\s+([A-Za-z][A-Za-z .'-]{1,40})",
+            ROUTE_CONNECTOR_PATTERN,
             text,
             flags=re.IGNORECASE,
         )
     )
     if not matches:
         return None
-    pickup, delivery = matches[-1].group(1), matches[-1].group(2)
-    pickup_city, delivery_city = _clean_city(pickup), _clean_city(delivery)
-    if not _is_city_candidate(pickup_city) or not _is_city_candidate(delivery_city):
+    for match in reversed(matches):
+        pickup, delivery = match.group(1), match.group(2)
+        if not _looks_like_real_route_match(pickup, delivery, text):
+            continue
+        pickup_city, delivery_city = _clean_city(pickup), _clean_city(delivery)
+        if _is_city_candidate(pickup_city) and _is_city_candidate(delivery_city):
+            return pickup_city, delivery_city
+    return None
+
+
+def _extract_known_city_route(text: str) -> Tuple[str, str] | None:
+    matches = list(
+        re.finditer(
+            r"([a-z][a-z .'-]{1,70}?)\s+(?:to|se)\s+([a-z][a-z .'-]{1,70})",
+            str(text or ""),
+            flags=re.IGNORECASE,
+        )
+    )
+    for match in reversed(matches):
+        pickup = _known_city_from_phrase(match.group(1))
+        delivery = _known_city_from_phrase(match.group(2))
+        if pickup and delivery:
+            return pickup.title(), delivery.title()
+    return None
+
+
+def _extract_labeled_city(text: str, label: str) -> str | None:
+    match = re.search(
+        rf"\b{label}\s*(?:city|location)?\s*(?:is|hai|h|:|-)?\s*([a-z][a-z .'-]{{1,50}})",
+        str(text or ""),
+        flags=re.IGNORECASE,
+    )
+    if not match:
         return None
-    return pickup_city, delivery_city
+    value = re.split(
+        r"\s+(?:and|aur|delivery|pickup|monthly|shipment|shipments|order|orders|current|aggregator|shipping|rate|rates|rto|weight)\b",
+        match.group(1),
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    city = _clean_city(value)
+    return city if _is_city_candidate(city) else None
+
+
+def _looks_like_real_route_match(pickup: str, delivery: str, full_text: str) -> bool:
+    pickup_words = re.findall(r"[a-z]+", str(pickup or "").lower())
+    delivery_words = re.findall(r"[a-z]+", str(delivery or "").lower())
+    all_words = set(pickup_words + delivery_words)
+    if not pickup_words or not delivery_words:
+        return False
+    if pickup_words[-1] in HINGLISH_TO_FILLERS:
+        return False
+    if all_words & NON_CITY_ROUTE_WORDS:
+        return False
+    normalized_full = _normalize_text(full_text)
+    if re.search(r"\b(?:use|using|aggregator|provider|courier)\b", normalized_full):
+        return bool(_known_city_from_phrase(pickup) and _known_city_from_phrase(delivery))
+    return True
 
 
 def _build_requirement_summary(details: ShipKiaLeadDetails) -> str:
@@ -833,6 +1073,24 @@ def _is_city_candidate(value: str | None) -> bool:
         "chahiye",
         "dijea",
         "dijiye",
+        "aggregator",
+        "provider",
+        "current",
+        "currently",
+        "use",
+        "using",
+        "hu",
+        "hoon",
+        "hai",
+        "krrha",
+        "krra",
+        "karta",
+        "karte",
+        "shipmoro",
+        "shipro",
+        "shiprocket",
+        "shipmozo",
+        "nimbuspost",
     }
     if set(text.split()) & blocked_words:
         return False

@@ -3,7 +3,7 @@ from __future__ import annotations
 from unittest import TestCase
 from unittest.mock import patch
 
-from wa_chat_hub.connector.interakt.adapter import InteraktAdapter
+from wa_chat_hub.connector.interakt.adapter import InteraktAdapter, split_interakt_phone
 from wa_chat_hub.interakt.templates_api import _normalize_templates, resolve_approved_template
 
 
@@ -85,3 +85,11 @@ class TestInteraktTemplateHeaderMedia(TestCase):
         )
 
         self.assertEqual(payload["template"]["headerValues"], [SAMPLE_MEDIA_URL])
+
+    def test_split_interakt_phone_infers_qatar_country_code(self):
+        self.assertEqual(split_interakt_phone("97474731407", "+91"), ("+974", "74731407"))
+        self.assertEqual(split_interakt_phone("+97474731407", "+91"), ("+974", "74731407"))
+
+    def test_split_interakt_phone_preserves_india_default(self):
+        self.assertEqual(split_interakt_phone("919999999999", "+91"), ("+91", "9999999999"))
+        self.assertEqual(split_interakt_phone("9999999999", "+91"), ("+91", "9999999999"))

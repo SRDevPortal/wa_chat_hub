@@ -138,6 +138,7 @@ def get_interakt_webhook_url(channel_account: str):
     """Public webhook URL for Interakt Developer Settings (uses site host_name / ngrok)."""
     from frappe.utils import get_url
     from urllib.parse import quote
+    from urllib.parse import urlsplit, urlunsplit
 
     if not channel_account:
         frappe.throw(_("channel_account is required"))
@@ -146,7 +147,11 @@ def get_interakt_webhook_url(channel_account: str):
         f"/api/method/wa_chat_hub.api.webhook.receive_interakt"
         f"?channel_account={quote(channel_account)}"
     )
-    return {"success": True, "url": get_url(path)}
+    url = get_url(path)
+    parts = urlsplit(url)
+    if "," in parts.netloc:
+        url = urlunsplit((parts.scheme, parts.netloc.split(",", 1)[0], parts.path, parts.query, parts.fragment))
+    return {"success": True, "url": url}
 
 
 @frappe.whitelist(allow_guest=True)
