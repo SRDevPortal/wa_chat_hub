@@ -22,6 +22,7 @@ from wa_chat_hub.ai.providers import CHAT_CAPABILITY, get_active_llm_provider_ro
 from wa_chat_hub.ai.media_transcription import (
     TRANSCRIPT_CONTENT_TYPES,
     build_transcript_context_for_chat,
+    transcribe_media,
 )
 from wa_chat_hub.ai.configuration import active_workflow_action_tools
 from wa_chat_hub.ai.intent_classifier import (
@@ -58,7 +59,7 @@ from wa_chat_hub.prompts import (
 )
 from wa_chat_hub.services import append_message, conversation_update_lock
 from wa_chat_hub.identity import expire_conversation_verification
-from wa_chat_hub.ai.language import resolve_language_from_history
+from wa_chat_hub.ai.language import append_multilingual_instructions, resolve_language_from_history
 from wa_chat_hub.policy import policy_reply, policy_section, provider_endpoint, provider_timeout
 from wa_chat_hub.security import (
     assert_ai_doctype_permission,
@@ -353,9 +354,17 @@ def process_message(message_id, skip_batch_wait: bool = False):
             expired_at=expiry_result.get("expired_at"),
         )
 
-    body_text = str(msg_doc.body or "").strip()
+    original_body_text = str(msg_doc.body or "").strip()
+    body_text = original_body_text
     content_type = str(msg_doc.content_type or "Text").title()
     media_url = str(msg_doc.media_url or "").strip()
+    spoken_transcript = ""
+    if media_url and content_type in TRANSCRIPT_CONTENT_TYPES:
+        spoken_transcript = transcribe_media(media_url, content_type).strip()
+        if spoken_transcript:
+            # From this point onward, routing, verification, workflows, search,
+            # and reply generation must treat speech as the actual user turn.
+            body_text = spoken_transcript
     route = resolve_agent_route(conversation)
     classifier_providers = _load_providers(route.llm_provider)
     pending_action = load_active_workflow_state(conversation)
@@ -507,10 +516,21 @@ def process_message(message_id, skip_batch_wait: bool = False):
     use_vision_for_image = _should_use_direct_vision(media_url, content_type)
     if media_url and content_type in MEDIA_CONTENT_TYPES:
         try:
-            media_context = _build_recent_media_batch_context(conversation, msg_doc, channel_account)
+            media_context = _build_recent_media_batch_context(
+                conversation,
+                msg_doc,
+                channel_account,
+                transcript_overrides={str(msg_doc.name): spoken_transcript},
+            )
             if not media_context:
                 if content_type in TRANSCRIPT_CONTENT_TYPES:
-                    media_context = build_transcript_context_for_chat(media_url, content_type, body_text, channel_account)
+                    media_context = build_transcript_context_for_chat(
+                        media_url,
+                        content_type,
+                        original_body_text,
+                        channel_account,
+                        transcript=spoken_transcript,
+                    )
                 else:
                     media_context = build_media_context_for_chat(media_url, content_type, body_text, channel_account)
         except Exception:
@@ -601,8 +621,13 @@ def process_message(message_id, skip_batch_wait: bool = False):
                 system_prompt = f"{system_prompt}\n\n" + "\n\n".join(kb_blocks)
 
     multilingual_policy = get_multilingual_policy(prompt_config, settings)
-    if multilingual_policy:
-        system_prompt = f"{system_prompt}\n\n{multilingual_policy}"
+    system_prompt = append_multilingual_instructions(
+        system_prompt,
+        body_text,
+        custom_policy=multilingual_policy,
+        history=history_before_current,
+        channel_account=channel_account,
+    )
 
     latest_user_text = _build_latest_user_turn(msg_doc, media_context, use_vision_for_image)
 
@@ -1218,7 +1243,12 @@ def _build_recent_attachment_followup_context(conversation: str, msg_doc, channe
     return context
 
 
-def _build_recent_media_batch_context(conversation: str, msg_doc, channel_account: str | None) -> str:
+def _build_recent_media_batch_context(
+    conversation: str,
+    msg_doc,
+    channel_account: str | None,
+    transcript_overrides: dict[str, str] | None = None,
+) -> str:
     current_creation = getattr(msg_doc, "creation", None)
     if not conversation or not current_creation:
         return ""
@@ -1254,7 +1284,14 @@ def _build_recent_media_batch_context(conversation: str, msg_doc, channel_accoun
         row_body = str(row.body or "")
         try:
             if row_content_type in TRANSCRIPT_CONTENT_TYPES:
-                context = build_transcript_context_for_chat(row.media_url, row_content_type, row_body, channel_account)
+                cached_transcript = (transcript_overrides or {}).get(str(row.name))
+                context = build_transcript_context_for_chat(
+                    row.media_url,
+                    row_content_type,
+                    row_body,
+                    channel_account,
+                    transcript=cached_transcript,
+                )
             else:
                 context = build_media_context_for_chat(row.media_url, row_content_type, row_body, channel_account)
         except Exception:

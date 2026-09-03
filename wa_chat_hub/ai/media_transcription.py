@@ -35,6 +35,12 @@ from wa_chat_hub.security import (
 TRANSCRIPT_NOTE_SEPARATOR = "-" * 36
 SR_LEAD_NOTES_MAX_LEN = 6000
 TRANSCRIPT_CONTENT_TYPES = {"Audio", "Video"}
+DEFAULT_TRANSCRIPT_REPLY_PROMPT = (
+    "Treat the spoken transcript as the customer's latest message and respond directly to the customer. "
+    "Do not repeat, quote, translate, summarize, or describe the transcript. Never say 'the customer is asking', "
+    "'the user said', or 'I received an audio message'. Answer naturally using the recent conversation context "
+    "and the customer's language."
+)
 
 
 def build_transcript_context_for_chat(
@@ -42,6 +48,7 @@ def build_transcript_context_for_chat(
     content_type: str,
     body_hint: str = "",
     channel_account: str | None = None,
+    transcript: str | None = None,
 ) -> str:
     """Plain-text transcript context for inbound audio/video autopilot replies."""
     content_type = str(content_type or "Audio").title()
@@ -60,14 +67,14 @@ def build_transcript_context_for_chat(
     if visual_summary:
         lines.append(f"Visible video content:\n{visual_summary[:3500]}")
 
-    transcript = transcribe_media(media_url, content_type)
+    transcript = transcript if transcript is not None else transcribe_media(media_url, content_type)
     if transcript:
         label = "Spoken transcript" if content_type == "Video" else f"{content_type} transcript"
         lines.append(f"{label}:\n{transcript[:3500]}")
 
     if content_type == "Video":
         if visual_summary or transcript:
-            instruction = str(media_policy.get("transcript_summary_prompt") or "").strip()
+            instruction = str(media_policy.get("transcript_reply_prompt") or DEFAULT_TRANSCRIPT_REPLY_PROMPT).strip()
             if instruction:
                 lines.append(instruction)
         else:
@@ -75,7 +82,7 @@ def build_transcript_context_for_chat(
             if unavailable:
                 lines.append(unavailable)
     elif transcript:
-        instruction = str(media_policy.get("transcript_summary_prompt") or "").strip()
+        instruction = str(media_policy.get("transcript_reply_prompt") or DEFAULT_TRANSCRIPT_REPLY_PROMPT).strip()
         if instruction:
             lines.append(instruction)
     else:

@@ -65,7 +65,7 @@
         "roman_reply_instruction": "Reply in natural Hinglish using English letters and match the customer's tone.",
         "ascii_reply_instruction": "Reply in English.",
         "auto_reply_instruction": "Reply in the language used by the customer.",
-        "prompt_policy": "Match the language and script of the customer's latest message and use a natural conversational tone.",
+        "prompt_policy": "Match the language and script of the customer's latest message and use a natural conversational tone. If the message or spoken transcript is detected as Urdu or uses Urdu/Arabic script, understand it but always reply in natural Hindi using Devanagari script only. Never reply in Urdu or Arabic script.",
         "script_ranges": [
           {"code": "hi", "label": "Hindi", "start": "0900", "end": "097F"},
           {"code": "bn", "label": "Bengali", "start": "0980", "end": "09FF"},
@@ -152,6 +152,7 @@
         "attachment_followup_terms": ["report", "image", "photo", "test", "value", "result", "explain", "read"],
         "vision_prompt": "Describe visible content objectively without diagnosis or prescriptions.",
         "report_summary_prompt": "Summarize the supplied document objectively for authorized staff review without diagnosis or prescriptions.",
+        "transcript_reply_prompt": "Treat the spoken transcript as the customer's latest message and respond directly to the customer. Do not repeat, quote, translate, summarize, or describe the transcript. Never say 'the customer is asking', 'the user said', or 'I received an audio message'. Answer naturally using the recent conversation context and the customer's language.",
         "transcript_summary_prompt": "Summarize the customer request objectively for authorized staff review without diagnosis or prescriptions."
       },
       "provider_policy": {
