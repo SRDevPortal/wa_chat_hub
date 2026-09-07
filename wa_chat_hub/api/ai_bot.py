@@ -166,7 +166,11 @@ def schedule_autopilot_for_message(message_name: str) -> None:
                 trigger_message_id=message_name,
                 enqueue_after_commit=True,
                 now=False,
-                job_id=f"wa_ai_autopilot_conversation_{doc.conversation}",
+                # Keep each inbound trigger queueable. A conversation-only ID can
+                # silently discard a new message while the previous batch job is
+                # still queued/running. The conversation lock and answered check
+                # below still collapse a burst into a single outbound reply.
+                job_id=f"wa_ai_autopilot_conversation_{doc.conversation}_{message_name}",
                 deduplicate=True,
             )
             _log_ai_timing(
