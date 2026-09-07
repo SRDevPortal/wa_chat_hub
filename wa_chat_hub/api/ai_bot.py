@@ -1350,9 +1350,6 @@ def _autopilot_batch_already_answered(conversation: str, msg_doc) -> bool:
     if not conversation or not current_creation:
         return False
 
-    if _is_media_message(msg_doc) and _media_burst_already_answered(conversation, msg_doc):
-        return True
-
     batch_start = _autopilot_batch_window_start(conversation, current_creation)
     outbound_rows = safe_ai_get_all(
         "Chat Message",
@@ -1361,50 +1358,6 @@ def _autopilot_batch_already_answered(conversation: str, msg_doc) -> bool:
             ["direction", "=", "Outbound"],
             ["sender_type", "in", ["AI", "Agent"]],
             ["creation", ">", batch_start],
-        ],
-        fields=["name", "delivery_status", "sender_type", "creation"],
-        order_by="creation asc, name asc",
-        limit=10,
-    )
-    for row in outbound_rows:
-        if str(row.delivery_status or "") in ("Failed", "Pending"):
-            continue
-        return True
-    return False
-
-
-def _media_burst_already_answered(conversation: str, msg_doc) -> bool:
-    current_creation = getattr(msg_doc, "creation", None)
-    if not conversation or not current_creation:
-        return False
-
-    current_dt = get_datetime(current_creation)
-    burst_start = _media_burst_window_start(conversation, current_creation)
-    prior_media = safe_ai_get_all(
-        "Chat Message",
-        filters=[
-            ["conversation", "=", conversation],
-            ["direction", "=", "Inbound"],
-            ["content_type", "in", list(MEDIA_CONTENT_TYPES)],
-            ["media_url", "is", "set"],
-            ["creation", ">=", burst_start],
-            ["creation", "<", current_dt],
-        ],
-        fields=["name", "creation"],
-        order_by="creation asc, name asc",
-        limit=1,
-    )
-    if not prior_media:
-        return False
-
-    outbound_rows = safe_ai_get_all(
-        "Chat Message",
-        filters=[
-            ["conversation", "=", conversation],
-            ["direction", "=", "Outbound"],
-            ["sender_type", "in", ["AI", "Agent"]],
-            ["creation", ">", prior_media[0].creation],
-            ["creation", "<=", current_dt],
         ],
         fields=["name", "delivery_status", "sender_type", "creation"],
         order_by="creation asc, name asc",
