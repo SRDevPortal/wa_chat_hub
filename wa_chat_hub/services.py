@@ -1071,7 +1071,7 @@ def _link_or_create_master_record(
     raw_payload: Optional[Dict[str, Any]] = None,
     message_name: Optional[str] = None,
 ) -> None:
-    """Attach inbound chat to existing Patient/Customer else create a Lead."""
+    """Attach inbound chat to an existing party or ensure both supported lead records."""
     if not phone_number:
         return
 
@@ -1095,7 +1095,12 @@ def _link_or_create_master_record(
     configured_phone_fields = routing_policy.get("phone_fields") or {}
 
     ref_dt, ref_name = get_conversation_linked_reference(convo)
-    if ref_dt and ref_name and routing_policy.get("preserve_existing_reference"):
+    if (
+        ref_dt
+        and ref_name
+        and ref_dt not in {"CRM Lead", "Lead"}
+        and routing_policy.get("preserve_existing_reference")
+    ):
         if ref_dt == "Patient":
             _apply_vobiz_patient_routing(conversation, ref_name, getattr(convo, "channel_account", None))
         return
@@ -1168,23 +1173,25 @@ def _link_or_create_master_record(
         existing_lead = (
             ("CRM Lead", existing_crm_lead) if existing_crm_lead else indexed_lead
         )
-    if existing_lead:
-        lead_doctype, lead_name = existing_lead
-    else:
-        lead_doctype = _preferred_lead_doctype()
-        if not lead_doctype:
-            return
-        lead_name = _create_lead_for_inbound(
-            doctype=lead_doctype,
-            phone_number=phone_number,
-            display_name=display_name or contact.display_name,
-            channel_account=convo.channel_account,
-        )
-    if not lead_name:
+    existing_doctype, existing_name = existing_lead or (None, None)
+    lead_pair = _ensure_inbound_lead_pair(
+        phone_number=phone_number,
+        display_name=display_name or contact.display_name,
+        channel_account=convo.channel_account,
+        existing_doctype=existing_doctype,
+        existing_name=existing_name,
+    )
+    erpnext_lead = lead_pair.get("Lead")
+    crm_lead = lead_pair.get("CRM Lead")
+    if not erpnext_lead and not crm_lead:
         return
 
+    # CRM Lead is the canonical chat reference, while linked_lead retains the
+    # matching ERPNext Lead. This keeps the same person visible in both lists.
+    lead_doctype = "CRM Lead" if crm_lead else "Lead"
+    lead_name = crm_lead or erpnext_lead
     contact_updates = {
-        "linked_lead": lead_name if lead_doctype == "Lead" else None,
+        "linked_lead": erpnext_lead,
         "source_doctype": lead_doctype,
         "source_name": lead_name,
     }
@@ -1192,11 +1199,11 @@ def _link_or_create_master_record(
         contact_updates["display_name"] = display_name
     _set_contact_fields(contact, contact_updates)
 
-    if lead_doctype == "CRM Lead":
-        set_conversation_crm_lead(convo, lead_name)
+    if crm_lead:
+        set_conversation_crm_lead(convo, crm_lead)
     else:
-        convo.linked_reference_doctype = lead_doctype
-        convo.linked_reference_name = lead_name
+        convo.linked_reference_doctype = "Lead"
+        convo.linked_reference_name = erpnext_lead
         if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
             convo.linked_crm_lead = None
     conversation_updates = {
@@ -1209,10 +1216,10 @@ def _link_or_create_master_record(
 
     _set_conversation_fields(convo, conversation_updates)
 
-    if lead_doctype == "CRM Lead":
+    if crm_lead:
         _finalize_crm_lead_after_inbound(
             conversation,
-            lead_name,
+            crm_lead,
             raw_payload=raw_payload,
             message_name=message_name,
             convo=convo,
@@ -1220,8 +1227,8 @@ def _link_or_create_master_record(
     else:
         _finalize_lead_after_inbound(
             conversation,
-            lead_doctype,
-            lead_name,
+            "Lead",
+            erpnext_lead,
             convo=convo,
         )
 
@@ -1553,6 +1560,85 @@ def _create_lead_for_inbound(
             "WA Chat Hub Inbound Lead Create Failed",
         )
         return None
+
+
+def _ensure_inbound_lead_pair(
+    phone_number: str,
+    display_name: Optional[str],
+    channel_account: Optional[str] = None,
+    *,
+    existing_doctype: Optional[str] = None,
+    existing_name: Optional[str] = None,
+) -> Dict[str, Optional[str]]:
+    """Create/reuse matching ERPNext Lead and CRM Lead records for one WhatsApp identity."""
+    normalized = normalize_phone(phone_number)
+    if not normalized:
+        return {"Lead": None, "CRM Lead": None}
+    with filelock(
+        _record_lock_name("lead_pair", normalized),
+        timeout=CONVERSATION_UPDATE_LOCK_TIMEOUT,
+    ):
+        return _ensure_inbound_lead_pair_locked(
+            phone_number=normalized,
+            display_name=display_name,
+            channel_account=channel_account,
+            existing_doctype=existing_doctype,
+            existing_name=existing_name,
+        )
+
+
+def _ensure_inbound_lead_pair_locked(
+    phone_number: str,
+    display_name: Optional[str],
+    channel_account: Optional[str] = None,
+    *,
+    existing_doctype: Optional[str] = None,
+    existing_name: Optional[str] = None,
+) -> Dict[str, Optional[str]]:
+    pair: Dict[str, Optional[str]] = {"Lead": None, "CRM Lead": None}
+    if existing_doctype in pair and existing_name:
+        try:
+            if safe_ai_exists(existing_doctype, existing_name):
+                pair[existing_doctype] = existing_name
+        except WAChatHubSecurityError:
+            pass
+
+    try:
+        lead_installed = safe_ai_exists("DocType", "Lead")
+    except WAChatHubSecurityError:
+        lead_installed = False
+    try:
+        crm_lead_installed = safe_ai_exists("DocType", "CRM Lead")
+    except WAChatHubSecurityError:
+        crm_lead_installed = False
+
+    if lead_installed and not pair["Lead"]:
+        pair["Lead"] = _find_by_phone(
+            "Lead",
+            ["mobile_no", "phone", "whatsapp_no", "custom_whatsapp_number"],
+            phone_number,
+        )
+    if crm_lead_installed and not pair["CRM Lead"]:
+        pair["CRM Lead"] = _find_primary_crm_lead_by_phone(phone_number)
+
+    # Create Lead first because its stale Dynamic Link cleanup may inspect both
+    # lead DocTypes. The cleanup preserves links whose target still exists.
+    if lead_installed and not pair["Lead"]:
+        pair["Lead"] = _create_lead_for_inbound(
+            doctype="Lead",
+            phone_number=phone_number,
+            display_name=display_name,
+            channel_account=channel_account,
+        )
+    if crm_lead_installed and not pair["CRM Lead"]:
+        pair["CRM Lead"] = _create_lead_for_inbound(
+            doctype="CRM Lead",
+            phone_number=phone_number,
+            display_name=display_name,
+            channel_account=channel_account,
+        )
+
+    return pair
 
 
 def _delete_stale_contact_lead_links_for_phone(phone_number: str) -> int:

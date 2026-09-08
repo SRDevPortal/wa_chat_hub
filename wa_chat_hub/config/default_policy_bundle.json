@@ -4,7 +4,7 @@
       "policy_name": "Default Configurable WhatsApp Policy",
       "is_active": 1,
       "is_default": 1,
-      "policy_version": 8,
+      "policy_version": 9,
       "identity_policy": {
         "phone_fields": {},
         "phone_candidate_min_digits": 10,
@@ -188,6 +188,15 @@
         },
         "media_unavailable": {
           "default": "The attachment was received, but its contents could not be processed automatically. Please add a short description."
+        },
+        "overweight_split_prompt": {
+          "default": "ShipKia me ek package ki maximum weight limit {limit:g} kg hai. Kya aap shipment ko {limit:g} kg ya usse kam ke packages me split karke bhej sakte hain?"
+        },
+        "overweight_split_accepted": {
+          "default": "Theek hai. Har split package ka approx weight share kar dijiye; har package {limit:g} kg ya usse kam hona chahiye."
+        },
+        "overweight_split_declined": {
+          "default": "Sorry, {limit:g} kg se zyada ka single package ShipKia se bhejna possible nahi hai."
         }
       },
       "patient_creation_policy": {
@@ -195,6 +204,11 @@
       },
       "lead_scoring_policy": {
         "enabled": true,
+        "minimum_qualifying_monthly_shipments": 100,
+        "service_eligibility": {
+          "max_package_weight_kg": 15,
+          "allow_split_overweight": true
+        },
         "base_score": 20,
         "inbound_message_weight": 3,
         "inbound_message_cap": 30,

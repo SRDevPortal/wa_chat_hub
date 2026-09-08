@@ -698,7 +698,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         const routeConversation = routeOptions.conversation;
         const routeReferenceDoctype = routeOptions.reference_doctype;
         const routeLockReferenceFilter = routeOptions.lock_reference_filter;
-        if (queryOptions.scope === 'all') {
+        if (queryOptions.scope === 'all' && !routeConversation) {
             selectedReferenceDoctype = '';
             referenceFilterLocked = false;
             renderReferenceFilter();
@@ -728,6 +728,9 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
             delete frappe.route_options.lock_reference_filter;
         }
         applyRouteScope(routeOptions);
+        if (routeConversation) {
+            persistWaRouteQuery(routeConversation, selectedReferenceDoctype, referenceFilterLocked);
+        }
         if (routeConversation && currentConversation !== routeConversation) {
             loadConversation(routeConversation);
         }

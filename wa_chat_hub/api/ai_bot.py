@@ -37,7 +37,10 @@ from wa_chat_hub.ai.workflow_engine import (
     workflow_message,
 )
 from wa_chat_hub.ai.service import create_ai_suggestion
-from wa_chat_hub.ai.lead_scoring import _extract_shipkia_lead_details
+from wa_chat_hub.ai.lead_scoring import (
+    _extract_shipkia_lead_details,
+    detect_shipkia_service_restriction,
+)
 from wa_chat_hub.api.vector_search import search_knowledge_base
 from wa_chat_hub.agent_router import (
     apply_intent_route,
@@ -47,7 +50,22 @@ from wa_chat_hub.agent_router import (
     resolve_agent_route,
 )
 from wa_chat_hub.outbound import send_interakt_template_message, send_outbound_message
-from wa_chat_hub.shipkia_rate_card import build_rate_context_for_message, build_rate_reply_for_message
+from wa_chat_hub.shipkia_rate_card import (
+    build_rate_context_for_message,
+    build_rate_reply_decision,
+    build_rate_reply_for_message,
+)
+from wa_chat_hub.conversation_state import (
+    ConversationReply,
+    DECISION_OVERWEIGHT_SPLIT_ACCEPTED,
+    DECISION_OVERWEIGHT_SPLIT_DECLINED,
+    DECISION_OVERWEIGHT_SPLIT_REQUESTED,
+    classify_binary_reply,
+    decision_code,
+    is_customer_visible,
+    last_visible_outbound,
+)
+from wa_chat_hub.shipping_weight import parse_plain_weight_kg
 from wa_chat_hub.mcp.event_log import elapsed_ms as mcp_elapsed_ms
 from wa_chat_hub.mcp.event_log import log_mcp_event, now_ms as mcp_now_ms
 from wa_chat_hub.prompts import (
@@ -61,7 +79,7 @@ from wa_chat_hub.prompts import (
 from wa_chat_hub.services import append_message, conversation_update_lock
 from wa_chat_hub.identity import expire_conversation_verification
 from wa_chat_hub.ai.language import resolve_language_from_history
-from wa_chat_hub.policy import policy_reply, policy_section, provider_endpoint, provider_timeout
+from wa_chat_hub.policy import get_conversation_policy, policy_reply, policy_section, provider_endpoint, provider_timeout
 from wa_chat_hub.security import (
     assert_ai_doctype_permission,
     safe_ai_exists,
@@ -86,6 +104,8 @@ AUTOPILOT_MEDIA_SETTLE_SECONDS = 5
 LOW_CONTEXT_INPUT_CHAR_BUDGET = 6500
 LOW_CONTEXT_SYSTEM_CHAR_BUDGET = 4200
 SHIPKIA_ONBOARDING_URL = "https://auth.shipkia.com/signup"
+DEFAULT_SHIPKIA_MAX_PACKAGE_WEIGHT_KG = 15.0
+DEFAULT_SHIPKIA_MIN_MONTHLY_SHIPMENTS = 100
 
 
 def _log_ai_timing(event: str, **fields) -> None:
@@ -121,6 +141,38 @@ def _route_reference_party_type(route, reference_doctype: str) -> str:
         return ""
     mapping = bundle.section("party_routing_policy").get("party_type_by_reference_doctype") or {}
     return str(mapping.get(str(reference_doctype or "").strip()) or "").strip()
+
+
+def _shipkia_eligibility_policy(route=None) -> dict:
+    bundle = getattr(route, "policy_bundle", None)
+    lead_policy = bundle.section("lead_scoring_policy") if bundle else {}
+    eligibility = lead_policy.get("service_eligibility") or {}
+    return dict(eligibility) if isinstance(eligibility, dict) else {}
+
+
+def _shipkia_max_package_weight_kg(route=None) -> float:
+    configured = _shipkia_eligibility_policy(route).get("max_package_weight_kg")
+    try:
+        value = float(configured)
+    except (TypeError, ValueError):
+        value = DEFAULT_SHIPKIA_MAX_PACKAGE_WEIGHT_KG
+    return value if value > 0 else DEFAULT_SHIPKIA_MAX_PACKAGE_WEIGHT_KG
+
+
+def _shipkia_allows_overweight_split(route=None) -> bool:
+    configured = _shipkia_eligibility_policy(route).get("allow_split_overweight")
+    return True if configured is None else bool(cint(configured))
+
+
+def _shipkia_minimum_monthly_shipments(route=None) -> int:
+    bundle = getattr(route, "policy_bundle", None)
+    lead_policy = bundle.section("lead_scoring_policy") if bundle else {}
+    configured = lead_policy.get("minimum_qualifying_monthly_shipments")
+    try:
+        value = int(configured)
+    except (TypeError, ValueError):
+        value = DEFAULT_SHIPKIA_MIN_MONTHLY_SHIPMENTS
+    return value if value > 0 else DEFAULT_SHIPKIA_MIN_MONTHLY_SHIPMENTS
 
 
 def _inside_append_message() -> bool:
@@ -514,6 +566,34 @@ def process_message(message_id, skip_batch_wait: bool = False):
         )
         return
 
+    max_package_weight_kg = _shipkia_max_package_weight_kg(route)
+    minimum_monthly_shipments = _shipkia_minimum_monthly_shipments(route)
+    direct_shipkia_eligibility = _direct_shipkia_eligibility_decision(
+        body_text,
+        history_before_current,
+        max_package_weight_kg=max_package_weight_kg,
+        route=route,
+    )
+    if direct_shipkia_eligibility.text:
+        mode = _deliver_or_draft_ai_reply(
+            conversation,
+            direct_shipkia_eligibility.text,
+            settings,
+            message_id,
+            reply_metadata={
+                **(direct_shipkia_eligibility.metadata or {}),
+                "decision_code": direct_shipkia_eligibility.decision_code,
+            },
+        ) or "duplicate_skip"
+        _log_ai_timing(
+            "direct_shipkia_eligibility_reply",
+            conversation=conversation,
+            message=message_id,
+            mode=mode,
+            intent=intent_decision.intent,
+        )
+        return
+
     direct_shipkia_scope_reply = _direct_shipkia_scope_reply(body_text, history_before_current, conversation=conversation)
     if direct_shipkia_scope_reply:
         mode = _deliver_or_draft_ai_reply(conversation, direct_shipkia_scope_reply, settings, message_id) or "duplicate_skip"
@@ -526,14 +606,28 @@ def process_message(message_id, skip_batch_wait: bool = False):
         )
         return
 
-    direct_rate_reply = build_rate_reply_for_message(body_text, history_before_current)
-    if direct_rate_reply:
-        direct_rate_reply = _attach_shipkia_sales_next_step(
-            direct_rate_reply,
+    direct_rate = build_rate_reply_decision(
+        body_text,
+        history_before_current,
+        intent=intent_decision.intent,
+        max_package_weight_kg=max_package_weight_kg,
+    )
+    if direct_rate.text:
+        direct_rate_text = _attach_shipkia_sales_next_step(
+            direct_rate.text,
             body_text,
             history_before_current,
         )
-        mode = _deliver_or_draft_ai_reply(conversation, direct_rate_reply, settings, message_id) or "duplicate_skip"
+        mode = _deliver_or_draft_ai_reply(
+            conversation,
+            direct_rate_text,
+            settings,
+            message_id,
+            reply_metadata={
+                "decision_code": direct_rate.decision_code,
+                "quote": direct_rate.quote,
+            },
+        ) or "duplicate_skip"
         _log_ai_timing(
             "direct_rate_reply",
             conversation=conversation,
@@ -616,6 +710,12 @@ def process_message(message_id, skip_batch_wait: bool = False):
             message_id,
         )
         return
+    system_prompt = (
+        f"{system_prompt}\n\n"
+        f"Current ShipKia package rule: maximum {max_package_weight_kg:g} kg per package. "
+        "For a heavier shipment, ask whether it can be split into compliant packages; "
+        "if the customer cannot split it, apologize and say it is not possible."
+    )
     active_agent_system_prompt = system_prompt
     system_prompt = (
         f"{system_prompt}\n\n"
@@ -628,6 +728,9 @@ def process_message(message_id, skip_batch_wait: bool = False):
         "Do not bundle multiple fields into one message. "
         "Never ask business/store name, monthly shipments, and current shipping provider/aggregator together. "
         "Never ask pickup city, delivery city, and weight together. "
+        f"ShipKia supports domestic B2C/D2C shipments only: no B2B or international shipping, and a maximum of {max_package_weight_kg:g} kg per package. "
+        "Decline job, career, vacancy, internship, resume, and CV requests directly without a follow-up sales question. "
+        f"Monthly shipment volume is the highest-priority qualification question and {minimum_monthly_shipments} or more eligible monthly shipments receives the maximum lead score. "
         "For general ShipKia/service/feature questions, always mention order confirmation and NDR workflows. "
         "Stay strictly within ShipKia, shipping, courier, logistics, COD, rates, NDR, RTO, tracking, and onboarding topics. "
         "If the customer asks for unrelated content such as jokes, emojis, entertainment, news, coding, general knowledge, or personal advice, politely say you can help with ShipKia shipping support and ask one relevant ShipKia question. "
@@ -1034,17 +1137,142 @@ def _direct_shipkia_sales_reply(body_text: str, history=None, conversation: str 
     return ""
 
 
+def _direct_shipkia_eligibility_reply(
+    body_text: str,
+    history=None,
+    *,
+    max_package_weight_kg: float = DEFAULT_SHIPKIA_MAX_PACKAGE_WEIGHT_KG,
+) -> str:
+    """Compatibility wrapper for callers that only need the reply text."""
+    return _direct_shipkia_eligibility_decision(
+        body_text,
+        history,
+        max_package_weight_kg=max_package_weight_kg,
+    ).text
+
+
+def _direct_shipkia_eligibility_decision(
+    body_text: str,
+    history=None,
+    *,
+    max_package_weight_kg: float = DEFAULT_SHIPKIA_MAX_PACKAGE_WEIGHT_KG,
+    route=None,
+) -> ConversationReply:
+    last_outbound = last_visible_outbound(history)
+    if last_outbound and decision_code(last_outbound) == DECISION_OVERWEIGHT_SPLIT_REQUESTED:
+        split_answer = classify_binary_reply(body_text)
+        if split_answer is True:
+            text = _shipkia_reply_template(
+                route,
+                "overweight_split_accepted",
+                "Theek hai. Har split package ka approx weight share kar dijiye; har package {limit:g} kg ya usse kam hona chahiye.",
+                limit=max_package_weight_kg,
+                body_text=body_text,
+                history=history,
+            )
+            return ConversationReply(
+                text,
+                DECISION_OVERWEIGHT_SPLIT_ACCEPTED,
+                {"max_package_weight_kg": max_package_weight_kg},
+            )
+        if split_answer is False:
+            text = _shipkia_reply_template(
+                route,
+                "overweight_split_declined",
+                "Sorry, {limit:g} kg se zyada ka single package ShipKia se bhejna possible nahi hai.",
+                limit=max_package_weight_kg,
+                body_text=body_text,
+                history=history,
+            )
+            return ConversationReply(
+                text,
+                DECISION_OVERWEIGHT_SPLIT_DECLINED,
+                {"max_package_weight_kg": max_package_weight_kg},
+            )
+
+    restriction = detect_shipkia_service_restriction(
+        body_text,
+        max_package_weight_kg=max_package_weight_kg,
+    )
+    if not restriction and _recent_bot_asked_average_weight(history):
+        plain_weight = parse_plain_weight_kg(body_text)
+        if plain_weight is not None and plain_weight > max_package_weight_kg:
+            restriction = "overweight"
+
+    if restriction == "overweight":
+        if not _shipkia_allows_overweight_split(route):
+            text = _shipkia_reply_template(
+                route,
+                "overweight_split_declined",
+                "Sorry, {limit:g} kg se zyada ka single package ShipKia se bhejna possible nahi hai.",
+                limit=max_package_weight_kg,
+                body_text=body_text,
+                history=history,
+            )
+            return ConversationReply(
+                text,
+                DECISION_OVERWEIGHT_SPLIT_DECLINED,
+                {"max_package_weight_kg": max_package_weight_kg},
+            )
+        text = _shipkia_reply_template(
+            route,
+            "overweight_split_prompt",
+            "ShipKia me ek package ki maximum weight limit {limit:g} kg hai. Kya aap shipment ko {limit:g} kg ya usse kam ke packages me split karke bhej sakte hain?",
+            limit=max_package_weight_kg,
+            body_text=body_text,
+            history=history,
+        )
+        return ConversationReply(
+            text,
+            DECISION_OVERWEIGHT_SPLIT_REQUESTED,
+            {"max_package_weight_kg": max_package_weight_kg},
+        )
+
+    replies = {
+        "job_request": "We don't handle job applications through this WhatsApp channel.",
+        "b2b": "ShipKia does not provide B2B shipping. We currently support domestic B2C/D2C shipments up to {limit:g} kg per package.",
+        "international": "ShipKia does not provide international shipping. We currently support domestic B2C/D2C shipments within India up to {limit:g} kg per package.",
+        "mixed_b2b": "ShipKia cannot handle the B2B portion, but we can help with domestic B2C/D2C shipments up to {limit:g} kg per package. Aapke approx monthly eligible shipments kitne hain?",
+        "mixed_international": "ShipKia cannot handle international shipments, but we can help with domestic B2C/D2C shipments within India up to {limit:g} kg per package. Aapke approx monthly domestic shipments kitne hain?",
+    }
+    fallback = replies.get(restriction, "")
+    return ConversationReply(fallback.format(limit=max_package_weight_kg) if fallback else "")
+
+
+def _shipkia_reply_template(route, key: str, fallback: str, *, limit: float, body_text: str, history) -> str:
+    configured = _policy_reply_for_route(route, key, body_text, history) if route else ""
+    template = configured or fallback
+    try:
+        return template.format(limit=limit)
+    except (KeyError, ValueError):
+        return fallback.format(limit=limit)
+
+
 def _shipkia_details_with_current(history, body_text: str, conversation: str | None = None):
     rows = [
         {
             "direction": _history_value(row, "direction"),
             "body": _history_value(row, "body"),
             "creation": _history_value(row, "creation"),
+            "delivery_status": _history_value(row, "delivery_status"),
+            "raw_transport_payload": _history_value(row, "raw_transport_payload"),
         }
         for row in (history or [])
     ]
     rows.append({"direction": "Inbound", "body": str(body_text or ""), "creation": None})
-    details = _extract_shipkia_lead_details(rows)
+    max_package_weight_kg = DEFAULT_SHIPKIA_MAX_PACKAGE_WEIGHT_KG
+    if conversation:
+        bundle = get_conversation_policy(conversation)
+        if bundle:
+            eligibility = bundle.section("lead_scoring_policy").get("service_eligibility") or {}
+            try:
+                max_package_weight_kg = float(eligibility.get("max_package_weight_kg"))
+            except (AttributeError, TypeError, ValueError):
+                pass
+    details = _extract_shipkia_lead_details(
+        rows,
+        max_package_weight_kg=max_package_weight_kg,
+    )
     return _merge_shipkia_details_from_linked_lead(details, conversation)
 
 
@@ -1140,11 +1368,8 @@ def _history_value(row, fieldname: str):
 
 
 def _last_outbound_text(history) -> str:
-    for row in reversed(list(history or [])):
-        if str(_history_value(row, "direction") or "").strip() != "Outbound":
-            continue
-        return str(_history_value(row, "body") or "")
-    return ""
+    row = last_visible_outbound(history)
+    return str(_history_value(row, "body") or "") if row else ""
 
 
 def _looks_like_answer_to_recent_sales_question(history, body_text: str) -> bool:
@@ -1261,18 +1486,27 @@ def _shipping_challenge_answer_is_pain(history, text: str) -> bool:
 
 def _shipkia_fact_acknowledgement(details, history=None) -> str:
     last = _last_outbound_text(history).lower()
-    if "rto percentage" in last and details.rto_percentage is not None:
-        return f"Got it, {details.rto_percentage:g}% RTO noted."
-    if "monthly shipments" in last and details.monthly_shipments is not None:
-        return f"Got it, approx {details.monthly_shipments} monthly shipments noted."
-    if ("business/store name" in last or "business name" in last or "store name" in last) and details.business_name:
-        return f"Thanks, {details.business_name} noted."
-    if ("b2c" in last or "business type" in last) and details.business_type:
-        return f"Got it, {details.business_type} noted."
-    if ("shipping aggregator" in last or "current aggregator" in last) and details.aggregator_name:
-        return f"Got it, {details.aggregator_name} noted."
-    if "500g shipment" in last and details.current_shipping_rate is not None:
-        return f"Got it, current 500g rate Rs. {details.current_shipping_rate:g} noted."
+    candidates = []
+
+    def add(markers, reply):
+        position = max((last.rfind(marker) for marker in markers), default=-1)
+        if position >= 0:
+            candidates.append((position, reply))
+
+    if details.rto_percentage is not None:
+        add(("rto percentage",), f"Got it, {details.rto_percentage:g}% RTO noted.")
+    if details.monthly_shipments is not None:
+        add(("monthly shipments",), f"Got it, approx {details.monthly_shipments} monthly shipments noted.")
+    if details.business_name:
+        add(("business/store name", "business name", "store name"), f"Thanks, {details.business_name} noted.")
+    if details.business_type:
+        add(("b2c", "business type"), f"Got it, {details.business_type} noted.")
+    if details.aggregator_name:
+        add(("shipping aggregator", "current aggregator"), f"Got it, {details.aggregator_name} noted.")
+    if details.current_shipping_rate is not None:
+        add(("500g shipment",), f"Got it, current 500g rate Rs. {details.current_shipping_rate:g} noted.")
+    if candidates:
+        return max(candidates, key=lambda item: item[0])[1]
     return "Got it."
 
 
@@ -1281,6 +1515,9 @@ def _shipkia_next_sales_question(details, body_text: str = "", prefer_context: s
     context = str(prefer_context or "").lower()
     rate_context = bool(details.asked_for_rates or _customer_asked_rate_quote(text))
     suppress_stale_rate_context = context in {"rto", "lead"}
+
+    if details.monthly_shipments is None:
+        return "Aap approx monthly shipments kitne karte hain?"
 
     if context == "rto" and details.rto_percentage is None:
         return "Aapka approx RTO percentage kitna chal raha hai?"
@@ -1299,11 +1536,9 @@ def _shipkia_next_sales_question(details, body_text: str = "", prefer_context: s
     if re.search(r"\b(rate|rates|price|pricing|charges|saste|cheap|cost)\b", text) and details.current_shipping_rate is None and not _customer_asked_rate_quote(text):
         return "Aap currently 500g shipment ka approx rate kitna pay kar rahe hain?"
     if details.business_type is None:
-        return "Aapka business type kya hai? B2C, D2C, wholesale, retail, manufacturing, reseller ya other - jo applicable ho bata dijiye."
+        return "Aapka business type B2C ya D2C hai?"
     if not details.business_name:
         return "Aap business/store name share kar dijiye."
-    if details.monthly_shipments is None:
-        return "Aap approx monthly shipments kitne karte hain?"
     if details.aggregator_status is None:
         return "Aap currently kaunsa shipping aggregator use kar rahe hain?"
     if details.rto_percentage is None and _history_or_text_mentions_rto(text):
@@ -1510,6 +1745,11 @@ def _recent_bot_asked_rto_percentage(history) -> bool:
             last,
         )
     )
+
+
+def _recent_bot_asked_average_weight(history) -> bool:
+    last = _last_outbound_text(history).lower()
+    return bool(re.search(r"\b(?:approx(?:imate)?\s+)?(?:shipment\s+)?weight\b", last))
 
 
 def _reply_has_customer_question(text: str) -> bool:
@@ -1826,6 +2066,7 @@ def _deliver_or_draft_ai_reply(
     response_text: str,
     settings,
     message_id: str | None = None,
+    reply_metadata: dict | None = None,
 ) -> str:
     response_text = str(response_text or "").strip()
     if not response_text:
@@ -1839,7 +2080,7 @@ def _deliver_or_draft_ai_reply(
         )
         return ""
     if _should_auto_send(settings):
-        _deliver_ai_reply(conversation, response_text)
+        _deliver_ai_reply(conversation, response_text, reply_metadata=reply_metadata)
         return "auto_send"
     create_ai_suggestion(conversation, "Reply Draft", response_text)
     frappe.db.commit()
@@ -2396,11 +2637,19 @@ def _load_recent_conversation_history(conversation: str):
     rows = safe_ai_get_all(
         "Chat Message",
         filters={"conversation": conversation},
-        fields=["name", "direction", "body", "content_type", "media_url"],
+        fields=[
+            "name",
+            "direction",
+            "body",
+            "content_type",
+            "media_url",
+            "delivery_status",
+            "raw_transport_payload",
+        ],
         order_by="creation desc, name desc",
         limit=CONVERSATION_HISTORY_LIMIT,
     )
-    return list(reversed(rows))
+    return [row for row in reversed(rows) if is_customer_visible(row)]
 
 
 def _format_history_line(row) -> str:
@@ -2540,7 +2789,7 @@ def _enforce_shipkia_question_limit(text: str) -> str:
 
 
 def _keep_first_question_sentence(text: str) -> str:
-    sentences = re.split(r"(?<=[.!?])\s+", str(text or "").strip())
+    sentences = re.split(r"(?:(?<=[.!?])\s+|\n+)", str(text or "").strip())
     kept = []
     question_seen = False
     for sentence in sentences:
@@ -2567,7 +2816,26 @@ def _looks_like_customer_question_request(sentence: str) -> bool:
         "please share",
         "kindly share",
     )
-    return any(marker in text for marker in request_markers)
+    qualification_markers = (
+        "business/store name",
+        "business name",
+        "store name",
+        "monthly shipment",
+        "shipping provider",
+        "shipping aggregator",
+        "pickup city",
+        "pickup pincode",
+        "delivery city",
+        "delivery pincode",
+        "approx weight",
+        "rto percentage",
+    )
+    if any(marker in text for marker in qualification_markers):
+        return True
+    # A heading such as "Please share:" is not itself a usable question; keep
+    # it with the first concrete detail that follows on the next line.
+    words = re.findall(r"[a-z0-9]+", text)
+    return len(words) > 2 and any(marker in text for marker in request_markers)
 
 
 def _looks_like_degenerate_reply(text: str) -> bool:
@@ -2691,7 +2959,12 @@ def _load_providers(preferred_provider: str | None = None):
     return providers
 
 
-def _deliver_ai_reply(conversation: str, response_text: str) -> None:
+def _deliver_ai_reply(
+    conversation: str,
+    response_text: str,
+    *,
+    reply_metadata: dict | None = None,
+) -> None:
     send_started = time.monotonic()
     convo = safe_ai_get_doc("Chat Conversation", conversation)
     phone_number = safe_ai_get_value("Chat Contact", convo.contact, "phone_number")
@@ -2736,6 +3009,7 @@ def _deliver_ai_reply(conversation: str, response_text: str) -> None:
                     **outbound,
                     "source": "ai_autopilot",
                     "reply_to_message": reply_to_message,
+                    "reply_metadata": dict(reply_metadata or {}),
                 },
             }
         )

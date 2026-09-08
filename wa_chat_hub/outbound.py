@@ -210,7 +210,7 @@ def send_interakt_template_message(conversation: str, template: Dict[str, Any]) 
 
 def send_interakt_message(account, outbound: Dict[str, Any]) -> Dict[str, Any]:
     url = account.interakt_base_url or "https://api.interakt.ai/v1/public/message/"
-    api_key = account.get_password("interakt_api_key")
+    api_key = _normalize_interakt_api_key(account.get_password("interakt_api_key"))
     if not api_key:
         raise PatientTemplateNotSentError("Interakt API Key is not configured", retryable=False)
 
@@ -261,6 +261,19 @@ def send_interakt_message(account, outbound: Dict[str, Any]) -> Dict[str, Any]:
         "provider_message_id": provider_message_id,
         "raw_provider_response": json.dumps(result),
     }
+
+
+def _normalize_interakt_api_key(value: str | None) -> str:
+    """Return only the Interakt secret used after the ``Basic`` auth scheme.
+
+    Password fields can retain whitespace copied from the Interakt dashboard. Some
+    users also paste the complete ``Basic <key>`` header value into the field.
+    Normalizing both forms keeps the generated Authorization header valid.
+    """
+    api_key = str(value or "").strip()
+    if api_key.lower().startswith("basic "):
+        api_key = api_key[6:].strip()
+    return api_key
 
 
 def _extract_interakt_error_message(status_code: int, detail: str) -> str:

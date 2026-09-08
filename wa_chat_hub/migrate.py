@@ -62,6 +62,13 @@ def after_migrate() -> None:
     except Exception:
         _safe_log_error("WA Chat Hub Workspace Sync Failed")
     ensure_lead_scoring_fields()
+    ensure_shipkia_business_type_options()
+    try:
+        from wa_chat_hub.setup_ai_routing import seed_default_ai_routing
+
+        seed_default_ai_routing()
+    except Exception:
+        _safe_log_error("WA Chat Hub Policy Seed Upgrade Failed")
     ensure_app_update_setting()
 
 
@@ -323,6 +330,25 @@ def ensure_lead_scoring_fields() -> None:
             "fieldtype": "Data",
             "insert_after": "shipkia_lead_source",
         },
+        {
+            "fieldname": "shipkia_service_scope_status",
+            "label": "ShipKia Service Scope Status",
+            "fieldtype": "Data",
+            "insert_after": "shipkia_first_contact_channel",
+            "in_standard_filter": 1,
+        },
+        {
+            "fieldname": "shipkia_disqualification_reason",
+            "label": "ShipKia Disqualification Reason",
+            "fieldtype": "Small Text",
+            "insert_after": "shipkia_service_scope_status",
+        },
+        {
+            "fieldname": "shipkia_max_shipment_weight_kg",
+            "label": "ShipKia Maximum Shipment Weight (kg)",
+            "fieldtype": "Float",
+            "insert_after": "shipkia_disqualification_reason",
+        },
     ]
     specs = {
         "Lead": "source",
@@ -362,8 +388,9 @@ def ensure_lead_scoring_fields() -> None:
                 "default": "Cold",
             },
         ]
-        if doctype == "Lead":
-            custom_fields[doctype].extend(shipkia_lead_fields)
+        # Keep ShipKia qualification fields identical on both lead DocTypes so
+        # one WhatsApp identity can be represented and updated in both lists.
+        custom_fields[doctype].extend(shipkia_lead_fields)
     custom_fields = _only_missing_custom_fields(custom_fields)
     if custom_fields:
         create_custom_fields(custom_fields, update=True)
@@ -384,6 +411,36 @@ def _only_missing_custom_fields(custom_fields: dict[str, list[dict]]) -> dict[st
             if not existing:
                 missing_fields.setdefault(doctype, []).append(field)
     return missing_fields
+
+
+def ensure_shipkia_business_type_options() -> None:
+    """Keep legacy Select fields compatible without replacing user-defined options."""
+    required_options = ("B2C", "D2C")
+    for doctype in ("Lead", "CRM Lead"):
+        custom_field = frappe.db.get_value(
+            "Custom Field",
+            {"dt": doctype, "fieldname": "shipkia_business_type"},
+            ["name", "fieldtype", "options"],
+            as_dict=True,
+        )
+        if not custom_field or custom_field.fieldtype != "Select":
+            continue
+        options = [
+            option.strip()
+            for option in str(custom_field.options or "").splitlines()
+            if option.strip()
+        ]
+        merged = [*options, *(option for option in required_options if option not in options)]
+        if merged == options:
+            continue
+        frappe.db.set_value(
+            "Custom Field",
+            custom_field.name,
+            "options",
+            "\n".join(merged),
+            update_modified=False,
+        )
+        frappe.clear_cache(doctype=doctype)
 
 
 def ensure_chat_message_indexes() -> None:

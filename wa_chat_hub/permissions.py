@@ -7,7 +7,6 @@ from frappe import _
 
 from wa_chat_hub.clinic_compat import get_crm_lead_pqc
 
-
 CRM_LEAD_DOCTYPES = {"CRM Lead", "Lead"}
 
 
@@ -63,7 +62,9 @@ def _qualify_crm_lead_condition(condition: str, alias: str) -> str:
     return qualified
 
 
-def crm_lead_permission_condition(user: str | None = None, alias: str = "wa_lead") -> str:
+def crm_lead_permission_condition(
+    user: str | None = None, alias: str = "wa_lead"
+) -> str:
     """
     Return CRM Lead permission SQL for the user.
 
@@ -97,8 +98,14 @@ def has_unrestricted_chat_access(user: str | None = None) -> bool:
 
 def get_conversation_crm_lead(conversation_or_row) -> str | None:
     if isinstance(conversation_or_row, (str, int)):
-        fields = ["linked_crm_lead", "linked_reference_doctype", "linked_reference_name"]
-        row = frappe.db.get_value("Chat Conversation", str(conversation_or_row), fields, as_dict=True)
+        fields = [
+            "linked_crm_lead",
+            "linked_reference_doctype",
+            "linked_reference_name",
+        ]
+        row = frappe.db.get_value(
+            "Chat Conversation", str(conversation_or_row), fields, as_dict=True
+        )
     elif callable(getattr(conversation_or_row, "as_dict", None)):
         row = conversation_or_row.as_dict()
     else:
@@ -111,7 +118,7 @@ def get_conversation_crm_lead(conversation_or_row) -> str | None:
     if linked_crm_lead:
         return linked_crm_lead
 
-    if row.get("linked_reference_doctype") in CRM_LEAD_DOCTYPES:
+    if row.get("linked_reference_doctype") == "CRM Lead":
         return row.get("linked_reference_name")
     return None
 
@@ -122,7 +129,11 @@ def can_read_crm_lead(lead_name: str | None, user: str | None = None) -> bool:
         return True
     if _service_user_has_ai_read("CRM Lead", user):
         return True
-    if not lead_name or not _has_crm_lead_doctype() or not frappe.db.exists("CRM Lead", lead_name):
+    if (
+        not lead_name
+        or not _has_crm_lead_doctype()
+        or not frappe.db.exists("CRM Lead", lead_name)
+    ):
         return False
     try:
         lead = frappe.get_doc("CRM Lead", lead_name)
@@ -135,13 +146,36 @@ def can_read_conversation(conversation_or_row, user: str | None = None) -> bool:
     user = _user(user)
     if has_unrestricted_chat_access(user):
         return True
-    lead_name = get_conversation_crm_lead(conversation_or_row)
-    return can_read_crm_lead(lead_name, user=user)
+    if isinstance(conversation_or_row, (str, int)):
+        conversation_or_row = frappe.db.get_value(
+            "Chat Conversation",
+            str(conversation_or_row),
+            ["linked_crm_lead", "linked_reference_doctype", "linked_reference_name"],
+            as_dict=True,
+        )
+    row = conversation_or_row or {}
+    lead_name = get_conversation_crm_lead(row)
+    if lead_name and can_read_crm_lead(lead_name, user=user):
+        return True
+    doctype, name = (
+        row.get("linked_reference_doctype"),
+        row.get("linked_reference_name"),
+    )
+    if doctype in {"Lead", "Customer"} and name and frappe.db.exists(doctype, name):
+        return bool(
+            frappe.has_permission(
+                doctype, "read", doc=frappe.get_doc(doctype, name), user=user
+            )
+        )
+    return False
 
 
 def ensure_can_read_conversation(conversation_or_row, user: str | None = None) -> None:
     if not can_read_conversation(conversation_or_row, user=user):
-        frappe.throw(_("Not permitted to access this WhatsApp conversation"), frappe.PermissionError)
+        frappe.throw(
+            _("Not permitted to access this WhatsApp conversation"),
+            frappe.PermissionError,
+        )
 
 
 def filter_accessible_conversation_rows(rows: list, user: str | None = None) -> list:
@@ -149,20 +183,24 @@ def filter_accessible_conversation_rows(rows: list, user: str | None = None) -> 
     if has_unrestricted_chat_access(user):
         return rows
 
-    lead_access_cache: dict[str, bool] = {}
+    access = {}
     visible = []
     for row in rows:
-        lead_name = get_conversation_crm_lead(row)
-        if not lead_name:
-            continue
-        if lead_name not in lead_access_cache:
-            lead_access_cache[lead_name] = can_read_crm_lead(lead_name, user=user)
-        if lead_access_cache[lead_name]:
+        key = (
+            row.get("linked_crm_lead"),
+            row.get("linked_reference_doctype"),
+            row.get("linked_reference_name"),
+        )
+        if key not in access:
+            access[key] = can_read_conversation(row, user=user)
+        if access[key]:
             visible.append(row)
     return visible
 
 
-def filter_accessible_reference_names(reference_doctype: str, names: list[str], user: str | None = None) -> list[str]:
+def filter_accessible_reference_names(
+    reference_doctype: str, names: list[str], user: str | None = None
+) -> list[str]:
     user = _user(user)
     if has_unrestricted_chat_access(user):
         return names
@@ -171,105 +209,71 @@ def filter_accessible_reference_names(reference_doctype: str, names: list[str], 
     return [name for name in names if can_read_crm_lead(name, user=user)]
 
 
-def conversation_access_sql_condition(conversation_alias: str = "c", user: str | None = None) -> str:
+def conversation_access_sql_condition(
+    conversation_alias: str = "c", user: str | None = None
+) -> str:
     user = _user(user)
     if has_unrestricted_chat_access(user):
         return "1=1"
+    conditions = []
+    if _has_crm_lead_doctype():
+        lead_condition = crm_lead_permission_condition(user, alias="wa_lead") or "1=1"
+        conditions.append(f"""EXISTS (
+            SELECT 1 FROM `tabCRM Lead` `wa_lead`
+            WHERE (`wa_lead`.`name` = `{conversation_alias}`.`linked_crm_lead`
+                OR (`{conversation_alias}`.`linked_reference_doctype` = 'CRM Lead'
+                    AND `wa_lead`.`name` = `{conversation_alias}`.`linked_reference_name`))
+                AND ({lead_condition}))""")
+    from frappe.model.db_query import DatabaseQuery
 
-    lead_condition = crm_lead_permission_condition(user, alias="wa_lead")
-    if not lead_condition or lead_condition == "1=0":
-        return "1=0"
-
-    linked_crm_lead = "1=0"
-    if frappe.db.has_column("Chat Conversation", "linked_crm_lead"):
-        linked_crm_lead = f"""
-            (
-                IFNULL(`{conversation_alias}`.`linked_crm_lead`, '') != ''
-                AND EXISTS (
-                    SELECT 1
-                    FROM `tabCRM Lead` `wa_lead`
-                    WHERE `wa_lead`.`name` = `{conversation_alias}`.`linked_crm_lead`
-                      AND ({lead_condition})
-                )
+    for doctype in ("Lead", "Customer"):
+        if not frappe.db.table_exists(doctype):
+            continue
+        role_permissions = frappe.permissions.get_role_permissions(
+            frappe.get_meta(doctype), user=user
+        )
+        if not (
+            role_permissions.get("read")
+            or role_permissions.get("select")
+            or frappe.share.get_shared(doctype, user)
+        ):
+            continue
+        query = DatabaseQuery(doctype, user=user)
+        query.tables = [f"`tab{doctype}`"]
+        try:
+            match = query.build_match_conditions()
+            match = (
+                " AND ".join(f"({part})" for part in [*query.conditions, match] if part)
+                or "1=1"
             )
-        """
-
-    linked_reference = "1=0"
-    if frappe.db.has_column("Chat Conversation", "linked_reference_doctype") and frappe.db.has_column(
-        "Chat Conversation", "linked_reference_name"
-    ):
-        linked_reference = f"""
-            (
-                `{conversation_alias}`.`linked_reference_doctype` IN ('CRM Lead', 'Lead')
-                AND IFNULL(`{conversation_alias}`.`linked_reference_name`, '') != ''
-                AND EXISTS (
-                    SELECT 1
-                    FROM `tabCRM Lead` `wa_lead`
-                    WHERE `wa_lead`.`name` = `{conversation_alias}`.`linked_reference_name`
-                      AND ({lead_condition})
-                )
-            )
-        """
-
-    return f"(({linked_crm_lead}) OR ({linked_reference}))"
+        except frappe.PermissionError:
+            continue
+        conditions.append(f"""(
+            `{conversation_alias}`.`linked_reference_doctype` = '{doctype}'
+            AND EXISTS (SELECT 1 FROM `tab{doctype}`
+                WHERE `tab{doctype}`.`name` = `{conversation_alias}`.`linked_reference_name`
+                AND ({match})))""")
+    return "(" + " OR ".join(conditions) + ")" if conditions else "1=0"
 
 
 def chat_conversation_pqc(user: str | None = None) -> str:
     return conversation_access_sql_condition("tabChat Conversation", user=user)
 
 
-def chat_conversation_has_permission(doc, user: str | None = None, ptype: str | None = None) -> bool:
+def chat_conversation_has_permission(
+    doc, user: str | None = None, ptype: str | None = None
+) -> bool:
     return can_read_conversation(doc, user=user)
 
 
-def contact_access_sql_condition(contact_alias: str = "tabChat Contact", user: str | None = None) -> str:
-    user = _user(user)
-    if has_unrestricted_chat_access(user):
-        return "1=1"
-
-    lead_condition = crm_lead_permission_condition(user, alias="wa_lead")
-    if not lead_condition or lead_condition == "1=0":
-        return "1=0"
-
-    linked_crm_lead = "1=0"
-    if frappe.db.has_column("Chat Conversation", "linked_crm_lead"):
-        linked_crm_lead = f"""
-            (
-                IFNULL(`wa_conversation`.`linked_crm_lead`, '') != ''
-                AND EXISTS (
-                    SELECT 1
-                    FROM `tabCRM Lead` `wa_lead`
-                    WHERE `wa_lead`.`name` = `wa_conversation`.`linked_crm_lead`
-                      AND ({lead_condition})
-                )
-            )
-        """
-
-    linked_reference = "1=0"
-    if frappe.db.has_column("Chat Conversation", "linked_reference_doctype") and frappe.db.has_column(
-        "Chat Conversation", "linked_reference_name"
-    ):
-        linked_reference = f"""
-            (
-                `wa_conversation`.`linked_reference_doctype` IN ('CRM Lead', 'Lead')
-                AND IFNULL(`wa_conversation`.`linked_reference_name`, '') != ''
-                AND EXISTS (
-                    SELECT 1
-                    FROM `tabCRM Lead` `wa_lead`
-                    WHERE `wa_lead`.`name` = `wa_conversation`.`linked_reference_name`
-                      AND ({lead_condition})
-                )
-            )
-        """
-
-    return f"""
-        EXISTS (
-            SELECT 1
-            FROM `tabChat Conversation` `wa_conversation`
-            WHERE `wa_conversation`.`contact` = `{contact_alias}`.`name`
-              AND (({linked_crm_lead}) OR ({linked_reference}))
-        )
-    """
+def contact_access_sql_condition(
+    contact_alias: str = "tabChat Contact", user: str | None = None
+) -> str:
+    condition = conversation_access_sql_condition("wa_conversation", user=user)
+    return f"""EXISTS (
+        SELECT 1 FROM `tabChat Conversation` `wa_conversation`
+        WHERE `wa_conversation`.`contact` = `{contact_alias}`.`name`
+        AND ({condition}))"""
 
 
 def chat_contact_pqc(user: str | None = None) -> str:
@@ -294,14 +298,21 @@ def can_read_contact(contact_or_doc, user: str | None = None) -> bool:
     rows = frappe.get_all(
         "Chat Conversation",
         filters={"contact": contact},
-        fields=["name", "linked_crm_lead", "linked_reference_doctype", "linked_reference_name"],
+        fields=[
+            "name",
+            "linked_crm_lead",
+            "linked_reference_doctype",
+            "linked_reference_name",
+        ],
         limit_page_length=50,
         ignore_permissions=True,
     )
     return any(can_read_conversation(row, user=user) for row in rows)
 
 
-def chat_contact_has_permission(doc, user: str | None = None, ptype: str | None = None) -> bool:
+def chat_contact_has_permission(
+    doc, user: str | None = None, ptype: str | None = None
+) -> bool:
     return can_read_contact(doc, user=user)
 
 
@@ -317,10 +328,16 @@ def chat_message_pqc(user: str | None = None) -> str:
     """
 
 
-def chat_message_has_permission(doc, user: str | None = None, ptype: str | None = None) -> bool:
+def chat_message_has_permission(
+    doc, user: str | None = None, ptype: str | None = None
+) -> bool:
     conversation = None
     if isinstance(doc, str):
         conversation = frappe.db.get_value("Chat Message", doc, "conversation")
     elif doc:
-        conversation = doc.get("conversation") if isinstance(doc, dict) else getattr(doc, "conversation", None)
+        conversation = (
+            doc.get("conversation")
+            if isinstance(doc, dict)
+            else getattr(doc, "conversation", None)
+        )
     return can_read_conversation(conversation, user=user)

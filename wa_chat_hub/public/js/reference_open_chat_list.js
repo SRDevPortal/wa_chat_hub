@@ -212,30 +212,6 @@
 	}
 
 	function open_reference_chat(reference_doctype, reference_name) {
-		frappe.call({
-			method: "wa_chat_hub.api.chat.get_conversation_for_reference",
-			args: {
-				reference_doctype,
-				reference_name,
-			},
-			freeze: true,
-			freeze_message: __("Finding WhatsApp conversation..."),
-			callback(r) {
-				const result = r.message || {};
-				if (!result.success || !result.conversation) {
-					frappe.msgprint({
-						title: __("No WhatsApp Conversation"),
-						indicator: "orange",
-						message: result.message || __("No WhatsApp conversation found for this record."),
-					});
-					return;
-				}
-
-				frappe.route_options = {
-					conversation: result.conversation,
-				};
-				frappe.set_route("wa-chat-hub");
-			},
-		});
-	}
+        return wa_chat_hub.open_reference_chat(reference_doctype, reference_name);
+    }
 })();

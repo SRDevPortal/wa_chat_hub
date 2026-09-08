@@ -18,7 +18,7 @@ class TestShipKiaRtoPercentage(TestCase):
 
         self.assertEqual(details.rto_percentage, 60)
         self.assertIn("60% RTO noted", reply)
-        self.assertIn("business type", reply)
+        self.assertIn("monthly shipments", reply)
         self.assertNotIn("RTO percentage kitna", reply)
 
     def test_repeated_hinglish_rto_percentage_reply_is_understood(self):
@@ -60,7 +60,7 @@ class TestShipKiaRtoPercentage(TestCase):
         ):
             reply = _direct_shipkia_sales_reply("Bolo", history, conversation="35")
 
-        self.assertIn("business type", reply)
+        self.assertIn("monthly shipments", reply)
         self.assertNotIn("RTO percentage kitna", reply)
 
     def test_continue_nudge_after_business_type_question_is_not_saved_as_business_type(self):
@@ -95,6 +95,6 @@ class TestShipKiaRtoPercentage(TestCase):
         ):
             reply = _direct_shipkia_sales_reply("Bolo", history, conversation="35")
 
-        self.assertIn("business type", reply)
+        self.assertIn("monthly shipments", reply)
         self.assertNotIn("business/store name", reply)
         self.assertNotIn("RTO percentage kitna", reply)

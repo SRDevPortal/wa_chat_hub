@@ -10,6 +10,19 @@ from typing import Iterable
 
 import frappe
 
+from wa_chat_hub.conversation_state import (
+    DECISION_OVERWEIGHT_SPLIT_ACCEPTED,
+    DECISION_OVERWEIGHT_SPLIT_DECLINED,
+    DECISION_RATE_DELIVERY_REQUESTED,
+    DECISION_RATE_PICKUP_REQUESTED,
+    DECISION_RATE_QUOTE_SENT,
+    DECISION_RATE_WEIGHT_REQUESTED,
+    decision_code,
+    is_customer_visible,
+    message_value,
+)
+from wa_chat_hub.shipping_weight import parse_weight_grams
+
 
 ZONES = ("Zone A", "Zone B", "Zone C", "Zone D", "Zone E", "Zone F")
 DEFAULT_RATE_CARD_FILE = "shipkia_rate_card_june_2026.csv"
@@ -143,6 +156,25 @@ class RateOption:
     source: str
 
 
+@dataclass(frozen=True)
+class RateReply:
+    text: str = ""
+    decision_code: str = ""
+    quote: dict[str, object] | None = None
+
+
+@dataclass(frozen=True)
+class RateRequestState:
+    active: bool = False
+    pickup: str | None = None
+    delivery: str | None = None
+    zone: str | None = None
+    weight_grams: int | None = None
+    wants_flat: bool = False
+    wants_cod: bool = False
+    split_declined: bool = False
+
+
 def build_rate_context_for_message(message: str, history: Iterable | None = None) -> str:
     """Return compact, deterministic rate-card context for the reply model."""
     text = str(message or "")
@@ -184,29 +216,72 @@ def build_rate_context_for_message(message: str, history: Iterable | None = None
     return "\n".join(line for line in lines if line)
 
 
-def build_rate_reply_for_message(message: str, history: Iterable | None = None) -> str:
-    """Return a direct WhatsApp reply for explicit rate-card questions."""
-    text = str(message or "")
-    if not _looks_like_rate_query(text):
-        return ""
+def build_rate_reply_for_message(
+    message: str,
+    history: Iterable | None = None,
+    *,
+    intent: str | None = None,
+    max_package_weight_kg: float | None = None,
+) -> str:
+    """Return the customer-facing part of a structured rate decision."""
+    return build_rate_reply_decision(
+        message,
+        history,
+        intent=intent,
+        max_package_weight_kg=max_package_weight_kg,
+    ).text
 
-    route = parse_route_cities(text)
-    estimated_zone = estimate_zone_for_route(*route) if route else None
-    zone = parse_zone(text) or estimated_zone
-    weight_grams = parse_weight_grams(text) or 500
-    wants_flat = _looks_like_flat_rate_query(text)
-    wants_cod = bool(re.search(r"\bcod\b", text, flags=re.IGNORECASE))
 
-    if wants_flat:
-        return (
+def build_rate_reply_decision(
+    message: str,
+    history: Iterable | None = None,
+    *,
+    intent: str | None = None,
+    max_package_weight_kg: float | None = None,
+) -> RateReply:
+    """Continue an active rate request and return a semantic reply decision."""
+    state = collect_rate_request_state(message, history, intent=intent)
+    if not state.active or state.split_declined:
+        return RateReply()
+
+    weight_grams = state.weight_grams or (500 if state.wants_flat or state.zone else None)
+
+    if max_package_weight_kg and weight_grams and weight_grams > float(max_package_weight_kg) * 1000:
+        # Eligibility handling owns the split/decline conversation.
+        return RateReply()
+
+    if state.wants_flat:
+        return RateReply(
             f"ShipKia approved rate card ke basis par {weight_grams}g prepaid FWD starting rates: "
-            f"{_flat_zonal_inline(weight_grams)}. Final live rate exact pincode, courier serviceability, taxes, dimensions aur chargeable weight ke hisaab se vary kar sakta hai."
+            f"{_flat_zonal_inline(weight_grams)}. Final live rate exact pincode, courier serviceability, taxes, dimensions aur chargeable weight ke hisaab se vary kar sakta hai.",
+            DECISION_RATE_QUOTE_SENT,
+            {"weight_grams": weight_grams, "scope": "flat_zonal"},
         )
+
+    if not state.zone and not state.pickup:
+        return RateReply(
+            "Starting rate check karne ke liye pickup city ya pincode share kar dijiye.",
+            DECISION_RATE_PICKUP_REQUESTED,
+        )
+    if not state.zone and not state.delivery:
+        return RateReply(
+            "Delivery city ya pincode share kar dijiye.",
+            DECISION_RATE_DELIVERY_REQUESTED,
+        )
+    if not weight_grams:
+        return RateReply(
+            "Har package ka approx weight share kar dijiye.",
+            DECISION_RATE_WEIGHT_REQUESTED,
+        )
+    route = (state.pickup, state.delivery) if state.pickup and state.delivery else None
+    estimated_zone = estimate_zone_for_route(*route) if route else None
+    zone = state.zone or estimated_zone
+    wants_cod = state.wants_cod
 
     if zone:
         options = best_rate_options(zone, weight_grams, mode="FWD", limit=3)
         if not options:
-            return ""
+            return RateReply()
         best = options[0]
         if estimated_zone and route:
             reply = (
@@ -221,12 +296,107 @@ def build_rate_reply_for_message(message: str, history: Iterable | None = None) 
             )
         if wants_cod:
             reply += f" COD terms: Rs. {best.cod_amount:g} ya {best.cod_percentage:g}% as per courier terms."
-        return reply
+        return RateReply(
+            reply,
+            DECISION_RATE_QUOTE_SENT,
+            {
+                "pickup": route[0] if route else None,
+                "delivery": route[1] if route else None,
+                "zone": zone,
+                "weight_grams": weight_grams,
+                "rate": best.rate,
+                "courier": best.courier,
+                "cod": wants_cod,
+            },
+        )
 
-    if _looks_like_route_rate_query(text):
-        return "Starting rate check karne ke liye pickup city share kar dijiye."
+    return RateReply()
 
-    return ""
+
+def collect_rate_request_state(
+    message: str,
+    history: Iterable | None = None,
+    *,
+    intent: str | None = None,
+) -> RateRequestState:
+    rows = [row for row in (history or []) if is_customer_visible(row)]
+    rows.append({"direction": "Inbound", "body": str(message or "")})
+
+    boundary = -1
+    for index, row in enumerate(rows):
+        if decision_code(row) in {DECISION_RATE_QUOTE_SENT, DECISION_OVERWEIGHT_SPLIT_DECLINED}:
+            boundary = index
+
+    intent_indexes = []
+    for index, row in enumerate(rows):
+        if index <= boundary or str(message_value(row, "direction") or "") != "Inbound":
+            continue
+        is_current = index == len(rows) - 1
+        if looks_like_rate_request(message_value(row, "body")) or (
+            is_current and str(intent or "") == "shipping_rate_enquiry"
+        ):
+            intent_indexes.append(index)
+    if not intent_indexes:
+        return RateRequestState()
+
+    start = intent_indexes[0]
+    pickup = None
+    delivery = None
+    weight_grams = None
+    wants_flat = False
+    wants_cod = False
+    zone = None
+    pending_slot = ""
+    weight_boundary = start
+
+    for index, row in enumerate(rows[start:], start=start):
+        direction = str(message_value(row, "direction") or "").strip()
+        code = decision_code(row)
+        if direction == "Outbound":
+            pending_slot = {
+                DECISION_RATE_PICKUP_REQUESTED: "pickup",
+                DECISION_RATE_DELIVERY_REQUESTED: "delivery",
+                DECISION_RATE_WEIGHT_REQUESTED: "weight",
+            }.get(code, pending_slot)
+            if code == DECISION_OVERWEIGHT_SPLIT_ACCEPTED:
+                weight_boundary = index + 1
+                weight_grams = None
+                pending_slot = "weight"
+            continue
+        if direction != "Inbound":
+            continue
+
+        text = str(message_value(row, "body") or "").strip()
+        wants_flat = wants_flat or _looks_like_flat_rate_query(text)
+        wants_cod = wants_cod or bool(re.search(r"\bcod\b", text, flags=re.IGNORECASE))
+        zone = parse_zone(text) or zone
+        route = parse_route_cities(text)
+        if route:
+            pickup, delivery = route
+        elif pending_slot in {"pickup", "delivery"}:
+            city = _known_city_from_phrase(text) or _normalize_city(text)
+            if _is_city_candidate(city):
+                if pending_slot == "pickup":
+                    pickup = city
+                else:
+                    delivery = city
+                pending_slot = ""
+
+        parsed_weight = parse_weight_grams(text) if index >= weight_boundary else None
+        if parsed_weight:
+            weight_grams = parsed_weight
+            if pending_slot == "weight":
+                pending_slot = ""
+
+    return RateRequestState(
+        active=True,
+        pickup=pickup,
+        delivery=delivery,
+        zone=zone,
+        weight_grams=weight_grams,
+        wants_flat=wants_flat,
+        wants_cod=wants_cod,
+    )
 
 
 def flat_zonal_rates(weight: str | int | float | None = None, mode: str = "FWD") -> dict[str, object]:
@@ -331,17 +501,6 @@ def estimate_zone_for_route(pickup_city: str, delivery_city: str) -> str:
     if pickup in METRO_CITIES and delivery in METRO_CITIES:
         return "Zone C"
     return "Zone D"
-
-
-def parse_weight_grams(text: str | None) -> int | None:
-    value = str(text or "").lower()
-    match = re.search(r"\b(\d+(?:\.\d+)?)\s*(kg|kgs|kilogram|kilograms)\b", value)
-    if match:
-        return int(math.ceil(float(match.group(1)) * 1000))
-    match = re.search(r"\b(\d+(?:\.\d+)?)\s*(g|gm|gram|grams)\b", value)
-    if match:
-        return int(math.ceil(float(match.group(1))))
-    return None
 
 
 def rate_card_stats() -> dict[str, object]:
@@ -485,7 +644,7 @@ def _rate_card_path() -> Path:
     return Path(frappe.get_app_path("wa_chat_hub", "config", DEFAULT_RATE_CARD_FILE))
 
 
-def _looks_like_rate_query(text: str) -> bool:
+def looks_like_rate_request(text: str | None) -> bool:
     value = str(text or "").strip().lower()
     if not value:
         return False
@@ -499,13 +658,19 @@ def _looks_like_rate_query(text: str) -> bool:
         return True
     if not re.search(r"\brate[s]?\b", value):
         return False
+    if re.search(r"\b(?:want|need|know|about|information|details)\b", value):
+        return True
     return bool(
         re.search(
-            r"\b(?:batao|bataiye|bataye|batana|send|share|show|dikhao|kya|kitna|kitne|chaiye|chahiye|dijiye|dijea|card|list|zone\s*[a-f]|[a-f]\s*zone)\b",
+            r"\b(?:bata|batao|bataiye|bataye|batana|send|share|show|dikhao|kya|kitna|kitne|chaiye|chahiye|dijiye|dijea|card|list|zone\s*[a-f]|[a-f]\s*zone)\b",
             value,
             flags=re.IGNORECASE,
         )
     )
+
+
+def _looks_like_rate_query(text: str) -> bool:
+    return looks_like_rate_request(text)
 
 
 def _looks_like_flat_rate_query(text: str) -> bool:

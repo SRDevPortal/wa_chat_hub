@@ -6,7 +6,7 @@ app_email = "admin@example.com"
 app_license = "MIT"
 
 app_include_css = ["/assets/wa_chat_hub/css/wa_chat_hub.css"]
-app_include_js = ["/assets/wa_chat_hub/js/remote_attachment_links.js"]
+app_include_js = ["/assets/wa_chat_hub/js/remote_attachment_links.js", "/assets/wa_chat_hub/js/reference_chat.js"]
 
 after_install = "wa_chat_hub.setup_workspace.run"
 after_migrate = "wa_chat_hub.migrate.after_migrate"
@@ -49,6 +49,9 @@ lead_custom_fieldnames = [
     "shipkia_sales_stage",
     "shipkia_lead_source",
     "shipkia_first_contact_channel",
+    "shipkia_service_scope_status",
+    "shipkia_disqualification_reason",
+    "shipkia_max_shipment_weight_kg",
 ]
 
 fixtures = [
@@ -56,15 +59,16 @@ fixtures = [
     {"dt": "Page", "filters": [["module", "=", "WA Chat Hub"]]},
     {"dt": "Workspace", "filters": [["module", "=", "WA Chat Hub"]]},
     {"dt": "Custom Field", "filters": [["dt", "=", "Lead"], ["fieldname", "in", lead_custom_fieldnames]]},
-    {"dt": "Custom Field", "filters": [["dt", "=", "CRM Lead"], ["fieldname", "in", ["lead_score", "lead_lan", "lead_temperature"]]]},
+    {"dt": "Custom Field", "filters": [["dt", "=", "CRM Lead"], ["fieldname", "in", lead_custom_fieldnames]]},
 ]
 
 doctype_list_js = {
     "CRM Lead": "public/js/reference_open_chat_list.js",
     "Lead": "public/js/reference_open_chat_list.js",
+    "Customer": "public/js/reference_open_chat_list.js",
 }
 
-doctype_js = {}
+doctype_js = {doctype: "public/js/reference_chat_form.js" for doctype in ("Lead", "Customer", "CRM Lead")}
 
 permission_query_conditions = {
     "Chat Conversation": "wa_chat_hub.permissions.chat_conversation_pqc",

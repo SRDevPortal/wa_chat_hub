@@ -11,6 +11,16 @@ from wa_chat_hub.ai.language import resolve_language_from_history
 from wa_chat_hub.db_retry import with_db_lock_retry
 from wa_chat_hub.prompts import get_conversation_crm_lead
 from wa_chat_hub.policy import get_conversation_policy
+from wa_chat_hub.conversation_state import (
+    DECISION_OVERWEIGHT_SPLIT_ACCEPTED,
+    DECISION_OVERWEIGHT_SPLIT_REQUESTED,
+    DECISION_RATE_QUOTE_SENT,
+    classify_binary_reply,
+    decision_code,
+    is_customer_visible,
+)
+from wa_chat_hub.shipping_weight import extract_weights, exceeds_package_limit, parse_max_weight_kg, parse_plain_weight_kg
+from wa_chat_hub.shipkia_rate_card import looks_like_rate_request
 from wa_chat_hub.security import (
     assert_ai_doctype_permission,
     safe_ai_exists,
@@ -49,6 +59,15 @@ NON_CITY_ROUTE_WORDS = {
     "shiprocket",
     "nimbuspost",
     "provider",
+}
+
+SHIPKIA_MIN_MONTHLY_SHIPMENTS = 100
+SHIPKIA_MAX_SHIPMENT_WEIGHT_KG = 15.0
+SHIPKIA_DISQUALIFICATION_LABELS = {
+    "job_request": "Job/career request",
+    "b2b": "B2B shipping is not supported",
+    "international": "International shipping is not supported",
+    "overweight": "Shipment exceeds the configured per-package weight limit",
 }
 
 BUSINESS_TYPE_KEYWORDS = (
@@ -96,6 +115,47 @@ class ShipKiaLeadDetails:
     latest_inbound_at: object | None = None
     inbound_count: int = 0
     asked_for_rates: bool = False
+    b2b_only: bool = False
+    international_required: bool = False
+    job_request: bool = False
+    max_shipment_weight_kg: float | None = None
+    supported_scope_seen: bool = False
+    max_package_weight_limit_kg: float = SHIPKIA_MAX_SHIPMENT_WEIGHT_KG
+    split_shipment_accepted: bool = False
+    split_package_weight_kg: float | None = None
+
+    @property
+    def disqualification_code(self) -> str | None:
+        if self.job_request:
+            return "job_request"
+        if self.b2b_only:
+            return "b2b"
+        if self.international_required:
+            return "international"
+        if self.split_shipment_accepted:
+            if (
+                self.split_package_weight_kg is not None
+                and self.split_package_weight_kg > self.max_package_weight_limit_kg
+            ):
+                return "overweight"
+        elif (
+            self.max_shipment_weight_kg is not None
+            and self.max_shipment_weight_kg > self.max_package_weight_limit_kg
+        ):
+            return "overweight"
+        return None
+
+    @property
+    def disqualification_reason(self) -> str:
+        return SHIPKIA_DISQUALIFICATION_LABELS.get(self.disqualification_code or "", "")
+
+    @property
+    def service_scope_status(self) -> str:
+        if self.disqualification_code:
+            return "Disqualified"
+        if self.supported_scope_seen or self.monthly_shipments is not None:
+            return "Eligible"
+        return "Pending"
 
     @property
     def collected_count(self) -> int:
@@ -143,7 +203,7 @@ def recompute_conversation_metrics(conversation: str) -> ScoreResult:
     history = safe_ai_get_all(
         "Chat Message",
         filters={"conversation": conversation},
-        fields=["direction", "body", "creation"],
+        fields=["direction", "body", "creation", "delivery_status", "raw_transport_payload"],
         order_by="creation asc",
         limit_page_length=40,
     )
@@ -184,8 +244,8 @@ def sync_to_conversation(conversation: str, result: ScoreResult) -> None:
 
 def sync_to_linked_lead(conversation: str, result: ScoreResult | None = None) -> None:
     convo = safe_ai_get_doc("Chat Conversation", conversation)
-    linked_lead = _get_conversation_linked_lead(convo)
-    if not linked_lead:
+    linked_leads = _get_conversation_linked_leads(convo)
+    if not linked_leads:
         return
 
     if result is None:
@@ -196,54 +256,62 @@ def sync_to_linked_lead(conversation: str, result: ScoreResult | None = None) ->
             source="existing",
         )
 
-    target_dt, lead_name = linked_lead
-    if not safe_ai_exists(target_dt, lead_name):
-        return
-
-    assert_ai_doctype_permission(target_dt, "write")
-    meta = frappe.get_meta(target_dt)
     history = safe_ai_get_all(
         "Chat Message",
         filters={"conversation": conversation},
-        fields=["direction", "body", "creation"],
+        fields=["direction", "body", "creation", "delivery_status", "raw_transport_payload"],
         order_by="creation asc",
         limit_page_length=100,
     )
-    details = _extract_shipkia_lead_details(history)
-    updates = _build_lead_updates(meta, result, details)
-    if not updates:
-        return
-
-    safe_ai_set_value(
-        target_dt,
-        lead_name,
-        updates,
-        update_modified=False,
+    bundle = get_conversation_policy(convo)
+    scoring_policy = bundle.section("lead_scoring_policy") if bundle else {}
+    details = _extract_shipkia_lead_details(
+        history,
+        max_package_weight_kg=_configured_max_package_weight(scoring_policy),
     )
+    for target_dt, lead_name in linked_leads:
+        if not safe_ai_exists(target_dt, lead_name):
+            continue
+        assert_ai_doctype_permission(target_dt, "write")
+        meta = frappe.get_meta(target_dt)
+        updates = _build_lead_updates(meta, result, details)
+        _clear_misclassified_aggregator_values(target_dt, lead_name, meta, details, updates)
+        if updates:
+            safe_ai_set_value(
+                target_dt,
+                lead_name,
+                updates,
+                update_modified=False,
+            )
 
 
-def _get_conversation_linked_lead(convo) -> Tuple[str, str] | None:
-    linked_doctype = str(getattr(convo, "linked_reference_doctype", "") or "").strip()
-    linked_name = str(getattr(convo, "linked_reference_name", "") or "").strip()
-    if linked_doctype in {"Lead", "CRM Lead"} and linked_name:
-        return linked_doctype, linked_name
+def _get_conversation_linked_leads(convo) -> list[Tuple[str, str]]:
+    """Return every Lead/CRM Lead linked to the chat, without duplicates."""
+    linked: list[Tuple[str, str]] = []
 
-    crm_lead = get_conversation_crm_lead(convo)
-    if crm_lead:
-        return "CRM Lead", crm_lead
+    def add(doctype: str | None, name: str | None) -> None:
+        target = (str(doctype or "").strip(), str(name or "").strip())
+        if target[0] in {"Lead", "CRM Lead"} and target[1] and target not in linked:
+            linked.append(target)
+
+    add(
+        getattr(convo, "linked_reference_doctype", None),
+        getattr(convo, "linked_reference_name", None),
+    )
+    add("CRM Lead", get_conversation_crm_lead(convo))
 
     contact_name = str(getattr(convo, "contact", "") or "").strip()
     if contact_name and safe_ai_exists("Chat Contact", contact_name):
         contact = safe_ai_get_doc("Chat Contact", contact_name)
-        source_doctype = str(getattr(contact, "source_doctype", "") or "").strip()
-        source_name = str(getattr(contact, "source_name", "") or "").strip()
-        if source_doctype in {"Lead", "CRM Lead"} and source_name:
-            return source_doctype, source_name
-        linked_lead = str(getattr(contact, "linked_lead", "") or "").strip()
-        if linked_lead:
-            return "Lead", linked_lead
+        add(getattr(contact, "source_doctype", None), getattr(contact, "source_name", None))
+        add("Lead", getattr(contact, "linked_lead", None))
 
-    return None
+    return linked
+
+
+def _get_conversation_linked_lead(convo) -> Tuple[str, str] | None:
+    linked = _get_conversation_linked_leads(convo)
+    return linked[0] if linked else None
 
 
 def _build_lead_updates(meta, result: ScoreResult, details: ShipKiaLeadDetails) -> Dict[str, object]:
@@ -269,8 +337,8 @@ def _build_lead_updates(meta, result: ScoreResult, details: ShipKiaLeadDetails) 
     _add_lead_update(meta, updates, "shipkia_pickup_city", details.pickup_city)
     _add_lead_update(meta, updates, "shipkia_delivery_city", details.delivery_city)
     _add_lead_update(meta, updates, "shipkia_average_weight", details.average_weight)
-    if details.rate_shared and meta.has_field("shipkia_rate_shared"):
-        updates["shipkia_rate_shared"] = 1
+    if meta.has_field("shipkia_rate_shared"):
+        updates["shipkia_rate_shared"] = 1 if details.rate_shared else 0
 
     _add_lead_update(meta, updates, "shipkia_ai_qualification_score", result.lead_score)
     _add_lead_update(meta, updates, "shipkia_ai_messages_count", details.inbound_count)
@@ -294,7 +362,9 @@ def _build_lead_updates(meta, result: ScoreResult, details: ShipKiaLeadDetails) 
     if details.signup_requested and meta.has_field("shipkia_ai_onboarding_assisted"):
         updates["shipkia_ai_onboarding_assisted"] = 1
     if meta.has_field("shipkia_sales_stage"):
-        if details.signup_requested:
+        if details.disqualification_code:
+            sales_stage = "Disqualified"
+        elif details.signup_requested:
             sales_stage = "Demo / Signup Pending"
         elif details.rate_shared:
             sales_stage = "Rate Shared"
@@ -303,8 +373,41 @@ def _build_lead_updates(meta, result: ScoreResult, details: ShipKiaLeadDetails) 
         _add_lead_update(meta, updates, "shipkia_sales_stage", sales_stage)
     _add_lead_update(meta, updates, "shipkia_lead_source", "WhatsApp Inbound")
     _add_lead_update(meta, updates, "shipkia_first_contact_channel", "WhatsApp")
+    _add_lead_update(meta, updates, "shipkia_service_scope_status", details.service_scope_status)
+    if meta.has_field("shipkia_disqualification_reason"):
+        updates["shipkia_disqualification_reason"] = details.disqualification_reason
+    _add_lead_update(
+        meta,
+        updates,
+        "shipkia_max_shipment_weight_kg",
+        details.max_shipment_weight_kg,
+    )
 
     return updates
+
+
+def _clear_misclassified_aggregator_values(target_dt, lead_name, meta, details, updates) -> None:
+    if details.aggregator_status is not None:
+        return
+    fields = [
+        fieldname
+        for fieldname in (
+            "shipkia_current_aggregator_name",
+            "shipkia_current_aggregator_raw",
+        )
+        if meta.has_field(fieldname)
+    ]
+    if not fields:
+        return
+    existing = frappe.db.get_value(target_dt, lead_name, fields, as_dict=True) or {}
+    if not any(looks_like_rate_request(existing.get(fieldname)) for fieldname in fields):
+        return
+    for fieldname in fields:
+        updates[fieldname] = ""
+    if meta.has_field("shipkia_current_aggregator_status"):
+        updates["shipkia_current_aggregator_status"] = ""
+    if meta.has_field("shipkia_current_aggregator_verified"):
+        updates["shipkia_current_aggregator_verified"] = 0
 
 
 def _add_lead_update(meta, updates: Dict[str, object], fieldname: str, value: object) -> None:
@@ -312,6 +415,17 @@ def _add_lead_update(meta, updates: Dict[str, object], fieldname: str, value: ob
         return
     if not _select_allows_value(meta, fieldname, value):
         return
+    field = meta.get_field(fieldname)
+    if field and field.fieldtype in {"Currency", "Float", "Percent"} and isinstance(value, str):
+        number = re.search(r"-?\d+(?:\.\d+)?", value.replace(",", ""))
+        if not number:
+            return
+        value = float(number.group(0))
+    elif field and field.fieldtype == "Int" and isinstance(value, str):
+        number = re.search(r"-?\d+", value.replace(",", ""))
+        if not number:
+            return
+        value = int(number.group(0))
     updates[fieldname] = value
 
 
@@ -339,26 +453,66 @@ def _select_options(field) -> set[str]:
     }
 
 
-def _extract_shipkia_lead_details(history: List[Dict]) -> ShipKiaLeadDetails:
-    details = ShipKiaLeadDetails()
+def _extract_shipkia_lead_details(
+    history: List[Dict],
+    *,
+    max_package_weight_kg: float = SHIPKIA_MAX_SHIPMENT_WEIGHT_KG,
+) -> ShipKiaLeadDetails:
+    details = ShipKiaLeadDetails(max_package_weight_limit_kg=max_package_weight_kg)
     inbound = []
-    full_text_parts = []
     last_outbound = ""
+    last_outbound_decision = ""
 
     for row in history:
+        if not is_customer_visible(row):
+            continue
         body = str(row.get("body") or "").strip()
         if not body:
             continue
-        full_text_parts.append(body)
         direction = str(row.get("direction") or "").strip()
         normalized_body = _normalize_text(body)
         if direction == "Outbound":
             last_outbound = normalized_body
+            last_outbound_decision = decision_code(row)
+            if last_outbound_decision == DECISION_RATE_QUOTE_SENT:
+                details.rate_shared = True
             continue
         if direction != "Inbound":
             continue
 
         inbound.append(row)
+        if last_outbound_decision == DECISION_OVERWEIGHT_SPLIT_REQUESTED:
+            split_answer = classify_binary_reply(body)
+            if split_answer is not None:
+                details.split_shipment_accepted = split_answer
+        details.job_request = _is_job_request(normalized_body)
+        mentions_b2b = _mentions_b2b(normalized_body)
+        mentions_supported = _mentions_supported_business_scope(normalized_body)
+        if mentions_b2b:
+            details.b2b_only = not mentions_supported
+        elif mentions_supported:
+            details.b2b_only = False
+        if mentions_supported:
+            details.supported_scope_seen = True
+
+        if _mentions_domestic_only(normalized_body):
+            details.international_required = False
+            details.supported_scope_seen = True
+        elif _mentions_international(normalized_body):
+            details.international_required = True
+
+        stated_weight = _extract_max_shipment_weight_kg(normalized_body)
+        if exceeds_package_limit(normalized_body, max_package_weight_kg):
+            stated_weight = max(stated_weight or 0, max_package_weight_kg + 0.001)
+        if stated_weight is None and _prompt_asked_average_weight(last_outbound):
+            stated_weight = _extract_plain_weight_kg(normalized_body)
+        if stated_weight is not None:
+            details.max_shipment_weight_kg = stated_weight
+            if last_outbound_decision == DECISION_OVERWEIGHT_SPLIT_ACCEPTED:
+                details.split_package_weight_kg = stated_weight
+            if stated_weight <= max_package_weight_kg:
+                details.supported_scope_seen = True
+
         customer_question = _looks_like_customer_question_instead_of_answer(body)
         continue_nudge = _is_continue_nudge_text(body)
         if details.business_type is None:
@@ -428,11 +582,6 @@ def _extract_shipkia_lead_details(history: List[Dict]) -> ShipKiaLeadDetails:
         if re.search(r"\b(sign\s*up|signup|register|account bana|account create|krwa do|karwa do)\b", normalized_body):
             details.signup_requested = True
 
-    text = "\n".join(str(row.get("body") or "") for row in inbound)
-    full_text = "\n".join(full_text_parts)
-    normalized_full = _normalize_text(full_text)
-
-    details.rate_shared = bool(re.search(r"\bshipkia rates?\b|₹\s*\d", normalized_full))
     details.latest_inbound_at = inbound[-1].get("creation") if inbound else None
     details.inbound_count = len(inbound)
     return details
@@ -520,6 +669,8 @@ def _looks_like_customer_question_instead_of_answer(text: str) -> bool:
     normalized = _normalize_text(raw)
     if not normalized or _looks_like_crisp_sales_answer(normalized):
         return False
+    if looks_like_rate_request(raw):
+        return True
     question_words = (
         "kya",
         "kyu",
@@ -597,6 +748,8 @@ def _extract_plain_percentage(text: str) -> float | None:
 
 
 def _extract_provider_from_short_answer(text: str) -> Tuple[str | None, str | None, str | None]:
+    if looks_like_rate_request(text):
+        return None, None, None
     status, name, raw = _extract_aggregator(_normalize_text(text))
     if status:
         return status, name, raw
@@ -616,14 +769,7 @@ def _extract_provider_from_short_answer(text: str) -> Tuple[str | None, str | No
 
 
 def _asked_for_rate_quote(text: str) -> bool:
-    if not re.search(r"\b(rate|rates|price|pricing|charges|freight|shipping cost)\b", text):
-        return False
-    return bool(
-        re.search(
-            r"\b(?:batao|bataiye|bataye|batana|send|share|show|dikhao|kya|kitna|kitne|chaiye|chahiye|dijiye|dijea|card|list|zone\s*[a-f]|[a-f]\s*zone)\b",
-            text,
-        )
-    )
+    return looks_like_rate_request(text)
 
 
 def _extract_business_type(text: str) -> str | None:
@@ -818,12 +964,94 @@ def _extract_rto_percentage(text: str) -> float | None:
 
 
 def _extract_average_weight(text: str) -> str | None:
-    match = re.search(r"\b(\d+(?:\.\d+)?)\s*(kg|kgs|kilogram|g|gm|gram|grams)\b", text)
-    if not match:
+    weights = extract_weights(text)
+    if not weights:
         return None
-    unit = match.group(2)
-    unit = "kg" if unit in {"kgs", "kilogram"} else "g" if unit in {"gm", "gram", "grams"} else unit
-    return f"{match.group(1)} {unit}"
+    weight = weights[0]
+    value = f"{weight.value:g}"
+    return f"{value} {weight.unit}"
+
+
+def _is_job_request(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(job|jobs|vacancy|vacancies|career|careers|internship|internships|hiring|hire|naukri|resume|cv)\b",
+            _normalize_text(text),
+        )
+    )
+
+
+def _mentions_b2b(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\bb2b\b|\bbusiness\s+to\s+business\b|\bwholesale(?:r)?\b",
+            _normalize_text(text),
+        )
+    )
+
+
+def _mentions_supported_business_scope(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(b2c|d2c)\b|\bbusiness\s+to\s+consumer\b|\bdirect\s+to\s+consumer\b",
+            _normalize_text(text),
+        )
+    )
+
+
+def _mentions_international(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(international|overseas|cross[ -]?border|worldwide|global shipping|export|import|outside india)\b",
+            _normalize_text(text),
+        )
+    )
+
+
+def _mentions_domestic_only(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(domestic(?: only)?|within india|india only|pan india|not international|no international)\b",
+            _normalize_text(text),
+        )
+    )
+
+
+def _extract_max_shipment_weight_kg(text: str) -> float | None:
+    return parse_max_weight_kg(text)
+
+
+def _extract_plain_weight_kg(text: str) -> float | None:
+    return parse_plain_weight_kg(text)
+
+
+def detect_shipkia_service_restriction(
+    text: str,
+    *,
+    max_package_weight_kg: float = SHIPKIA_MAX_SHIPMENT_WEIGHT_KG,
+) -> str:
+    """Return the deterministic reply-rule key for unsupported ShipKia requests."""
+    normalized = _normalize_text(text)
+    if _is_job_request(normalized):
+        return "job_request"
+
+    b2b = _mentions_b2b(normalized)
+    supported_business = _mentions_supported_business_scope(normalized)
+    if b2b and supported_business:
+        return "mixed_b2b"
+    if b2b:
+        return "b2b"
+
+    international = _mentions_international(normalized)
+    domestic = _mentions_domestic_only(normalized)
+    if international and domestic:
+        return "mixed_international"
+    if international:
+        return "international"
+
+    if exceeds_package_limit(normalized, max_package_weight_kg):
+        return "overweight"
+    return ""
 
 
 def _extract_pickup_city(text: str) -> str | None:
@@ -916,6 +1144,8 @@ def _looks_like_real_route_match(pickup: str, delivery: str, full_text: str) -> 
 
 def _build_requirement_summary(details: ShipKiaLeadDetails) -> str:
     parts = []
+    if details.disqualification_reason:
+        parts.append(f"Disqualified: {details.disqualification_reason}")
     if details.asked_for_rates:
         parts.append("Customer asked for rates")
     if details.business_type:
@@ -942,7 +1172,9 @@ def _build_requirement_summary(details: ShipKiaLeadDetails) -> str:
 
 
 def _qualification_status(details: ShipKiaLeadDetails) -> str:
-    if details.business_type and details.business_name and (details.monthly_shipments or 0) >= 1000:
+    if details.disqualification_code:
+        return "Disqualified"
+    if (details.monthly_shipments or 0) >= SHIPKIA_MIN_MONTHLY_SHIPMENTS:
         return "Qualified"
     if details.collected_count:
         return "In Progress"
@@ -1128,6 +1360,26 @@ def _policy_score(convo, history: List[Dict]) -> ScoreResult:
 
 
 def _policy_rule_score(convo, history: List[Dict], lead_lan: str, policy: Dict) -> ScoreResult:
+    details = _extract_shipkia_lead_details(
+        history,
+        max_package_weight_kg=_configured_max_package_weight(policy),
+    )
+    if details.disqualification_code:
+        return ScoreResult(
+            lead_score=0,
+            lead_temperature="Cold",
+            lead_lan=lead_lan,
+            source=f"disqualified_{details.disqualification_code}",
+        )
+    minimum_shipments = _configured_minimum_monthly_shipments(policy)
+    if (details.monthly_shipments or 0) >= minimum_shipments:
+        return ScoreResult(
+            lead_score=100,
+            lead_temperature="Hot",
+            lead_lan=lead_lan,
+            source="monthly_shipments_maximum",
+        )
+
     score = float(policy.get("base_score") or 0)
     inbound_count = len([h for h in history if h.get("direction") == "Inbound" and str(h.get("body") or "").strip()])
     score += min(float(policy.get("inbound_message_cap") or 0), inbound_count * float(policy.get("inbound_message_weight") or 0))
@@ -1147,6 +1399,24 @@ def _policy_rule_score(convo, history: List[Dict], lead_lan: str, policy: Dict) 
         lead_lan=lead_lan,
         source="policy",
     )
+
+
+def _configured_max_package_weight(policy: Dict) -> float:
+    eligibility = policy.get("service_eligibility") or {}
+    configured = eligibility.get("max_package_weight_kg") if isinstance(eligibility, dict) else None
+    try:
+        value = float(configured)
+    except (TypeError, ValueError):
+        value = SHIPKIA_MAX_SHIPMENT_WEIGHT_KG
+    return value if value > 0 else SHIPKIA_MAX_SHIPMENT_WEIGHT_KG
+
+
+def _configured_minimum_monthly_shipments(policy: Dict) -> int:
+    try:
+        value = int(policy.get("minimum_qualifying_monthly_shipments"))
+    except (TypeError, ValueError):
+        value = SHIPKIA_MIN_MONTHLY_SHIPMENTS
+    return value if value > 0 else SHIPKIA_MIN_MONTHLY_SHIPMENTS
 
 
 def _score_to_temperature(score: float, policy: Dict) -> str:

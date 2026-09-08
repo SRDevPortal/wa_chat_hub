@@ -8,7 +8,7 @@ from wa_chat_hub.delivery_outcomes import (
     PatientTemplateNotSentError,
     PatientTemplateOutcomeUnknownError,
 )
-from wa_chat_hub.outbound import send_interakt_message
+from wa_chat_hub.outbound import _normalize_interakt_api_key, send_interakt_message
 
 
 def account():
@@ -20,6 +20,12 @@ def account():
 
 
 class TestDeliveryOutcomes(FrappeTestCase):
+    def test_interakt_api_key_is_trimmed(self):
+        self.assertEqual(_normalize_interakt_api_key("  secret\n"), "secret")
+
+    def test_interakt_api_key_accepts_full_basic_header_value(self):
+        self.assertEqual(_normalize_interakt_api_key(" Basic secret "), "secret")
+
     @patch("wa_chat_hub.outbound.task_log")
     @patch("wa_chat_hub.outbound.requests.post", side_effect=requests.Timeout("timeout"))
     def test_network_timeout_has_unknown_outcome(self, post, task_log):
