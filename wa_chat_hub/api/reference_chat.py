@@ -72,7 +72,7 @@ def _conversations(filters):
             "channel_account",
             "status",
             "last_message_time",
-            "linked_crm_lead",
+            "linked_lead",
             "linked_reference_doctype",
             "linked_reference_name",
         ],
@@ -84,7 +84,7 @@ def _conversations(filters):
 
 @frappe.whitelist()
 def find_chats(reference_doctype, reference_name):
-    if reference_doctype not in {"Lead", "Customer", "CRM Lead"}:
+    if reference_doctype not in {"Lead", "Customer", "Lead"}:
         frappe.throw(_("Select a Lead or Customer record."))
     doc = frappe.get_doc(reference_doctype, reference_name)
     doc.check_permission("read")
@@ -101,8 +101,8 @@ def find_chats(reference_doctype, reference_name):
             }
         ):
             matches[row.name] = row
-        if doctype == "CRM Lead":
-            for row in _conversations({"linked_crm_lead": ["in", names]}):
+        if doctype == "Lead":
+            for row in _conversations({"linked_lead": ["in", names]}):
                 matches[row.name] = row
     if not matches:
         phones = set().union(*(_phones(record) for record in related))

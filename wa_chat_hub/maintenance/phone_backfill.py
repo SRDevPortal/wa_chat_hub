@@ -8,7 +8,7 @@ from frappe.utils import cint
 from wa_chat_hub.phone_normalization import canonical_phone, last10
 
 
-SUPPORTED_DOCTYPES = ("CRM Lead", "Lead", "Customer")
+SUPPORTED_DOCTYPES = ("Lead", "Lead", "Customer")
 SOURCE_FIELDS = ("mobile_no", "mobile", "phone", "custom_whatsapp_number")
 TARGET_FIELDS = (
     "vobiz_normalized_phone",
@@ -25,7 +25,7 @@ TARGET_SOURCE_FIELDS = {
     "sr_mobile_norm": ("mobile_no", "mobile"),
 }
 PROGRESS_PREFIX = "wa_chat_hub_phone_backfill_last_name"
-BACKGROUND_BACKFILL_DOCTYPES = ("CRM Lead", "Customer", "Lead")
+BACKGROUND_BACKFILL_DOCTYPES = ("Lead", "Customer")
 BACKGROUND_BACKFILL_JOB_ID = "wa_chat_hub_indexed_phone_backfill"
 
 
@@ -74,7 +74,7 @@ def sync_phone_keys(doc, method=None) -> None:
 
 @frappe.whitelist()
 def backfill_phone_keys(
-    doctype: str = "CRM Lead",
+    doctype: str = "Lead",
     batch_size: int = 2000,
     max_batches: int = 10,
     dry_run: bool = False,
@@ -212,7 +212,7 @@ def run_indexed_phone_backfill(doctype_index: int = 0) -> dict[str, Any]:
 
 
 @frappe.whitelist()
-def reset_phone_backfill(doctype: str = "CRM Lead") -> dict[str, Any]:
+def reset_phone_backfill(doctype: str = "Lead") -> dict[str, Any]:
     frappe.only_for("System Manager")
     if doctype not in SUPPORTED_DOCTYPES:
         frappe.throw(f"Unsupported phone backfill doctype: {doctype}")
@@ -222,7 +222,7 @@ def reset_phone_backfill(doctype: str = "CRM Lead") -> dict[str, Any]:
 
 
 @frappe.whitelist()
-def phone_key_coverage(doctype: str = "CRM Lead") -> dict[str, Any]:
+def phone_key_coverage(doctype: str = "Lead") -> dict[str, Any]:
     """Report missing normalized keys without scanning raw payload columns."""
     frappe.only_for("System Manager")
     if doctype not in SUPPORTED_DOCTYPES:

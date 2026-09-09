@@ -38,7 +38,7 @@ def _conversation(**overrides):
         "linked_patient": "PAT-001",
         "linked_reference_doctype": "Patient",
         "linked_reference_name": "PAT-001",
-        "linked_crm_lead": "CRM-001",
+        "linked_lead": "CRM-001",
         "party_type": "Patient",
         "identity_status": "Matched",
         "medical_department": "Neurology",
@@ -178,7 +178,7 @@ class TestAgentRouter(TestCase):
         route = resolve_agent_route(
             _conversation(
                 linked_patient=None,
-                linked_reference_doctype="CRM Lead",
+                linked_reference_doctype="Lead",
                 linked_reference_name="CRM-001",
                 identity_status="Ambiguous",
             )

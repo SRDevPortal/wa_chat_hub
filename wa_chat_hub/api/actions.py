@@ -74,8 +74,8 @@ def create_lead_from_conversation():
             "linked_reference_doctype": "Lead",
             "linked_reference_name": lead_name,
         }
-        if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
-            conversation_updates["linked_crm_lead"] = None
+        if frappe.get_meta("Chat Conversation").has_field("linked_lead"):
+            conversation_updates["linked_lead"] = lead_name
         frappe.db.set_value("Chat Conversation", conversation, conversation_updates, update_modified=False)
         for fieldname, value in conversation_updates.items():
             setattr(convo, fieldname, value)
@@ -90,15 +90,15 @@ def create_lead_from_conversation():
 
 @frappe.whitelist(methods=["POST"])
 def create_crm_lead_from_conversation():
-    """Create or reuse one CRM Lead and link it to the current conversation in place."""
+    """Create or reuse one Lead and link it to the current conversation in place."""
     payload = _load_payload()
     conversation = payload.get("conversation")
     if not conversation:
         frappe.throw(_("conversation is required"))
 
     ensure_can_read_conversation(conversation)
-    if not safe_ai_exists("DocType", "CRM Lead"):
-        frappe.throw(_("CRM Lead is not installed."))
+    if not safe_ai_exists("DocType", "Lead"):
+        frappe.throw(_("Lead is not installed."))
 
     with conversation_update_lock(conversation):
         convo = frappe.get_doc("Chat Conversation", conversation)
@@ -113,7 +113,7 @@ def create_crm_lead_from_conversation():
             lead_name = _find_primary_crm_lead_by_phone(phone_number)
         if not lead_name:
             lead_name = _create_lead_for_inbound(
-                doctype="CRM Lead",
+                doctype="Lead",
                 phone_number=phone_number,
                 display_name=payload.get("lead_name") or contact.display_name or phone_number,
                 channel_account=convo.channel_account,
@@ -122,23 +122,23 @@ def create_crm_lead_from_conversation():
         if not lead_name:
             frappe.throw(
                 _(
-                    "CRM Lead could not be created. Verify the Channel Account pipeline mapping "
-                    "and CRM Lead required fields."
+                    "Lead could not be created. Verify the Channel Account pipeline mapping "
+                    "and Lead required fields."
                 )
             )
 
-        contact_updates = {"source_doctype": "CRM Lead", "source_name": lead_name}
+        contact_updates = {"source_doctype": "Lead", "source_name": lead_name}
         if frappe.get_meta("Chat Contact").has_field("linked_lead"):
-            contact_updates["linked_lead"] = None
+            contact_updates["linked_lead"] = lead_name
         frappe.db.set_value("Chat Contact", contact.name, contact_updates, update_modified=False)
 
         set_conversation_crm_lead(convo, lead_name)
         conversation_updates = {
-            "linked_reference_doctype": "CRM Lead",
+            "linked_reference_doctype": "Lead",
             "linked_reference_name": lead_name,
         }
-        if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
-            conversation_updates["linked_crm_lead"] = lead_name
+        if frappe.get_meta("Chat Conversation").has_field("linked_lead"):
+            conversation_updates["linked_lead"] = lead_name
         frappe.db.set_value(
             "Chat Conversation", conversation, conversation_updates, update_modified=False
         )
@@ -149,7 +149,7 @@ def create_crm_lead_from_conversation():
 
     return {
         "success": True,
-        "result": {"doctype": "CRM Lead", "name": lead_name, "created": created},
+        "result": {"doctype": "Lead", "name": lead_name, "created": created},
     }
 
 

@@ -1,4 +1,4 @@
-"""Sync Interakt / CTWA attribution from Chat Conversation to CRM Lead Meta Details."""
+"""Sync Interakt / CTWA attribution from Chat Conversation to Lead Meta Details."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def sync_crm_lead_meta_from_conversation(
     lead_name: str | None = None,
 ) -> Dict[str, Any]:
     """
-    Copy WhatsApp ad attribution onto linked CRM Lead (sr_w_* Meta Details fields).
+    Copy WhatsApp ad attribution onto linked Lead (sr_w_* Meta Details fields).
     Only fills empty lead fields unless force=True.
     """
     if isinstance(conversation, str):
@@ -43,9 +43,9 @@ def sync_crm_lead_meta_from_conversation(
 
     lead_name = lead_name or get_conversation_crm_lead(convo)
     if not lead_name:
-        return {"updated": False, "reason": "no_linked_crm_lead"}
+        return {"updated": False, "reason": "no_linked_lead"}
 
-    lead_meta = frappe.get_meta("CRM Lead")
+    lead_meta = frappe.get_meta("Lead")
     if not lead_meta.has_field("sr_w_source_id"):
         return {"updated": False, "reason": "crm_lead_meta_fields_missing"}
 
@@ -54,7 +54,7 @@ def sync_crm_lead_meta_from_conversation(
         return {"updated": False, "reason": "no_attribution_data", "lead": lead_name}
 
     existing = safe_ai_get_value(
-        "CRM Lead",
+        "Lead",
         lead_name,
         list(CONVERSATION_TO_LEAD.values()),
         as_dict=True,
@@ -71,7 +71,7 @@ def sync_crm_lead_meta_from_conversation(
     if not updates:
         return {"updated": False, "reason": "lead_already_has_meta", "lead": lead_name}
 
-    safe_ai_set_value("CRM Lead", lead_name, updates, update_modified=True)
+    safe_ai_set_value("Lead", lead_name, updates, update_modified=True)
     return {"updated": True, "lead": lead_name, "fields": updates}
 
 
@@ -100,18 +100,18 @@ def _coerce_payload_dict(raw_payload: Any) -> Dict[str, Any]:
 
 
 def backfill_all_linked_leads() -> Dict[str, int]:
-    """bench execute helper: copy conversation attribution to CRM Leads."""
+    """bench execute helper: copy conversation attribution to Leads."""
     if not safe_ai_exists("DocType", "Chat Conversation"):
         return {"updated": 0, "skipped": 0}
 
     meta = frappe.get_meta("Chat Conversation")
     filters = {"status": ["!=", "Closed"]}
     fields = ["name"]
-    if meta.has_field("linked_crm_lead"):
-        filters["linked_crm_lead"] = ["is", "set"]
-        fields.append("linked_crm_lead")
+    if meta.has_field("linked_lead"):
+        filters["linked_lead"] = ["is", "set"]
+        fields.append("linked_lead")
     else:
-        filters["linked_reference_doctype"] = "CRM Lead"
+        filters["linked_reference_doctype"] = "Lead"
         filters["linked_reference_name"] = ["is", "set"]
         fields.extend(["linked_reference_doctype", "linked_reference_name"])
 

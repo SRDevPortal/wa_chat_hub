@@ -53,7 +53,7 @@ class TestConfiguredEncounterMCP(TestCase):
             linked_reference_doctype=None,
             linked_reference_name=None,
             contact="919000000001",
-            linked_crm_lead=None,
+            linked_lead=None,
             department=None,
         )
         patient_doc = Mock()
@@ -177,7 +177,7 @@ class TestConfiguredEncounterMCP(TestCase):
             link_name="PAT-DELETED",
         )
         other_link = SimpleNamespace(
-            link_doctype="CRM Lead",
+            link_doctype="Lead",
             link_name="LEAD-1",
         )
         doc = Mock()
@@ -218,13 +218,13 @@ class TestConfiguredEncounterMCP(TestCase):
         doc.append.assert_not_called()
         doc.save.assert_not_called()
 
-    def test_linked_crm_lead_mobile_precedes_chat_contact_number(self):
+    def test_linked_lead_mobile_precedes_chat_contact_number(self):
         convo = SimpleNamespace(
             linked_patient=None,
             linked_reference_doctype=None,
             linked_reference_name=None,
             contact="CHAT-CONTACT-1",
-            linked_crm_lead="LEAD-1",
+            linked_lead="LEAD-1",
             department=None,
         )
         lead_values = {
@@ -243,7 +243,7 @@ class TestConfiguredEncounterMCP(TestCase):
             patch(
                 "wa_chat_hub.mcp.configured.frappe.db.exists",
                 side_effect=lambda doctype, _name: doctype
-                in {"Chat Contact", "CRM Lead"},
+                in {"Chat Contact", "Lead"},
             ),
             patch(
                 "wa_chat_hub.mcp.configured.frappe.db.get_value",

@@ -97,7 +97,7 @@ class TestReferenceChat(TestCase):
         with self.assertRaises(frappe.PermissionError):
             find_chats("Lead", self.lead.name)
 
-    def test_sales_user_reads_erp_chat_without_crm_id_collision(self):
+    def test_assigned_sales_user_reads_erp_chat(self):
         user = self.insert(
             "User",
             name=self.prefix + "@example.invalid",
@@ -114,6 +114,7 @@ class TestReferenceChat(TestCase):
             role="Sales User",
         )
         chat = self.conversation()
+        frappe.db.set_value("Lead", self.lead.name, "lead_owner", user.name)
         frappe.set_user(user.name)
         # Force the restricted branch so this exercises SQL and document permissions.
         with patch(

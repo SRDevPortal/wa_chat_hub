@@ -19,7 +19,7 @@
   "last_message_time",
   "unread_count",
   "ai_summary",
-  "linked_crm_lead",
+  "linked_lead",
   "party_type",
   "identity_status",
   "agent_profile",
@@ -150,10 +150,10 @@
    "label": "AI Summary"
   },
   {
-   "fieldname": "linked_crm_lead",
+   "fieldname": "linked_lead",
    "fieldtype": "Link",
-   "label": "CRM Lead",
-   "options": "CRM Lead"
+   "label": "Lead",
+   "options": "Lead"
   },
   {
    "default": "Unknown",

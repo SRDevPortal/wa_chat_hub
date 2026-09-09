@@ -65,7 +65,7 @@ wa_chat_hub.notifications = {
     count_refresh_interval_ms: 60000,
     categories: [
         { key: "all", label: "All" },
-        { key: "crm_leads", label: "CRM Leads" },
+        { key: "crm_leads", label: "Leads" },
         { key: "customers", label: "Customers" },
         { key: "ai_replies", label: "AI Replies" },
     ],
@@ -293,9 +293,9 @@ wa_chat_hub.notifications = {
         if (row.direction === 'Outbound' && row.sender_type === 'AI') {
             return '<span class="badge badge-info" style="font-size:10px;">AI</span>';
         }
-        const ref = row.linked_crm_lead || row.linked_reference_doctype || '';
+        const ref = row.linked_lead || row.linked_reference_doctype || '';
         if (!ref) return '';
-        const label = row.linked_crm_lead ? 'CRM' : row.linked_reference_doctype;
+        const label = row.linked_lead ? 'CRM' : row.linked_reference_doctype;
         return `<span class="badge badge-light" style="font-size:10px;">${wa_chat_hub.notifications.escape(label)}</span>`;
     },
 

@@ -105,7 +105,7 @@ def reconcile_conversation_identity(
     matched_status = str(statuses.get("matched") or "").strip()
     unverified_status = str(statuses.get("unverified") or "").strip()
     lead_party_type = str(
-        party_types.get("CRM Lead") or party_types.get("Lead") or ""
+        party_types.get("Lead") or party_types.get("Lead") or ""
     ).strip()
     customer_party_type = str(party_types.get("Customer") or "").strip()
     unknown_party_type = str(routing_policy.get("unknown_party_type") or "").strip()
@@ -114,9 +114,9 @@ def reconcile_conversation_identity(
     meta = frappe.get_meta("Chat Conversation")
     values: dict[str, Any] = {"last_identity_sync_at": now_datetime()}
 
-    if getattr(convo, "linked_crm_lead", None):
+    if getattr(convo, "linked_lead", None):
         values.update({"party_type": lead_party_type, "identity_status": matched_status})
-    elif getattr(convo, "linked_reference_doctype", None) in ("CRM Lead", "Lead"):
+    elif getattr(convo, "linked_reference_doctype", None) in ("Lead",):
         values.update({"party_type": lead_party_type, "identity_status": matched_status})
     elif getattr(convo, "linked_reference_doctype", None) == "Customer":
         values.update({"party_type": customer_party_type or "Customer", "identity_status": matched_status})
@@ -151,7 +151,7 @@ def reconcile_patient_encounter(doc, method=None) -> None:
         return
     filters = []
     if lead:
-        filters.append({"linked_crm_lead": lead})
+        filters.append({"linked_lead": lead})
     if frappe.get_meta("Chat Conversation").has_field("linked_patient"):
         filters.append({"linked_patient": patient})
     filters.append({"linked_reference_doctype": "Patient", "linked_reference_name": patient})
@@ -194,7 +194,7 @@ def verify_patient_identity_from_inbound_message(
             "patient": getattr(convo, "linked_patient", None),
         }
 
-    patient, _ = _trusted_patient(convo, None, getattr(convo, "linked_crm_lead", None))
+    patient, _ = _trusted_patient(convo, None, getattr(convo, "linked_lead", None))
     if not patient:
         return {"verified": False, "reason": "linked_patient_missing"}
 
@@ -264,7 +264,7 @@ def verify_patient_identity_by_agent(
     linked_patient, _source = _trusted_patient(
         convo,
         None,
-        getattr(convo, "linked_crm_lead", None),
+        getattr(convo, "linked_lead", None),
     )
     if not linked_patient or linked_patient != patient:
         frappe.throw(
@@ -363,9 +363,9 @@ def _trusted_patient(convo, patient: str | None, crm_lead: str | None) -> tuple[
         contact_patient = frappe.db.get_value("Chat Contact", convo.contact, "linked_patient")
         if contact_patient and frappe.db.exists("Patient", contact_patient):
             return contact_patient, "contact"
-    lead = crm_lead or getattr(convo, "linked_crm_lead", None)
-    if lead and frappe.db.exists("CRM Lead", lead) and frappe.get_meta("CRM Lead").has_field("sr_source_patient"):
-        source_patient = frappe.db.get_value("CRM Lead", lead, "sr_source_patient")
+    lead = crm_lead or getattr(convo, "linked_lead", None)
+    if lead and frappe.db.exists("Lead", lead) and frappe.get_meta("Lead").has_field("sr_source_patient"):
+        source_patient = frappe.db.get_value("Lead", lead, "sr_source_patient")
         if source_patient and frappe.db.exists("Patient", source_patient):
             return source_patient, "crm_lead_conversion"
     return None, None

@@ -24,9 +24,9 @@ ERROR_CATEGORIES = {
             "WA Chat Hub Inbound Lead Create Failed",
             "WA Chat Hub Inbound Lead Skipped",
             "WA Chat Hub Inbound Link Failed",
-            "CRM Lead Meta Sync On Link Failed",
+            "Lead Meta Sync On Link Failed",
         ),
-        "suggestion": "Check CRM Lead required fields, pipeline map, platform/source masters, and lead permissions.",
+        "suggestion": "Check Lead required fields, pipeline map, platform/source masters, and lead permissions.",
     },
     "outbound": {
         "label": "Outbound Send",
@@ -263,7 +263,7 @@ def _related_records(event: Dict[str, Any]) -> Dict[str, Any]:
         contact = frappe.db.get_value("Chat Conversation", conversation, "contact")
         if contact:
             related["contact"] = contact
-        lead = frappe.db.get_value("Chat Conversation", conversation, "linked_crm_lead")
+        lead = frappe.db.get_value("Chat Conversation", conversation, "linked_lead")
         if lead:
             related["crm_lead"] = lead
 

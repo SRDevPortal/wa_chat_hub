@@ -1,7 +1,7 @@
-frappe.listview_settings["CRM Lead"] = frappe.listview_settings["CRM Lead"] || {};
+frappe.listview_settings["Lead"] = frappe.listview_settings["Lead"] || {};
 
 (function () {
-    const base = frappe.listview_settings["CRM Lead"];
+    const base = frappe.listview_settings["Lead"];
     const priorOnload = base.onload;
 
     base.add_fields = Array.from(
@@ -15,7 +15,7 @@ frappe.listview_settings["CRM Lead"] = frappe.listview_settings["CRM Lead"] || {
         listview.page.add_action_item(__("Open Chat"), function () {
             const names = listview.get_checked_items(true);
             if (!names.length) {
-                frappe.msgprint(__("Select one CRM Lead row first."));
+                frappe.msgprint(__("Select one Lead row first."));
                 return;
             }
             const leadName = names[0];
@@ -42,7 +42,7 @@ frappe.listview_settings["CRM Lead"] = frappe.listview_settings["CRM Lead"] || {
         frappe.call({
             method: "wa_chat_hub.api.chat.resolve_chat_for_reference",
             args: {
-                reference_doctype: "CRM Lead",
+                reference_doctype: "Lead",
                 reference_name: leadName,
                 phone_number: phone || "",
             },
@@ -54,7 +54,7 @@ frappe.listview_settings["CRM Lead"] = frappe.listview_settings["CRM Lead"] || {
                     return;
                 }
                 frappe.route_options = {
-                    linked_crm_lead: leadName,
+                    linked_lead: leadName,
                 };
                 frappe.set_route("List", "Chat Conversation");
             },

@@ -52,7 +52,7 @@ TEST_POLICY = PolicyBundle(
             "unknown_party_type": "Unknown",
             "party_type_by_reference_doctype": {
                 "Patient": "Patient",
-                "CRM Lead": "Lead",
+                "Lead": "Lead",
                 "Lead": "Lead",
                 "Customer": "Customer",
             },

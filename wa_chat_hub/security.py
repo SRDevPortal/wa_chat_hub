@@ -46,11 +46,10 @@ DEFAULT_AI_DOCTYPE_PERMISSIONS = (
     ("File", 1, 1, 0, "Read/write media attachments managed by WA Chat Hub."),
     ("Customer", 1, 0, 0, "Read customer phone/name for WhatsApp contact sync."),
     ("Lead", 1, 1, 0, "Read/update leads linked to WhatsApp conversations."),
-    ("CRM Lead", 1, 1, 0, "Read/create/update CRM leads linked to WhatsApp conversations."),
-    ("CRM Note", 1, 0, 0, "Read notes belonging to CRM Leads linked to WhatsApp conversations."),
+    ("Lead", 1, 1, 0, "Read/create/update CRM leads linked to WhatsApp conversations."),
+    ("CRM Note", 1, 0, 0, "Read notes belonging to Leads linked to WhatsApp conversations."),
     ("Sales Invoice", 1, 0, 0, "Read invoices linked to ShipKia customer accounts when configured."),
-    ("CRM Lead Status", 1, 0, 0, "Read default CRM lead status for inbound lead creation."),
-    ("CRM Lead Source", 1, 1, 0, "Resolve/create CRM lead source values such as WhatsApp."),
+    ("Lead Source", 1, 1, 0, "Resolve/create CRM lead source values such as WhatsApp."),
     ("Lead Source", 1, 1, 0, "Resolve/create fallback Lead source values such as WhatsApp."),
     ("SR Lead Source", 1, 1, 0, "Resolve/create SR lead source values mapped from WhatsApp channels."),
     ("SR Lead Pipeline", 1, 0, 0, "Read pipeline links for inbound CRM lead routing."),
@@ -201,6 +200,7 @@ def ensure_default_ai_doctype_permissions() -> int:
                 "notes": notes,
             },
         )
+        existing.add(doctype)
         added += 1
     if added:
         settings.flags.ignore_links = True

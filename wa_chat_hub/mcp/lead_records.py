@@ -60,19 +60,19 @@ CRM_NOTE_FIELDS = (
 )
 
 
-def get_linked_crm_lead_profile(
+def get_linked_lead_profile(
     *, conversation: str, include_notes: int = 1, limit: int = 5
 ) -> dict[str, Any]:
-    """Return allowlisted CRM Lead details only for the lead linked to this chat."""
+    """Return allowlisted Lead details only for the lead linked to this chat."""
     conversation = str(conversation or "").strip()
     if not conversation:
         frappe.throw(_("Conversation context is required."), frappe.PermissionError)
 
     lead_name = get_conversation_crm_lead(conversation)
     if not lead_name:
-        frappe.throw(_("No CRM Lead is linked to this conversation."), frappe.PermissionError)
+        frappe.throw(_("No Lead is linked to this conversation."), frappe.PermissionError)
 
-    lead = safe_ai_get_doc("CRM Lead", lead_name)
+    lead = safe_ai_get_doc("Lead", lead_name)
     result: dict[str, Any] = {
         "conversation": conversation,
         "crm_lead": _allowlisted_doc(lead, CRM_LEAD_FIELDS),
@@ -82,7 +82,7 @@ def get_linked_crm_lead_profile(
         note_fields = _existing_fields("CRM Note", CRM_NOTE_FIELDS)
         notes = safe_ai_get_all(
             "CRM Note",
-            filters={"parent": lead_name, "parenttype": "CRM Lead"},
+            filters={"parent": lead_name, "parenttype": "Lead"},
             fields=note_fields,
             order_by="idx desc, modified desc",
             limit_page_length=_safe_limit(limit),

@@ -74,7 +74,7 @@
   },
   {
    "depends_on": "eval:doc.allow_mcp_tools",
-   "description": "Comma or newline separated WA MCP Tool Endpoint tool_name values, for example get_linked_crm_lead_profile.",
+   "description": "Comma or newline separated WA MCP Tool Endpoint tool_name values, for example get_linked_lead_profile.",
    "fieldname": "mcp_tool_names",
    "fieldtype": "Small Text",
    "label": "Allowed MCP Tool Names"

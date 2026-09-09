@@ -108,7 +108,7 @@
   },
   {
    "depends_on": "eval:doc.channel_type == 'Interakt'",
-   "description": "CRM Lead pipelines that use this Interakt account when an agent starts a new WhatsApp conversation.",
+   "description": "Lead pipelines that use this Interakt account when an agent starts a new WhatsApp conversation.",
    "fieldname": "outbound_pipelines",
    "fieldtype": "Table",
    "label": "Pipelines",

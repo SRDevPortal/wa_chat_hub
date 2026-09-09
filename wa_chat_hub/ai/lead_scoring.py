@@ -286,19 +286,22 @@ def sync_to_linked_lead(conversation: str, result: ScoreResult | None = None) ->
 
 
 def _get_conversation_linked_leads(convo) -> list[Tuple[str, str]]:
-    """Return every Lead/CRM Lead linked to the chat, without duplicates."""
+    """Prefer the conversation's canonical Lead; contact links are fallback only."""
     linked: list[Tuple[str, str]] = []
 
     def add(doctype: str | None, name: str | None) -> None:
         target = (str(doctype or "").strip(), str(name or "").strip())
-        if target[0] in {"Lead", "CRM Lead"} and target[1] and target not in linked:
+        if target[0] in {"Lead"} and target[1] and target not in linked:
             linked.append(target)
 
     add(
         getattr(convo, "linked_reference_doctype", None),
         getattr(convo, "linked_reference_name", None),
     )
-    add("CRM Lead", get_conversation_crm_lead(convo))
+    add("Lead", get_conversation_crm_lead(convo))
+
+    if linked:
+        return linked[:1]
 
     contact_name = str(getattr(convo, "contact", "") or "").strip()
     if contact_name and safe_ai_exists("Chat Contact", contact_name):
@@ -306,7 +309,7 @@ def _get_conversation_linked_leads(convo) -> list[Tuple[str, str]]:
         add(getattr(contact, "source_doctype", None), getattr(contact, "source_name", None))
         add("Lead", getattr(contact, "linked_lead", None))
 
-    return linked
+    return linked[:1]
 
 
 def _get_conversation_linked_lead(convo) -> Tuple[str, str] | None:

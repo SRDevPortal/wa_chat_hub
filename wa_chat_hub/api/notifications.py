@@ -62,10 +62,10 @@ def _category_condition(category, conv_alias="c", msg_alias="m"):
 
     if category == "crm_leads":
         lead_conditions = []
-        if _has_column("Chat Conversation", "linked_crm_lead"):
-            lead_conditions.append(f"IFNULL({conv_alias}.linked_crm_lead, '') != ''")
+        if _has_column("Chat Conversation", "linked_lead"):
+            lead_conditions.append(f"IFNULL({conv_alias}.linked_lead, '') != ''")
         if _has_column("Chat Conversation", "linked_reference_doctype"):
-            lead_conditions.append(f"{conv_alias}.linked_reference_doctype in ('CRM Lead', 'Lead')")
+            lead_conditions.append(f"{conv_alias}.linked_reference_doctype in ('Lead')")
         conditions.append("(" + " or ".join(lead_conditions or ["1 = 0"]) + ")")
     elif category == "customers":
         if _has_column("Chat Conversation", "linked_reference_doctype"):
@@ -94,10 +94,10 @@ def _unread_count_for_category(category=None):
 
     if category == "crm_leads":
         lead_conditions = []
-        if _has_column("Chat Conversation", "linked_crm_lead"):
-            lead_conditions.append("IFNULL(c.linked_crm_lead, '') != ''")
+        if _has_column("Chat Conversation", "linked_lead"):
+            lead_conditions.append("IFNULL(c.linked_lead, '') != ''")
         if _has_column("Chat Conversation", "linked_reference_doctype"):
-            lead_conditions.append("c.linked_reference_doctype in ('CRM Lead', 'Lead')")
+            lead_conditions.append("c.linked_reference_doctype in ('Lead')")
         conditions.append("(" + " or ".join(lead_conditions or ["1 = 0"]) + ")")
     elif category == "customers":
         if _has_column("Chat Conversation", "linked_reference_doctype"):
@@ -124,14 +124,14 @@ def _unread_counts_by_category():
     crm_condition = "1 = 0"
     customer_condition = "1 = 0"
 
-    if _has_column("Chat Conversation", "linked_crm_lead") or _has_column(
+    if _has_column("Chat Conversation", "linked_lead") or _has_column(
         "Chat Conversation", "linked_reference_doctype"
     ):
         lead_conditions = []
-        if _has_column("Chat Conversation", "linked_crm_lead"):
-            lead_conditions.append("IFNULL(c.linked_crm_lead, '') != ''")
+        if _has_column("Chat Conversation", "linked_lead"):
+            lead_conditions.append("IFNULL(c.linked_lead, '') != ''")
         if _has_column("Chat Conversation", "linked_reference_doctype"):
-            lead_conditions.append("c.linked_reference_doctype in ('CRM Lead', 'Lead')")
+            lead_conditions.append("c.linked_reference_doctype in ('Lead')")
         crm_condition = "(" + " or ".join(lead_conditions or ["1 = 0"]) + ")"
 
     if _has_column("Chat Conversation", "linked_reference_doctype"):
@@ -276,10 +276,10 @@ def get_recent_notifications(category="all", limit=10):
             fields.extend(["c.linked_reference_doctype", "c.linked_reference_name"])
         else:
             fields.extend(["'' as linked_reference_doctype", "'' as linked_reference_name"])
-        if _has_column("Chat Conversation", "linked_crm_lead"):
-            fields.append("c.linked_crm_lead")
+        if _has_column("Chat Conversation", "linked_lead"):
+            fields.append("c.linked_lead")
         else:
-            fields.append("'' as linked_crm_lead")
+            fields.append("'' as linked_lead")
 
         rows = frappe.db.sql(
             f"""

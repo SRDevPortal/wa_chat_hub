@@ -1,4 +1,4 @@
-for (const doctype of ["Lead", "Customer", "CRM Lead"]) {
+for (const doctype of ["Lead", "Customer"]) {
     frappe.ui.form.on(doctype, {
         refresh(frm) {
             if (frm.is_new()) return;

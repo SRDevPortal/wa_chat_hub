@@ -504,7 +504,7 @@ def _prefill_context(conversation: str) -> dict[str, Any]:
     row = safe_ai_get_value(
         "Chat Conversation",
         conversation,
-        ["contact", "linked_crm_lead", "linked_reference_doctype", "linked_reference_name"],
+        ["contact", "linked_lead", "linked_reference_doctype", "linked_reference_name"],
         as_dict=True,
     )
     context = dict(row or {})

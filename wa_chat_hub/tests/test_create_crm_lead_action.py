@@ -15,7 +15,7 @@ class TestCreateCRMLeadAction(TestCase):
             name="CONV-001",
             contact="CONTACT-001",
             channel_account="ACCOUNT-001",
-            linked_crm_lead=None,
+            linked_lead=None,
             linked_reference_doctype=None,
             linked_reference_name=None,
         )
@@ -79,7 +79,7 @@ class TestCreateCRMLeadAction(TestCase):
 
         self.assertTrue(result["result"]["created"])
         create_lead.assert_called_once_with(
-            doctype="CRM Lead",
+            doctype="Lead",
             phone_number="919999999999",
             display_name="New Contact",
             channel_account="ACCOUNT-001",

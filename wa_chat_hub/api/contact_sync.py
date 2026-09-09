@@ -31,9 +31,9 @@ def push_patient_to_interakt(patient: str):
 
 @frappe.whitelist()
 def push_crm_lead_to_interakt(lead: str):
-    if not lead or not frappe.db.exists("CRM Lead", lead):
-        frappe.throw(_("CRM Lead not found"))
-    result = push_reference_to_interakt(frappe.get_doc("CRM Lead", lead))
+    if not lead or not frappe.db.exists("Lead", lead):
+        frappe.throw(_("Lead not found"))
+    result = push_reference_to_interakt(frappe.get_doc("Lead", lead))
     return {"success": True, "result": result}
 
 

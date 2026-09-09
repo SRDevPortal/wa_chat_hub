@@ -77,7 +77,7 @@ def _indexed_phone_lookup_enabled() -> bool:
 
 @contextmanager
 def _crm_lead_field_guard_bypass(enabled: bool = True):
-    """Temporarily allow trusted WA automation through CRM Lead field guards."""
+    """Temporarily allow trusted WA automation through Lead field guards."""
     previous = getattr(frappe.flags, "sr_bypass_field_guard", False)
     if enabled:
         frappe.flags.sr_bypass_field_guard = True
@@ -625,7 +625,7 @@ def _run_append_message_followups(payload: Dict[str, Any], result: Dict[str, str
                 payload=payload,
             )
         except Exception:
-            frappe.log_error(frappe.get_traceback(), "CRM Lead Attachment Sync Failed")
+            frappe.log_error(frappe.get_traceback(), "Lead Attachment Sync Failed")
         content_type = str(payload.get("content_type") or "").title()
         try:
             _enqueue_inbound_media_lead_summary(
@@ -645,7 +645,7 @@ def _run_append_message_followups(payload: Dict[str, Any], result: Dict[str, str
                 payload=payload,
             )
         except Exception:
-            frappe.log_error(frappe.get_traceback(), "CRM Lead Outbound Attachment Sync Failed")
+            frappe.log_error(frappe.get_traceback(), "Lead Outbound Attachment Sync Failed")
     if direction == "Inbound" and not (
         getattr(frappe.flags, "wa_ai_outbound_reply", False)
         or getattr(frappe.local, "wa_ai_outbound_reply", False)
@@ -1098,7 +1098,7 @@ def _link_or_create_master_record(
     if (
         ref_dt
         and ref_name
-        and ref_dt not in {"CRM Lead", "Lead"}
+        and ref_dt not in {"Lead"}
         and routing_policy.get("preserve_existing_reference")
     ):
         if ref_dt == "Patient":
@@ -1130,8 +1130,8 @@ def _link_or_create_master_record(
             candidates["Customer"] = customer_name
 
     existing_crm_lead = get_conversation_crm_lead(convo)
-    if "CRM Lead" in priority and existing_crm_lead and safe_ai_exists("CRM Lead", existing_crm_lead):
-        candidates["CRM Lead"] = existing_crm_lead
+    if "Lead" in priority and existing_crm_lead and safe_ai_exists("Lead", existing_crm_lead):
+        candidates["Lead"] = existing_crm_lead
     indexed_lead = _find_existing_lead_by_phone(phone_number)
     if indexed_lead and indexed_lead[0] in priority:
         candidates[indexed_lead[0]] = indexed_lead[1]
@@ -1161,17 +1161,17 @@ def _link_or_create_master_record(
             {"linked_reference_doctype": selected_type, "linked_reference_name": customer_name},
         )
         return
-    if ref_dt and ref_name and ref_dt not in {"CRM Lead", "Lead"}:
+    if ref_dt and ref_name and ref_dt not in {"Lead"}:
         return
 
     existing_lead = (
         (selected_type, candidates[selected_type])
-        if selected_type in {"CRM Lead", "Lead"}
+        if selected_type in {"Lead"}
         else None
     )
     if not policy and not existing_lead:
         existing_lead = (
-            ("CRM Lead", existing_crm_lead) if existing_crm_lead else indexed_lead
+            ("Lead", existing_crm_lead) if existing_crm_lead else indexed_lead
         )
     existing_doctype, existing_name = existing_lead or (None, None)
     lead_pair = _ensure_inbound_lead_pair(
@@ -1181,56 +1181,19 @@ def _link_or_create_master_record(
         existing_doctype=existing_doctype,
         existing_name=existing_name,
     )
-    erpnext_lead = lead_pair.get("Lead")
-    crm_lead = lead_pair.get("CRM Lead")
-    if not erpnext_lead and not crm_lead:
+    lead_name = lead_pair.get("Lead")
+    if not lead_name:
         return
-
-    # CRM Lead is the canonical chat reference, while linked_lead retains the
-    # matching ERPNext Lead. This keeps the same person visible in both lists.
-    lead_doctype = "CRM Lead" if crm_lead else "Lead"
-    lead_name = crm_lead or erpnext_lead
-    contact_updates = {
-        "linked_lead": erpnext_lead,
-        "source_doctype": lead_doctype,
-        "source_name": lead_name,
-    }
+    contact_updates = {"linked_lead": lead_name, "source_doctype": "Lead", "source_name": lead_name}
     if display_name and not contact.display_name:
         contact_updates["display_name"] = display_name
     _set_contact_fields(contact, contact_updates)
-
-    if crm_lead:
-        set_conversation_crm_lead(convo, crm_lead)
-    else:
-        convo.linked_reference_doctype = "Lead"
-        convo.linked_reference_name = erpnext_lead
-        if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
-            convo.linked_crm_lead = None
-    conversation_updates = {
-        "linked_reference_doctype": convo.linked_reference_doctype,
-        "linked_reference_name": convo.linked_reference_name,
-    }
-    assert_ai_doctype_permission("Chat Conversation", "read")
-    if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
-        conversation_updates["linked_crm_lead"] = getattr(convo, "linked_crm_lead", None)
-
-    _set_conversation_fields(convo, conversation_updates)
-
-    if crm_lead:
-        _finalize_crm_lead_after_inbound(
-            conversation,
-            crm_lead,
-            raw_payload=raw_payload,
-            message_name=message_name,
-            convo=convo,
-        )
-    else:
-        _finalize_lead_after_inbound(
-            conversation,
-            "Lead",
-            erpnext_lead,
-            convo=convo,
-        )
+    _set_conversation_fields(convo, {
+        "linked_lead": lead_name, "linked_reference_doctype": "Lead", "linked_reference_name": lead_name,
+    })
+    _finalize_crm_lead_after_inbound(
+        conversation, lead_name, raw_payload=raw_payload, message_name=message_name, convo=convo,
+    )
 
     try:
         from wa_chat_hub.interakt.contact_sync import enqueue_push_for_conversation
@@ -1284,7 +1247,7 @@ def _link_patient_to_conversation(
         reconcile_conversation_identity(
             conversation,
             patient=patient_name,
-            crm_lead=getattr(convo, "linked_crm_lead", None),
+            crm_lead=getattr(convo, "linked_lead", None),
             source="inbound_phone_match",
         )
         convo.reload()
@@ -1350,7 +1313,7 @@ def _finalize_crm_lead_after_inbound(
     message_name: Optional[str] = None,
     convo=None,
 ) -> None:
-    """Ad attribution → CRM Lead meta tab; lead scoring/OCR fields after link exists."""
+    """Ad attribution → Lead meta tab; lead scoring/OCR fields after link exists."""
     convo = convo or safe_ai_get_doc("Chat Conversation", conversation)
     _sync_crm_lead_pipeline_for_channel(lead_name, getattr(convo, "channel_account", None))
     try:
@@ -1358,7 +1321,7 @@ def _finalize_crm_lead_after_inbound(
 
         sync_crm_lead_meta_from_conversation(convo, raw_payload=raw_payload, force=True, lead_name=lead_name)
     except Exception:
-        frappe.log_error(frappe.get_traceback(), "CRM Lead Meta Sync On Link Failed")
+        frappe.log_error(frappe.get_traceback(), "Lead Meta Sync On Link Failed")
 
     try:
         from wa_chat_hub.lead_ai import auto_update_lead_from_conversation
@@ -1393,11 +1356,11 @@ def _sync_linked_lead_context_after_inbound(conversation: str) -> None:
 
 
 def _sync_crm_lead_pipeline_for_channel(lead_name: str, channel_account: Optional[str]) -> None:
-    """Keep inbound CRM Lead pipeline aligned with the Interakt account that received the chat."""
-    if not lead_name or not channel_account or not safe_ai_exists("CRM Lead", lead_name):
+    """Keep inbound Lead pipeline aligned with the Interakt account that received the chat."""
+    if not lead_name or not channel_account or not safe_ai_exists("Lead", lead_name):
         return
 
-    pipeline_fieldname = _get_lead_pipeline_fieldname("CRM Lead")
+    pipeline_fieldname = _get_lead_pipeline_fieldname("Lead")
     if not pipeline_fieldname:
         return
 
@@ -1405,15 +1368,15 @@ def _sync_crm_lead_pipeline_for_channel(lead_name: str, channel_account: Optiona
     if not pipeline:
         return
 
-    current = safe_ai_get_value("CRM Lead", lead_name, pipeline_fieldname)
+    current = safe_ai_get_value("Lead", lead_name, pipeline_fieldname)
     if current == pipeline:
         return
 
     try:
         with _crm_lead_field_guard_bypass(True):
-            safe_ai_set_value("CRM Lead", lead_name, pipeline_fieldname, pipeline, update_modified=True)
+            safe_ai_set_value("Lead", lead_name, pipeline_fieldname, pipeline, update_modified=True)
     except Exception:
-        frappe.log_error(frappe.get_traceback(), "WA Chat Hub CRM Lead Pipeline Sync Failed")
+        frappe.log_error(frappe.get_traceback(), "WA Chat Hub Lead Pipeline Sync Failed")
 
 
 def _inbound_lead_first_name(display_name: Optional[str], phone_number: str) -> str:
@@ -1460,24 +1423,9 @@ def _default_sr_lead_source_for_channel(channel_account: Optional[str], meta) ->
     return mapped_source
 
 
-def _default_crm_lead_status() -> Optional[str]:
-    try:
-        if not safe_ai_exists("DocType", "CRM Lead Status"):
-            return None
-
-        for status in ("Fresh", "New"):
-            if safe_ai_exists("CRM Lead Status", status):
-                return status
-
-        rows = safe_ai_get_all(
-            "CRM Lead Status",
-            pluck="name",
-            order_by="position asc, modified asc",
-            limit=1,
-        )
-        return rows[0] if rows else None
-    except WAChatHubSecurityError:
-        return None
+def _default_crm_lead_status() -> str:
+    """Compatibility name: ERPNext Lead uses a Select status, not a status DocType."""
+    return "Lead"
 
 
 def _create_lead_for_inbound(
@@ -1501,7 +1449,7 @@ def _create_lead_for_inbound(
         first_name = _inbound_lead_first_name(display_name, phone_number)
 
         if meta.has_field("first_name"):
-            payload["first_name"] = first_name
+            payload["first_name"] = lead_title[:140] if doctype == "Lead" else first_name
         if meta.has_field("lead_name"):
             payload["lead_name"] = lead_title
         if meta.has_field("mobile_no"):
@@ -1517,7 +1465,7 @@ def _create_lead_for_inbound(
             if platform_value:
                 payload["sr_lead_platform"] = platform_value
 
-        if doctype == "CRM Lead":
+        if doctype == "Lead":
             if meta.has_field("status") and not payload.get("status"):
                 payload["status"] = _default_crm_lead_status()
 
@@ -1531,7 +1479,7 @@ def _create_lead_for_inbound(
             elif meta.get_field(pipeline_fieldname) and meta.get_field(pipeline_fieldname).reqd:
                 frappe.log_error(
                     _(
-                        "Skipped CRM Lead for WhatsApp {0}: no WA Channel Pipeline Map for Interakt account {1}. "
+                        "Skipped Lead for WhatsApp {0}: no WA Channel Pipeline Map for Interakt account {1}. "
                         "Add one active row on WA Channel Pipeline Map with the default SR Lead Pipeline for that account."
                     ).format(phone_number, channel_account or _("(unknown)"))
                     + _json_block(WA_LEAD_CONTEXT_MARKER, context)
@@ -1551,7 +1499,7 @@ def _create_lead_for_inbound(
             _delete_stale_contact_lead_links_for_phone(phone_number)
 
         doc = frappe.get_doc(payload)
-        with _crm_lead_field_guard_bypass(doctype == "CRM Lead"):
+        with _crm_lead_field_guard_bypass(doctype == "Lead"):
             safe_ai_insert(doc)
         return doc.name
     except Exception:
@@ -1570,10 +1518,10 @@ def _ensure_inbound_lead_pair(
     existing_doctype: Optional[str] = None,
     existing_name: Optional[str] = None,
 ) -> Dict[str, Optional[str]]:
-    """Create/reuse matching ERPNext Lead and CRM Lead records for one WhatsApp identity."""
+    """Resolve the single ERPNext Lead for a WhatsApp identity."""
     normalized = normalize_phone(phone_number)
     if not normalized:
-        return {"Lead": None, "CRM Lead": None}
+        return {"Lead": None}
     with filelock(
         _record_lock_name("lead_pair", normalized),
         timeout=CONVERSATION_UPDATE_LOCK_TIMEOUT,
@@ -1588,57 +1536,16 @@ def _ensure_inbound_lead_pair(
 
 
 def _ensure_inbound_lead_pair_locked(
-    phone_number: str,
-    display_name: Optional[str],
-    channel_account: Optional[str] = None,
-    *,
-    existing_doctype: Optional[str] = None,
-    existing_name: Optional[str] = None,
+    phone_number: str, display_name: Optional[str], channel_account: Optional[str] = None,
+    *, existing_doctype: Optional[str] = None, existing_name: Optional[str] = None,
 ) -> Dict[str, Optional[str]]:
-    pair: Dict[str, Optional[str]] = {"Lead": None, "CRM Lead": None}
-    if existing_doctype in pair and existing_name:
-        try:
-            if safe_ai_exists(existing_doctype, existing_name):
-                pair[existing_doctype] = existing_name
-        except WAChatHubSecurityError:
-            pass
-
-    try:
-        lead_installed = safe_ai_exists("DocType", "Lead")
-    except WAChatHubSecurityError:
-        lead_installed = False
-    try:
-        crm_lead_installed = safe_ai_exists("DocType", "CRM Lead")
-    except WAChatHubSecurityError:
-        crm_lead_installed = False
-
-    if lead_installed and not pair["Lead"]:
-        pair["Lead"] = _find_by_phone(
-            "Lead",
-            ["mobile_no", "phone", "whatsapp_no", "custom_whatsapp_number"],
-            phone_number,
-        )
-    if crm_lead_installed and not pair["CRM Lead"]:
-        pair["CRM Lead"] = _find_primary_crm_lead_by_phone(phone_number)
-
-    # Create Lead first because its stale Dynamic Link cleanup may inspect both
-    # lead DocTypes. The cleanup preserves links whose target still exists.
-    if lead_installed and not pair["Lead"]:
-        pair["Lead"] = _create_lead_for_inbound(
-            doctype="Lead",
-            phone_number=phone_number,
-            display_name=display_name,
-            channel_account=channel_account,
-        )
-    if crm_lead_installed and not pair["CRM Lead"]:
-        pair["CRM Lead"] = _create_lead_for_inbound(
-            doctype="CRM Lead",
-            phone_number=phone_number,
-            display_name=display_name,
-            channel_account=channel_account,
-        )
-
-    return pair
+    """Compatibility entry point; maintain exactly one ERPNext Lead."""
+    if existing_doctype == "Lead" and existing_name and safe_ai_exists("Lead", existing_name):
+        return {"Lead": existing_name}
+    name = _find_primary_crm_lead_by_phone(phone_number)
+    if not name:
+        name = _create_lead_for_inbound("Lead", phone_number, display_name, channel_account)
+    return {"Lead": name}
 
 
 def _delete_stale_contact_lead_links_for_phone(phone_number: str) -> int:
@@ -1652,7 +1559,7 @@ def _delete_stale_contact_lead_links_for_phone(phone_number: str) -> int:
         FROM `tabDynamic Link` dl
         INNER JOIN `tabContact` c ON c.name = dl.parent
         WHERE dl.parenttype = 'Contact'
-          AND dl.link_doctype IN ('Lead', 'CRM Lead')
+          AND dl.link_doctype IN ('Lead')
           AND (
             COALESCE(c.mobile_no, '') LIKE %(phone_like)s
             OR COALESCE(c.phone, '') LIKE %(phone_like)s
@@ -1824,7 +1731,7 @@ def _find_phone_match_names(doctype: str, phone_fields: list[str], phone_number:
 
 
 def _get_lead_pipeline_fieldname(lead_doctype: str) -> Optional[str]:
-    """Auto-detect first Link field on Lead/CRM Lead targeting SR Lead Pipeline."""
+    """Auto-detect first Link field on Lead/Lead targeting SR Lead Pipeline."""
     try:
         if not safe_ai_exists("DocType", "SR Lead Pipeline"):
             return None
@@ -1842,22 +1749,22 @@ def _preferred_lead_doctype() -> Optional[str]:
     try:
         if safe_ai_exists("DocType", "Lead"):
             return "Lead"
-        if safe_ai_exists("DocType", "CRM Lead"):
-            return "CRM Lead"
+        if safe_ai_exists("DocType", "Lead"):
+            return "Lead"
     except WAChatHubSecurityError:
         return None
     return None
 
 
 def _find_existing_lead_by_phone(phone_number: str) -> Optional[tuple[str, str]]:
-    for doctype in ("Lead", "CRM Lead"):
+    for doctype in ("Lead",):
         try:
             exists = safe_ai_exists("DocType", doctype)
         except WAChatHubSecurityError:
             continue
         if not exists:
             continue
-        if doctype == "CRM Lead":
+        if doctype == "Lead":
             found = _find_primary_crm_lead_by_phone(phone_number)
         else:
             found = _find_by_phone(doctype, ["mobile_no", "phone", "custom_whatsapp_number"], phone_number)
@@ -1874,15 +1781,15 @@ def _find_primary_crm_lead_by_phone(phone_number: str) -> Optional[str]:
         if primary:
             return primary
 
-        found = _find_by_phone("CRM Lead", ["mobile_no", "phone", "custom_whatsapp_number"], phone_number)
+        found = _find_by_phone("Lead", ["mobile_no", "phone", "custom_whatsapp_number"], phone_number)
         return get_primary_lead_name_for_lead(found) if found else None
     except Exception:
-        found = _find_by_phone("CRM Lead", ["mobile_no", "phone", "custom_whatsapp_number"], phone_number)
+        found = _find_by_phone("Lead", ["mobile_no", "phone", "custom_whatsapp_number"], phone_number)
         try:
-            assert_ai_doctype_permission("CRM Lead", "read")
-            if found and frappe.db.has_column("CRM Lead", "sr_duplicate_of_name"):
-                primary = safe_ai_get_value("CRM Lead", found, "sr_duplicate_of_name")
-                if primary and safe_ai_exists("CRM Lead", primary):
+            assert_ai_doctype_permission("Lead", "read")
+            if found and frappe.db.has_column("Lead", "sr_duplicate_of_name"):
+                primary = safe_ai_get_value("Lead", found, "sr_duplicate_of_name")
+                if primary and safe_ai_exists("Lead", primary):
                     return primary
         except WAChatHubSecurityError:
             return found
@@ -1890,46 +1797,15 @@ def _find_primary_crm_lead_by_phone(phone_number: str) -> Optional[str]:
 
 
 def _normalize_existing_lead_link(convo) -> None:
-    """If record points to Lead but name exists in CRM Lead, relink to CRM Lead route."""
-    if getattr(convo, "linked_reference_doctype", None) == "Lead":
-        if getattr(convo, "linked_crm_lead", None) and frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
-            convo.linked_crm_lead = None
-            _set_conversation_fields(convo, {"linked_crm_lead": None})
+    """Synchronize the explicit Lead link without changing non-lead references."""
+    if getattr(convo, "linked_reference_doctype", None) not in (None, "", "Lead"):
         return
-
-    try:
-        if not safe_ai_exists("DocType", "CRM Lead"):
-            return
-    except WAChatHubSecurityError:
-        return
-    lead_name = get_conversation_crm_lead(convo)
-    if lead_name:
-        set_conversation_crm_lead(convo, lead_name)
-        updates = {
-            "linked_reference_doctype": convo.linked_reference_doctype,
-            "linked_reference_name": convo.linked_reference_name,
-        }
-        assert_ai_doctype_permission("Chat Conversation", "read")
-        if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
-            updates["linked_crm_lead"] = getattr(convo, "linked_crm_lead", None)
-        _set_conversation_fields(convo, updates)
-        return
-    if convo.linked_reference_doctype != "Lead" or not convo.linked_reference_name:
-        return
-    try:
-        crm_lead_exists = safe_ai_exists("CRM Lead", convo.linked_reference_name)
-    except WAChatHubSecurityError:
-        return
-    if crm_lead_exists:
-        set_conversation_crm_lead(convo, convo.linked_reference_name)
-        updates = {
-            "linked_reference_doctype": convo.linked_reference_doctype,
-            "linked_reference_name": convo.linked_reference_name,
-        }
-        assert_ai_doctype_permission("Chat Conversation", "read")
-        if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
-            updates["linked_crm_lead"] = getattr(convo, "linked_crm_lead", None)
-        _set_conversation_fields(convo, updates)
+    name = get_conversation_crm_lead(convo)
+    if name:
+        _set_conversation_fields(convo, {
+            "linked_lead": name, "linked_reference_doctype": "Lead",
+            "linked_reference_name": name,
+        })
 
 
 def _sanitize_contact_links(contact) -> None:
@@ -1953,17 +1829,17 @@ def _sanitize_contact_links(contact) -> None:
 
 
 def _sanitize_conversation_links(convo) -> None:
-    crm_lead = getattr(convo, "linked_crm_lead", None)
+    crm_lead = getattr(convo, "linked_lead", None)
     if crm_lead:
         try:
-            crm_lead_exists = safe_ai_exists("CRM Lead", crm_lead)
+            crm_lead_exists = safe_ai_exists("Lead", crm_lead)
         except WAChatHubSecurityError:
             crm_lead_exists = True
         if not crm_lead_exists:
             _set_conversation_fields(
                 convo,
                 {
-                    "linked_crm_lead": None,
+                    "linked_lead": None,
                     "linked_reference_doctype": None,
                     "linked_reference_name": None,
                 },
@@ -2029,7 +1905,7 @@ def _resolve_whatsapp_source_value(meta) -> Optional[str]:
 
 
 def _resolve_whatsapp_platform_value(meta) -> Optional[str]:
-    """Return/create a safe WhatsApp platform value for CRM Lead when required."""
+    """Return/create a safe WhatsApp platform value for Lead when required."""
     platform_df = meta.get_field("sr_lead_platform")
     if not platform_df:
         return None
@@ -2157,12 +2033,12 @@ def _sync_inbound_attachment_to_linked_record(
     message_name: str,
     payload: Dict[str, Any],
 ) -> None:
-    """Mirror inbound chat media URL on linked CRM Lead without local/S3 copy."""
+    """Mirror inbound chat media URL on linked Lead without local/S3 copy."""
     convo = safe_ai_get_doc("Chat Conversation", conversation)
     crm_lead = get_conversation_crm_lead(convo)
     if not crm_lead:
         return
-    ref_doctype = "CRM Lead"
+    ref_doctype = "Lead"
     ref_name = crm_lead
 
     media_url = str(payload.get("media_url") or "").strip()
@@ -2218,7 +2094,7 @@ def _sync_outbound_attachment_to_linked_record(
     message_name: str,
     payload: Dict[str, Any],
 ) -> None:
-    """Mirror outbound chat media on linked CRM Lead."""
+    """Mirror outbound chat media on linked Lead."""
     if not chat_file_name or not safe_ai_exists("File", chat_file_name):
         return
 
@@ -2227,7 +2103,7 @@ def _sync_outbound_attachment_to_linked_record(
     if not crm_lead:
         return
 
-    ref_doctype = "CRM Lead"
+    ref_doctype = "Lead"
     ref_name = crm_lead
     chat_file = safe_ai_get_doc("File", chat_file_name)
     file_url = str(chat_file.file_url or payload.get("media_url") or "").strip()

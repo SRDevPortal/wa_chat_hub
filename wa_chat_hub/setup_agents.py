@@ -61,12 +61,12 @@ PATIENT_SHIPPING_HISTORY_TOOL = {
 }
 
 CRM_LEAD_PROFILE_TOOL = {
-    "tool_name": "get_linked_crm_lead_profile",
+    "tool_name": "get_linked_lead_profile",
     "description": (
-        "Read allowlisted CRM Lead details and notes only for the CRM Lead linked "
+        "Read allowlisted Lead details and notes only for the Lead linked "
         "to the current WhatsApp conversation."
     ),
-    "endpoint_url": "wa_chat_hub.mcp.lead_records.get_linked_crm_lead_profile",
+    "endpoint_url": "wa_chat_hub.mcp.lead_records.get_linked_lead_profile",
     "http_method": "POST",
     "access_mode": "Read",
     "parameters_schema": {
@@ -75,7 +75,7 @@ CRM_LEAD_PROFILE_TOOL = {
             "include_notes": {
                 "type": "integer",
                 "enum": [0, 1],
-                "description": "Set to 1 to include recent CRM Lead notes.",
+                "description": "Set to 1 to include recent Lead notes.",
             },
             "limit": {
                 "type": "integer",
@@ -120,7 +120,7 @@ def ensure_patient_shipping_history_tool(commit: bool = True) -> dict:
 
 
 def ensure_crm_lead_account_mcp_tool(commit: bool = True) -> dict:
-    """Insert the CRM Lead MCP once without changing account MCP settings."""
+    """Insert the Lead MCP once without changing account MCP settings."""
     if not frappe.db.exists("DocType", "WA MCP Tool Endpoint"):
         return {"updated": False, "reason": "mcp_tool_endpoint_missing"}
     endpoint_updated = _upsert_crm_lead_profile_endpoint()
@@ -312,17 +312,17 @@ def backfill_conversation_identities() -> None:
             last_identity_sync_at = NOW()
         WHERE IFNULL(linked_patient, '') = ''
           AND (
-            IFNULL(linked_crm_lead, '') != ''
-            OR linked_reference_doctype IN ('CRM Lead', 'Lead')
+            IFNULL(linked_lead, '') != ''
+            OR linked_reference_doctype IN ('Lead')
           )
         """
     )
 
-    if frappe.db.exists("DocType", "CRM Lead") and frappe.db.has_column("CRM Lead", "sr_source_patient"):
+    if frappe.db.exists("DocType", "Lead") and frappe.db.has_column("Lead", "sr_source_patient"):
         frappe.db.sql(
             """
             UPDATE `tabChat Conversation` c
-            INNER JOIN `tabCRM Lead` l ON l.name = c.linked_crm_lead
+            INNER JOIN `tabLead` l ON l.name = c.linked_lead
             INNER JOIN `tabPatient` p ON p.name = l.sr_source_patient
             SET c.linked_patient = l.sr_source_patient,
                 c.party_type = 'Patient',

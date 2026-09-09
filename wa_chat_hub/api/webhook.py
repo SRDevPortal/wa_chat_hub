@@ -43,8 +43,8 @@ INTERAKT_STATUS_TYPES = {
 def _assert_webhook_message_write_permissions(include_crm_lead: bool = True) -> None:
     for doctype in ("Chat Contact", "Chat Conversation", "Chat Message"):
         assert_ai_doctype_permission(doctype, "write")
-    if include_crm_lead and safe_ai_exists("DocType", "CRM Lead"):
-        assert_ai_doctype_permission("CRM Lead", "write")
+    if include_crm_lead and safe_ai_exists("DocType", "Lead"):
+        assert_ai_doctype_permission("Lead", "write")
 
 
 @frappe.whitelist(allow_guest=True)

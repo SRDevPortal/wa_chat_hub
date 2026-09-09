@@ -112,8 +112,8 @@
   {
    "fieldname": "crm_lead",
    "fieldtype": "Link",
-   "label": "CRM Lead",
-   "options": "CRM Lead"
+   "label": "Lead",
+   "options": "Lead"
   },
   {
    "fieldname": "agent_profile",

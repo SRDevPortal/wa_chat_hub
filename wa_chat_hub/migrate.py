@@ -350,10 +350,7 @@ def ensure_lead_scoring_fields() -> None:
             "insert_after": "shipkia_disqualification_reason",
         },
     ]
-    specs = {
-        "Lead": "source",
-        "CRM Lead": "status",
-    }
+    specs = {"Lead": "source"}
     custom_fields = {}
     for doctype, insert_after in specs.items():
         if not frappe.db.exists("DocType", doctype):
@@ -416,7 +413,7 @@ def _only_missing_custom_fields(custom_fields: dict[str, list[dict]]) -> dict[st
 def ensure_shipkia_business_type_options() -> None:
     """Keep legacy Select fields compatible without replacing user-defined options."""
     required_options = ("B2C", "D2C")
-    for doctype in ("Lead", "CRM Lead"):
+    for doctype in ("Lead",):
         custom_field = frappe.db.get_value(
             "Custom Field",
             {"dt": doctype, "fieldname": "shipkia_business_type"},
@@ -536,24 +533,24 @@ def backfill_channel_account_medical_departments() -> None:
 
 
 def migrate_conversation_crm_lead_links() -> None:
-    """Copy legacy CRM Lead / Lead links into linked_crm_lead Link field."""
+    """Copy legacy Lead / Lead links into linked_lead Link field."""
     if not frappe.db.exists("DocType", "Chat Conversation"):
         return
     meta = frappe.get_meta("Chat Conversation")
-    if not meta.has_field("linked_crm_lead"):
+    if not meta.has_field("linked_lead"):
         return
 
-    if not frappe.db.exists("DocType", "CRM Lead"):
+    if not frappe.db.exists("DocType", "Lead"):
         return
 
     frappe.db.sql(
         """
         UPDATE `tabChat Conversation` c
-        INNER JOIN `tabCRM Lead` l ON l.name = c.linked_reference_name
-        SET c.linked_crm_lead = c.linked_reference_name,
-            c.linked_reference_doctype = 'CRM Lead'
-        WHERE IFNULL(c.linked_reference_doctype, '') IN ('CRM Lead', 'Lead')
+        INNER JOIN `tabLead` l ON l.name = c.linked_reference_name
+        SET c.linked_lead = c.linked_reference_name,
+            c.linked_reference_doctype = 'Lead'
+        WHERE IFNULL(c.linked_reference_doctype, '') IN ('Lead')
           AND IFNULL(c.linked_reference_name, '') != ''
-          AND IFNULL(c.linked_crm_lead, '') = ''
+          AND IFNULL(c.linked_lead, '') = ''
         """
     )

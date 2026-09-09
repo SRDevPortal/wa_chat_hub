@@ -29,7 +29,7 @@ class TestPatientIdentityVerification(TestCase):
         frappe.db.exists.return_value = True
         frappe.get_doc.return_value = SimpleNamespace(
             linked_patient="PAT-1",
-            linked_crm_lead=None,
+            linked_lead=None,
         )
         frappe.get_all.return_value = ["MSG-LATEST"]
         verify_from_message.return_value = {"verified": False, "reason": "evidence_missing"}
@@ -127,7 +127,7 @@ class TestPatientIdentityVerification(TestCase):
             linked_patient="PAT-1",
             linked_reference_doctype="Patient",
             linked_reference_name="PAT-1",
-            linked_crm_lead="LEAD-1",
+            linked_lead="LEAD-1",
             identity_status="Verified",
         )
         conversation_meta = MagicMock()
@@ -217,7 +217,7 @@ class TestPatientIdentityVerification(TestCase):
             SimpleNamespace(
                 identity_status="Matched",
                 linked_patient="HLC-PAT-2026-00001",
-                linked_crm_lead=None,
+                linked_lead=None,
                 linked_reference_doctype="Patient",
                 linked_reference_name="HLC-PAT-2026-00001",
                 contact="919000000001",
@@ -265,7 +265,7 @@ class TestPatientIdentityVerification(TestCase):
                 name=1,
                 identity_status="Matched",
                 linked_patient="HLC-PAT-2026-00001",
-                linked_crm_lead=None,
+                linked_lead=None,
                 linked_reference_doctype="Patient",
                 linked_reference_name="HLC-PAT-2026-00001",
                 contact="919000000001",
@@ -295,7 +295,7 @@ class TestPatientIdentityVerification(TestCase):
             SimpleNamespace(
                 identity_status="Matched",
                 linked_patient="HLC-PAT-2026-00001",
-                linked_crm_lead=None,
+                linked_lead=None,
                 linked_reference_doctype="Patient",
                 linked_reference_name="HLC-PAT-2026-00001",
                 contact="919000000001",
@@ -322,7 +322,7 @@ class TestPatientIdentityVerification(TestCase):
             SimpleNamespace(
                 identity_status="Matched",
                 linked_patient="HLC-PAT-2026-00001",
-                linked_crm_lead=None,
+                linked_lead=None,
                 linked_reference_doctype="Patient",
                 linked_reference_name="HLC-PAT-2026-00001",
                 contact="919000000001",
@@ -359,7 +359,7 @@ class TestPatientIdentityVerification(TestCase):
             SimpleNamespace(
                 identity_status="Matched",
                 linked_patient="PAT-1",
-                linked_crm_lead=None,
+                linked_lead=None,
                 linked_reference_doctype="Patient",
                 linked_reference_name="PAT-1",
                 contact="919000000002",

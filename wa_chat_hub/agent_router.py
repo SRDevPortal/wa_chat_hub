@@ -223,8 +223,8 @@ def _resolve_party(convo, policy: PolicyBundle | None) -> tuple[str, str | None]
     reference_map = routing.get("party_type_by_reference_doctype") or {}
     unknown_party = str(routing.get("unknown_party_type") or "").strip()
     reference_doctype = getattr(convo, "linked_reference_doctype", None)
-    if getattr(convo, "linked_crm_lead", None):
-        reference_doctype = "CRM Lead"
+    if getattr(convo, "linked_lead", None):
+        reference_doctype = "Lead"
     if reference_doctype and reference_map.get(reference_doctype):
         return str(reference_map.get(reference_doctype)), None
     stored_party = str(getattr(convo, "party_type", None) or "").strip()

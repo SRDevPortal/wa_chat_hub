@@ -30,14 +30,14 @@
    "label": "Default Route"
   },
   {
-   "description": "Default for every new CRM Lead from this Interakt account (not per WhatsApp user).",
+   "description": "Default for every new Lead from this Interakt account (not per WhatsApp user).",
    "fieldname": "sr_lead_pipeline",
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Default SR Lead Pipeline"
   },
   {
-   "description": "Optional source for CRM Leads created from this WhatsApp channel.",
+   "description": "Optional source for Leads created from this WhatsApp channel.",
    "fieldname": "sr_lead_source",
    "fieldtype": "Data",
    "in_list_view": 1,

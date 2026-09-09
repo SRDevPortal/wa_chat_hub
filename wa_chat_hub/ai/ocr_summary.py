@@ -171,7 +171,7 @@ def process_attachment_for_lead_summary(
         body_hint=body_hint,
         summary=summary,
     )
-    _append_to_lead_notes("CRM Lead", crm_lead, note_block)
+    _append_to_lead_notes("Lead", crm_lead, note_block)
 
 
 def _persist_ocr_result(
@@ -182,7 +182,7 @@ def _persist_ocr_result(
     extracted: str,
     summary: str,
 ) -> str | None:
-    """Persist extraction before touching the concurrently updated CRM Lead."""
+    """Persist extraction before touching the concurrently updated Lead."""
     try:
         attachment_file = safe_ai_get_value("Chat Message", message_name, "attachment_file")
         existing = None
@@ -231,9 +231,9 @@ def _persist_ocr_result(
 
 
 def _lead_pipeline(crm_lead: str) -> str | None:
-    if not crm_lead or not frappe.get_meta("CRM Lead").has_field("sr_lead_pipeline"):
+    if not crm_lead or not frappe.get_meta("Lead").has_field("sr_lead_pipeline"):
         return None
-    return safe_ai_get_value("CRM Lead", crm_lead, "sr_lead_pipeline")
+    return safe_ai_get_value("Lead", crm_lead, "sr_lead_pipeline")
 
 
 def _build_sr_lead_notes_block(
@@ -243,7 +243,7 @@ def _build_sr_lead_notes_block(
     body_hint: str,
     summary: str,
 ) -> str:
-    """Structured OCR block for CRM Lead sr_lead_notes (plain-text, sectioned)."""
+    """Structured OCR block for Lead sr_lead_notes (plain-text, sectioned)."""
     stamp = datetime.now().strftime("%d-%b-%Y %H:%M")
     caption = body_hint.strip() if body_hint and body_hint.lower() not in {
         "none", "null", "undefined", "[image message received]", "[document message received]",

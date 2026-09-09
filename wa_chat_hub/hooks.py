@@ -4,6 +4,7 @@ app_publisher = "SAI"
 app_description = "Unified WhatsApp operations hub for ERPNext"
 app_email = "admin@example.com"
 app_license = "MIT"
+required_apps = ["erpnext"]
 
 app_include_css = ["/assets/wa_chat_hub/css/wa_chat_hub.css"]
 app_include_js = ["/assets/wa_chat_hub/js/remote_attachment_links.js", "/assets/wa_chat_hub/js/reference_chat.js"]
@@ -59,16 +60,14 @@ fixtures = [
     {"dt": "Page", "filters": [["module", "=", "WA Chat Hub"]]},
     {"dt": "Workspace", "filters": [["module", "=", "WA Chat Hub"]]},
     {"dt": "Custom Field", "filters": [["dt", "=", "Lead"], ["fieldname", "in", lead_custom_fieldnames]]},
-    {"dt": "Custom Field", "filters": [["dt", "=", "CRM Lead"], ["fieldname", "in", lead_custom_fieldnames]]},
 ]
 
 doctype_list_js = {
-    "CRM Lead": "public/js/reference_open_chat_list.js",
     "Lead": "public/js/reference_open_chat_list.js",
     "Customer": "public/js/reference_open_chat_list.js",
 }
 
-doctype_js = {doctype: "public/js/reference_chat_form.js" for doctype in ("Lead", "Customer", "CRM Lead")}
+doctype_js = {doctype: "public/js/reference_chat_form.js" for doctype in ("Lead", "Customer")}
 
 permission_query_conditions = {
     "Chat Conversation": "wa_chat_hub.permissions.chat_conversation_pqc",
@@ -88,9 +87,6 @@ doc_events = {
             "wa_chat_hub.api.ai_bot.on_message_received",
             "wa_chat_hub.lead_ai.on_chat_message_after_insert",
         ],
-    },
-    "CRM Lead": {
-        "validate": "wa_chat_hub.maintenance.phone_backfill.sync_phone_keys",
     },
     "Lead": {
         "validate": "wa_chat_hub.maintenance.phone_backfill.sync_phone_keys",

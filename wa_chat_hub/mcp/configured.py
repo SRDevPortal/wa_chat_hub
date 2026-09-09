@@ -143,13 +143,13 @@ def _resolve_or_create_patient_from_chat(config: dict[str, Any], args: dict[str,
     if contact and frappe.db.exists("Chat Contact", contact):
         phone_number = frappe.db.get_value("Chat Contact", contact, "phone_number") or contact
 
-    lead_name = getattr(convo, "linked_crm_lead", None)
+    lead_name = getattr(convo, "linked_lead", None)
     first_name = ""
     department = getattr(convo, "department", None)
     disease = None
     lead_doc = None
-    if lead_name and frappe.db.exists("CRM Lead", lead_name):
-        lead_doc = safe_ai_get_doc("CRM Lead", lead_name)
+    if lead_name and frappe.db.exists("Lead", lead_name):
+        lead_doc = safe_ai_get_doc("Lead", lead_name)
         first_name = lead_doc.get("first_name") or lead_doc.get("lead_name") or lead_doc.get("name") or ""
         phone_number = lead_doc.get("mobile_no") or lead_doc.get("phone") or phone_number or ""
         department = department or lead_doc.get("sr_medical_department") or lead_doc.get("department")

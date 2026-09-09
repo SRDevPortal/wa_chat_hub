@@ -68,13 +68,13 @@ class TestPatientPreverification(TestCase):
 
         _apply_account_mcp_tool_override(
             route,
-            {"create_verified_patient_draft_encounter", "get_linked_crm_lead_profile"},
+            {"create_verified_patient_draft_encounter", "get_linked_lead_profile"},
             3,
         )
 
         self.assertEqual(
             route.allowed_tool_names,
-            {"create_verified_patient_draft_encounter", "get_linked_crm_lead_profile"},
+            {"create_verified_patient_draft_encounter", "get_linked_lead_profile"},
         )
         self.assertEqual(route.max_tool_calls, 3)
 
@@ -100,7 +100,7 @@ class TestPatientPreverification(TestCase):
 
         _apply_account_mcp_tool_override(
             route,
-            {"create_verified_patient_draft_encounter", "get_linked_crm_lead_profile"},
+            {"create_verified_patient_draft_encounter", "get_linked_lead_profile"},
             3,
         )
 

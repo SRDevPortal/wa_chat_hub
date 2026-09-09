@@ -60,7 +60,7 @@ def log_mcp_event(
             reference_doctype = "Patient"
             reference_name = patient
         elif crm_lead:
-            reference_doctype = "CRM Lead"
+            reference_doctype = "Lead"
             reference_name = crm_lead
 
         doc = frappe.get_doc(
@@ -78,7 +78,7 @@ def log_mcp_event(
                 "conversation": conversation or None,
                 "channel_account": channel_account,
                 "patient": patient if _exists("Patient", patient) else None,
-                "crm_lead": crm_lead if _exists("CRM Lead", crm_lead) else None,
+                "crm_lead": crm_lead if _exists("Lead", crm_lead) else None,
                 "agent_profile": tool_context.get("agent_profile")
                 if _exists("WA AI Agent Profile", tool_context.get("agent_profile"))
                 else None,

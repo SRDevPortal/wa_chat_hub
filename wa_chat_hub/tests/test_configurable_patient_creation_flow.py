@@ -91,7 +91,7 @@ class TestConfigurablePatientCreationFlow(TestCase):
         candidates = _prefill_candidates(
             name_step["prefill"],
             ["My name is Chat Name"],
-            {"linked_crm_lead": "CRM-LEAD-1", "phone_number": "919466073244"},
+            {"linked_lead": "CRM-LEAD-1", "phone_number": "919466073244"},
         )
         valid = [
             value

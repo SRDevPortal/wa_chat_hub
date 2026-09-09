@@ -149,13 +149,13 @@ frappe.pages['wa-chat-hub-errors'].on_page_load = function(wrapper) {
                 links.push(`<a href="/app/chat-contact/${frappe.utils.escape_html(related.contact)}">Contact ${frappe.utils.escape_html(related.contact)}</a>`);
             }
             if (related.crm_lead) {
-                links.push(`<a href="/app/crm-lead/${frappe.utils.escape_html(related.crm_lead)}">CRM Lead ${frappe.utils.escape_html(related.crm_lead)}</a>`);
+                links.push(`<a href="/app/lead/${frappe.utils.escape_html(related.crm_lead)}">Lead ${frappe.utils.escape_html(related.crm_lead)}</a>`);
             }
             const contextHtml = event.wa_context
                 ? `<div><b>WA Context:</b></div><pre>${frappe.utils.escape_html(JSON.stringify(event.wa_context, null, 2))}</pre>`
                 : '';
             const payloadHtml = event.crm_lead_payload
-                ? `<div><b>CRM Lead Payload:</b></div><pre>${frappe.utils.escape_html(JSON.stringify(event.crm_lead_payload, null, 2))}</pre>`
+                ? `<div><b>Lead Payload:</b></div><pre>${frappe.utils.escape_html(JSON.stringify(event.crm_lead_payload, null, 2))}</pre>`
                 : '';
 
             const dialog = new frappe.ui.Dialog({

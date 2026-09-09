@@ -92,7 +92,7 @@ class TestPhoneLookupPerformance(TestCase):
 
     @patch("wa_chat_hub.services.safe_ai_get_all")
     def test_phone_query_is_exact_not_wildcard(self, get_all):
-        _phone_rows("CRM Lead", "vobiz_mobile_last10", "9876543210", limit=1)
+        _phone_rows("Lead", "vobiz_mobile_last10", "9876543210", limit=1)
 
         _, kwargs = get_all.call_args
         self.assertEqual(kwargs["filters"], {"vobiz_mobile_last10": "9876543210"})
@@ -137,7 +137,7 @@ class TestConversationSearchPerformance(TestCase):
         get_meta.return_value = _Meta({"vobiz_normalized_phone", "vobiz_mobile_last10"})
 
         names = _indexed_reference_phone_names(
-            "CRM Lead",
+            "Lead",
             ["mobile_no", "phone"],
             "+91 98765-43210",
         )
@@ -201,7 +201,7 @@ class TestConversationSearchPerformance(TestCase):
     ):
         get_meta.side_effect = lambda doctype: _Meta(
             {
-                "linked_crm_lead",
+                "linked_lead",
                 "lead_name",
                 "email",
                 "mobile_no",

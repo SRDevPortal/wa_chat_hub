@@ -33,14 +33,14 @@ def run():
             break
     out["inbound_media_last3"] = inbound_media[:3]
     lead = "CRM-LEAD-2026-00026"
-    doc = frappe.get_doc("CRM Lead", lead)
+    doc = frappe.get_doc("Lead", lead)
     out["crm_lead"] = {"lead_score": doc.get("lead_score"), "lead_lan": doc.get("lead_lan"), "lead_temperature": doc.get("lead_temperature")}
     notes_text = (doc.get("comments") or "")
-    for row in frappe.get_all("CRM Note", filters={"parent": lead, "parenttype": "CRM Lead"}, fields=["content","note"]):
+    for row in frappe.get_all("CRM Note", filters={"parent": lead, "parenttype": "Lead"}, fields=["content","note"]):
         notes_text += " " + str(row.get("content") or row.get("note") or "")
     out["crm_lead"]["auto_ocr_in_notes_comments"] = "Auto OCR Summary" in notes_text
     try:
-        out["resolve_chat"] = chat.resolve_chat_for_reference(reference_doctype="CRM Lead", reference_name=lead)
+        out["resolve_chat"] = chat.resolve_chat_for_reference(reference_doctype="Lead", reference_name=lead)
     except Exception as e:
         out["resolve_chat"] = {"error": str(e)}
     print(json.dumps(out, default=str, indent=2))

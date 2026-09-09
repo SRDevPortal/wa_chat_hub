@@ -66,7 +66,7 @@ class TestOCRPromptPriority(TestCase):
         get_doc.return_value = result_doc
         convo = frappe._dict(
             name="CONV-1",
-            linked_crm_lead="LEAD-1",
+            linked_lead="LEAD-1",
             channel_account="ACCOUNT-1",
         )
 
@@ -97,7 +97,7 @@ class TestOCRPromptPriority(TestCase):
         get_doc.side_effect = [stale, fresh]
         save.side_effect = [frappe.TimestampMismatchError, None]
 
-        _append_to_lead_notes("CRM Lead", "LEAD-1", "OCR block")
+        _append_to_lead_notes("Lead", "LEAD-1", "OCR block")
 
         self.assertEqual(get_doc.call_count, 2)
         self.assertEqual(save.call_count, 2)

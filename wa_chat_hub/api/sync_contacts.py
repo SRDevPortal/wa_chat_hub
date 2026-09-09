@@ -46,8 +46,8 @@ def sync_all():
             if p:
                 synced += upsert_contact(p, c.customer_name, "Customer", c.name)
 
-    # 2. Leads (try CRM Lead and Lead)
-    for dt in ["Lead", "CRM Lead"]:
+    # 2. Leads (try Lead and Lead)
+    for dt in ["Lead"]:
         if safe_ai_exists("DocType", dt):
             lead_fields = ["name"]
             meta = frappe.get_meta(dt)

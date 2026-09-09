@@ -116,7 +116,7 @@ def push_contact_to_interakt(
 
 
 def push_reference_to_interakt(reference_doc, channel_account: Optional[str] = None) -> Dict[str, Any]:
-    """Push a CRM Lead/Lead to Interakt using pipeline map routing."""
+    """Push a Lead/Lead to Interakt using pipeline map routing."""
     doctype = reference_doc.doctype
     phone = _phone_from_reference(reference_doc)
     normalized = normalize_phone(phone)
@@ -125,7 +125,7 @@ def push_reference_to_interakt(reference_doc, channel_account: Optional[str] = N
 
     if channel_account:
         pipeline_map_row = get_pipeline_map(channel_account=channel_account)
-    elif doctype == "CRM Lead":
+    elif doctype == "Lead":
         pipeline_map_row = get_pipeline_map_for_lead(reference_doc)
         channel_account = pipeline_map_row["chat_channel_account"]
     elif doctype == "Lead":
@@ -152,7 +152,7 @@ def push_reference_to_interakt(reference_doc, channel_account: Optional[str] = N
 
 
 def push_pipeline_map_contacts(pipeline_map_name: str) -> Dict[str, Any]:
-    """Bulk push CRM Leads and chat contacts for one pipeline map row."""
+    """Bulk push Leads and chat contacts for one pipeline map row."""
     row = safe_ai_get_doc("WA Channel Pipeline Map", pipeline_map_name)
     if not row.is_active:
         frappe.throw(_("Pipeline map {0} is not active.").format(pipeline_map_name))
@@ -161,9 +161,9 @@ def push_pipeline_map_contacts(pipeline_map_name: str) -> Dict[str, Any]:
     channel_account = row.chat_channel_account
     stats = {"pushed": 0, "failed": 0, "skipped": 0, "errors": []}
 
-    if safe_ai_exists("DocType", "CRM Lead"):
+    if safe_ai_exists("DocType", "Lead"):
         for lead_name in _crm_lead_names_for_map(row):
-            _push_one(stats, lambda ln=lead_name: push_reference_to_interakt(safe_ai_get_doc("CRM Lead", ln), channel_account))
+            _push_one(stats, lambda ln=lead_name: push_reference_to_interakt(safe_ai_get_doc("Lead", ln), channel_account))
 
     for contact_name in _chat_contact_names_for_channel(channel_account):
         _push_one(
@@ -214,7 +214,7 @@ def push_conversation_contact(conversation: str) -> Optional[Dict[str, Any]]:
 
     contact_doc = safe_ai_get_doc("Chat Contact", convo.contact)
     reference_doc = resolve_reference_for_contact(contact_doc)
-    if not reference_doc and convo.linked_reference_doctype in ("CRM Lead", "Lead", "Customer") and convo.linked_reference_name:
+    if not reference_doc and convo.linked_reference_doctype in ("Lead", "Lead", "Customer") and convo.linked_reference_name:
         if safe_ai_exists(convo.linked_reference_doctype, convo.linked_reference_name):
             reference_doc = safe_ai_get_doc(convo.linked_reference_doctype, convo.linked_reference_name)
 
@@ -229,11 +229,11 @@ def push_conversation_contact(conversation: str) -> Optional[Dict[str, Any]]:
 def resolve_reference_for_contact(contact_doc) -> Any:
     source_dt = contact_doc.source_doctype
     source_name = contact_doc.source_name
-    if source_dt in ("CRM Lead", "Lead", "Customer") and source_name and safe_ai_exists(source_dt, source_name):
+    if source_dt in ("Lead", "Lead", "Customer") and source_name and safe_ai_exists(source_dt, source_name):
         return safe_ai_get_doc(source_dt, source_name)
 
-    if getattr(contact_doc, "linked_lead", None) and safe_ai_exists("CRM Lead", contact_doc.linked_lead):
-        return safe_ai_get_doc("CRM Lead", contact_doc.linked_lead)
+    if getattr(contact_doc, "linked_lead", None) and safe_ai_exists("Lead", contact_doc.linked_lead):
+        return safe_ai_get_doc("Lead", contact_doc.linked_lead)
     if getattr(contact_doc, "linked_lead", None) and safe_ai_exists("Lead", contact_doc.linked_lead):
         return safe_ai_get_doc("Lead", contact_doc.linked_lead)
 
@@ -264,7 +264,7 @@ def _patient_names_for_map(row) -> List[str]:
 def _crm_lead_names_for_map(row) -> List[str]:
     if not row.sr_lead_pipeline:
         return []
-    meta = frappe.get_meta("CRM Lead")
+    meta = frappe.get_meta("Lead")
     if not meta.has_field("sr_lead_pipeline"):
         return []
     filters = {"sr_lead_pipeline": row.sr_lead_pipeline}
@@ -276,7 +276,7 @@ def _crm_lead_names_for_map(row) -> List[str]:
         if meta.has_field(field):
             filters[field] = ["is", "set"]
             break
-    return safe_ai_get_all("CRM Lead", filters=filters, pluck="name", limit_page_length=0)
+    return safe_ai_get_all("Lead", filters=filters, pluck="name", limit_page_length=0)
 
 
 def _chat_contact_names_for_channel(channel_account: str) -> List[str]:

@@ -122,7 +122,7 @@ def get_pipeline_for_channel_account(channel_account: Optional[str]) -> Optional
 
 
 def get_source_for_channel_account(channel_account: Optional[str]) -> Optional[str]:
-    """Optional SR Lead Source for CRM Leads created from this Interakt account."""
+    """Optional SR Lead Source for Leads created from this Interakt account."""
     row = get_pipeline_map_row_for_channel_account(channel_account)
     return row.get("sr_lead_source") if row else None
 
@@ -130,7 +130,7 @@ def get_source_for_channel_account(channel_account: Optional[str]) -> Optional[s
 def get_channel_account_defaults(channel_account: Optional[str]) -> Dict[str, Any]:
     """
     Defaults from WA Channel Pipeline Map for one Interakt Chat Channel Account:
-    sr_lead_pipeline (every new CRM Lead) and sr_medical_department (Patient / Interakt sync — not Chat Conversation.department).
+    sr_lead_pipeline (every new Lead) and sr_medical_department (Patient / Interakt sync — not Chat Conversation.department).
     """
     row = get_pipeline_map_row_for_channel_account(channel_account)
     if not row:
@@ -143,7 +143,7 @@ def get_channel_account_defaults(channel_account: Optional[str]) -> Dict[str, An
 
 
 def require_sr_lead_pipeline_for_channel_account(channel_account: str) -> str:
-    """Mandatory default pipeline for new CRM Leads on this Interakt account."""
+    """Mandatory default pipeline for new Leads on this Interakt account."""
     pipeline = get_pipeline_for_channel_account(channel_account)
     if pipeline:
         return pipeline

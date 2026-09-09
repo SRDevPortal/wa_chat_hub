@@ -55,7 +55,7 @@ def ensure_interakt_contact_for_reference(
     allow_unmapped: bool = False,
     pipeline_map_row: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Sync Chat Contact to Interakt (CRM Lead, Patient, etc.)."""
+    """Sync Chat Contact to Interakt (Lead, Patient, etc.)."""
     from wa_chat_hub.interakt.contact_sync import push_contact_to_interakt
 
     if pipeline_map_row is None:
@@ -129,13 +129,13 @@ def get_or_create_lead_conversation_for_channel_account(
     except Exception:
         frappe.log_error(frappe.get_traceback(), "WA Lead AI Update On Open Failed")
 
-    if lead.doctype == "CRM Lead":
+    if lead.doctype == "Lead":
         try:
             from wa_chat_hub.messaging.crm_lead_meta import sync_crm_lead_meta_from_conversation
 
             sync_crm_lead_meta_from_conversation(conversation, lead_name=lead.name)
         except Exception:
-            frappe.log_error(frappe.get_traceback(), "CRM Lead Meta Sync On Map Failed")
+            frappe.log_error(frappe.get_traceback(), "Lead Meta Sync On Map Failed")
 
     _link_lead_on_conversation(conversation, lead.doctype, lead.name)
 
@@ -307,13 +307,13 @@ def _link_lead_on_conversation(conversation: str, lead_doctype: str, lead_name: 
         "linked_reference_doctype": lead_doctype,
         "linked_reference_name": lead_name,
     }
-    if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
-        updates["linked_crm_lead"] = lead_name if lead_doctype == "CRM Lead" else None
+    if frappe.get_meta("Chat Conversation").has_field("linked_lead"):
+        updates["linked_lead"] = lead_name if lead_doctype == "Lead" else None
     safe_ai_set_value("Chat Conversation", conversation, updates, update_modified=False)
 
 
 def _link_crm_lead_on_conversation(conversation: str, lead_name: str) -> None:
-    _link_lead_on_conversation(conversation, "CRM Lead", lead_name)
+    _link_lead_on_conversation(conversation, "Lead", lead_name)
 
 
 def _find_conversation_for_contact_on_channel(contact: str, channel_account: str, open_only: bool) -> str | None:

@@ -115,7 +115,7 @@ def process_transcript_for_lead_summary(
         body_hint=body_hint,
         summary=summary,
     )
-    _append_to_lead_notes("CRM Lead", crm_lead, note_block)
+    _append_to_lead_notes("Lead", crm_lead, note_block)
 
 
 def transcribe_media(media_url: str, content_type: str = "Audio") -> str:

@@ -13,7 +13,7 @@ PHONE_INDEX_FIELDS = (
 
 
 def execute() -> None:
-    for doctype in ("CRM Lead", "Lead", "Patient", "Customer"):
+    for doctype in ("Lead", "Lead", "Patient", "Customer"):
         _ensure_indexes(doctype)
 
 

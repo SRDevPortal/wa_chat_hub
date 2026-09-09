@@ -2137,7 +2137,7 @@ def _build_known_conversation_context(conversation: str) -> str:
         "contact",
         "department",
         "assigned_to",
-        "linked_crm_lead",
+        "linked_lead",
         "linked_reference_doctype",
         "linked_reference_name",
         "lead_score",
@@ -2165,7 +2165,7 @@ def _build_known_conversation_context(conversation: str) -> str:
     for label, fieldname in (
         ("Department", "department"),
         ("Assigned to", "assigned_to"),
-        ("CRM Lead", "linked_crm_lead"),
+        ("Lead", "linked_lead"),
         ("Linked reference type", "linked_reference_doctype"),
         ("Linked reference name", "linked_reference_name"),
         ("Lead score", "lead_score"),
@@ -2181,7 +2181,7 @@ def _build_known_conversation_context(conversation: str) -> str:
 
     linked_doctype = str(convo.get("linked_reference_doctype") or "").strip()
     linked_name = str(convo.get("linked_reference_name") or "").strip()
-    if linked_doctype in {"Lead", "CRM Lead"} and linked_name and safe_ai_exists(linked_doctype, linked_name):
+    if linked_doctype in {"Lead"} and linked_name and safe_ai_exists(linked_doctype, linked_name):
         lead_facts = _build_linked_lead_sales_facts(linked_doctype, linked_name)
         if lead_facts:
             facts.extend(lead_facts)

@@ -334,7 +334,7 @@ def update_windows_on_message(
 
             sync_crm_lead_meta_from_conversation(convo, raw_payload=payload)
         except Exception:
-            frappe.log_error(frappe.get_traceback(), "CRM Lead Meta Sync Failed")
+            frappe.log_error(frappe.get_traceback(), "Lead Meta Sync Failed")
 
     state = get_messaging_window_state(conversation, now=now, convo=convo)
     frappe.publish_realtime(

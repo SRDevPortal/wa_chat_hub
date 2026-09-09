@@ -134,40 +134,40 @@ def get_account_max_tool_calls(config: Any) -> int:
 
 
 def get_conversation_crm_lead(conversation: str | Any) -> Optional[str]:
-    """Resolve CRM Lead name from conversation (new Link field or legacy fields)."""
+    """Resolve Lead name from conversation (new Link field or legacy fields)."""
     if isinstance(conversation, str):
         convo = safe_ai_get_doc("Chat Conversation", conversation)
     else:
         convo = conversation
 
-    linked_crm_lead = getattr(convo, "linked_crm_lead", None)
-    if linked_crm_lead and safe_ai_exists("CRM Lead", linked_crm_lead):
-        return _resolve_primary_crm_lead(linked_crm_lead)
+    linked_lead = getattr(convo, "linked_lead", None)
+    if linked_lead and safe_ai_exists("Lead", linked_lead):
+        return _resolve_primary_crm_lead(linked_lead)
 
-    if getattr(convo, "linked_reference_doctype", None) == "CRM Lead":
+    if getattr(convo, "linked_reference_doctype", None) == "Lead":
         name = getattr(convo, "linked_reference_name", None)
-        if name and safe_ai_exists("CRM Lead", name):
+        if name and safe_ai_exists("Lead", name):
             return _resolve_primary_crm_lead(name)
     return None
 
 
 def set_conversation_crm_lead(convo, lead_name: str) -> None:
-    """Link conversation to CRM Lead using Link field + legacy sync."""
+    """Link conversation to Lead using Link field + legacy sync."""
     assert_ai_doctype_permission("Chat Conversation", "read")
-    if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
-        convo.linked_crm_lead = lead_name
-    convo.linked_reference_doctype = "CRM Lead"
+    if frappe.get_meta("Chat Conversation").has_field("linked_lead"):
+        convo.linked_lead = lead_name
+    convo.linked_reference_doctype = "Lead"
     convo.linked_reference_name = lead_name
 
 
 def get_conversation_linked_reference(convo) -> tuple[Optional[str], Optional[str]]:
-    """Return (doctype, name) for Customer, Lead, CRM Lead, or other links."""
+    """Return (doctype, name) for Customer, Lead, Lead, or other links."""
     ref_dt = getattr(convo, "linked_reference_doctype", None)
     ref_name = getattr(convo, "linked_reference_name", None)
 
     crm_lead = get_conversation_crm_lead(convo)
     if crm_lead:
-        return "CRM Lead", crm_lead
+        return "Lead", crm_lead
 
     if ref_dt and ref_name:
         return ref_dt, ref_name
@@ -175,7 +175,7 @@ def get_conversation_linked_reference(convo) -> tuple[Optional[str], Optional[st
 
 
 def _resolve_primary_crm_lead(lead_name: str | None) -> Optional[str]:
-    if not lead_name or not safe_ai_exists("CRM Lead", lead_name):
+    if not lead_name or not safe_ai_exists("Lead", lead_name):
         return None
 
     try:
@@ -185,10 +185,10 @@ def _resolve_primary_crm_lead(lead_name: str | None) -> Optional[str]:
     except Exception:
         pass
 
-    assert_ai_doctype_permission("CRM Lead", "read")
-    if frappe.db.has_column("CRM Lead", "sr_duplicate_of_name"):
-        primary = safe_ai_get_value("CRM Lead", lead_name, "sr_duplicate_of_name")
-        if primary and safe_ai_exists("CRM Lead", primary):
+    assert_ai_doctype_permission("Lead", "read")
+    if frappe.db.has_column("Lead", "sr_duplicate_of_name"):
+        primary = safe_ai_get_value("Lead", lead_name, "sr_duplicate_of_name")
+        if primary and safe_ai_exists("Lead", primary):
             return primary
     return lead_name
 
