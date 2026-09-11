@@ -1405,7 +1405,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
             v.linked_reference_doctype === 'CRM Lead' ? v.linked_reference_name : null
         );
         const displayName = c.display_name || c.phone_number || 'Thread';
-        const displayPhone = formatPhoneNumber(c.phone_number).replace(/\d(?=\d{4})/g, '*');
+        const displayPhone = formatPhoneNumber(c.phone_number);
         $('#wa-context-card').html(`
             <div class="wa-profile-card">
                 <div class="wa-profile-avatar">${getAvatarText({contact_display_name: displayName})}</div>
