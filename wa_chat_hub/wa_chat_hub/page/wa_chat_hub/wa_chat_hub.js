@@ -76,7 +76,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     }
     wrapper.wa_chat_hub_initialized = true;
 
-    const cssVersion = '20260708-chat-scroll-drawer-layout-v1';
+    const cssVersion = '20260911-message-date-separators-v1';
     const existingCss = document.querySelector('link[data-wa-chat-hub-css="1"]');
     if (existingCss && existingCss.getAttribute('data-wa-chat-hub-version') !== cssVersion) {
         existingCss.remove();
@@ -1034,10 +1034,49 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         return icons[name] || '';
     }
 
+    function getMessageDate(value) {
+        if (!value) return null;
+        const date = new Date(String(value).replace(' ', 'T').replace(/(\.\d{3})\d+/, '$1'));
+        return Number.isNaN(date.getTime()) ? null : date;
+    }
+
+    function getMessageDateKey(value) {
+        const date = value instanceof Date ? value : getMessageDate(value);
+        if (!date || Number.isNaN(date.getTime())) return '';
+        return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+    }
+
+    function formatMessageDate(dateKey, now = new Date()) {
+        if (dateKey === getMessageDateKey(now)) return __('Today');
+        const yesterday = new Date(now);
+        yesterday.setDate(yesterday.getDate() - 1);
+        if (dateKey === getMessageDateKey(yesterday)) return __('Yesterday');
+        const date = getMessageDate(`${dateKey}T12:00:00`);
+        return date ? date.toLocaleDateString([], {day: 'numeric', month: 'long', year: 'numeric'}) : '';
+    }
+
+    function refreshMessageDateLabels() {
+        $('#wa-message-list .wa-message-date-separator').each(function() {
+            $(this).find('span').text(formatMessageDate($(this).attr('data-date')));
+        });
+    }
+
+    function syncMessageDateSeparators() {
+        const $list = $('#wa-message-list');
+        $list.find('.wa-message-date-separator').remove();
+        let previousDate = '';
+        $list.find('.wa-message').each(function() {
+            const dateKey = $(this).attr('data-message-date');
+            if (!dateKey || dateKey === previousDate) return;
+            $(this).before(`<div class="wa-message-date-separator" data-date="${escapeHtml(dateKey)}"><span>${escapeHtml(formatMessageDate(dateKey))}</span></div>`);
+            previousDate = dateKey;
+        });
+    }
+
     function formatMessageTime(value) {
         if (!value) return '';
-        const date = new Date(value);
-        if (Number.isNaN(date.getTime())) {
+        const date = getMessageDate(value);
+        if (!date) {
             const text = String(value);
             return text.length > 10 ? text.slice(11, 16) : text;
         }
@@ -1085,7 +1124,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
 
     function renderMessageRow(row) {
         return `
-            <div class="wa-message ${row.direction === 'Outbound' ? 'outbound' : 'inbound'}" data-message="${escapeHtml(row.name)}">
+            <div class="wa-message ${row.direction === 'Outbound' ? 'outbound' : 'inbound'}" data-message="${escapeHtml(row.name)}" data-message-date="${escapeHtml(getMessageDateKey(row.creation))}">
                 ${renderMessageContent(row)}
                 ${renderMessageFooter(row)}
             </div>
@@ -1146,6 +1185,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
             $list.append(html);
         }
 
+        syncMessageDateSeparators();
         bindMessageMediaFallbacks(messageList);
         bindMediaViewerLinks();
         if (shouldStickToBottom) {
@@ -1165,6 +1205,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         const shouldStickToBottom = options.forceScrollToBottom || isMessageListNearBottom(messageList);
         const html = rows.length ? rows.map(row => renderMessageRow(row)).join('') : '<div class="wa-empty">No messages.</div>';
         $('#wa-message-list').html(html);
+        syncMessageDateSeparators();
         lastRenderedMessageSignature = getMessageRowsSignature(rows);
         bindMediaViewerLinks();
         bindMessageMediaFallbacks();
@@ -1364,12 +1405,11 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
             v.linked_reference_doctype === 'CRM Lead' ? v.linked_reference_name : null
         );
         const displayName = c.display_name || c.phone_number || 'Thread';
-        const displayPhone = formatPhoneNumber(c.phone_number);
+        const displayPhone = formatPhoneNumber(c.phone_number).replace(/\d(?=\d{4})/g, '*');
         $('#wa-context-card').html(`
             <div class="wa-profile-card">
                 <div class="wa-profile-avatar">${getAvatarText({contact_display_name: displayName})}</div>
                 <div class="wa-profile-name">${escapeHtml(displayName)}</div>
-                <div class="wa-profile-phone">${escapeHtml(displayPhone || '')}</div>
             </div>
             <div class="wa-meta-row"><span>Name</span><strong>${formatMetaValue(c.display_name)}</strong></div>
             <div class="wa-meta-row"><span>Phone</span><strong>${formatMetaValue(displayPhone)}</strong></div>
@@ -1426,6 +1466,9 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         }
         if (digits.length > 10) {
             return `+${digits.slice(0, digits.length - 10)} ${digits.slice(-10)}`;
+        }
+        if (digits.length === 10) {
+            return `+91 ${digits}`;
         }
         return digits;
     }
@@ -1549,6 +1592,8 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
             const signature = getMessageRowsSignature(rows);
             if (signature !== lastRenderedMessageSignature) {
                 renderMessages(rows);
+            } else {
+                refreshMessageDateLabels();
             }
         }).finally(() => {
             activeMessagesPollInFlight = false;

@@ -894,6 +894,7 @@ def add_external_outbound_message(conversation, body, delivery_status="Sent", ch
         return {"success": True, "message": "Duplicate message ignored"}
 
     result = append_message({
+        "conversation": conversation,
         "channel_account": convo.channel_account,
         "phone_number": frappe.db.get_value("Chat Contact", convo.contact, "phone_number"),
         "direction": "Outbound",

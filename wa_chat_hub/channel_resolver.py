@@ -12,7 +12,7 @@ from wa_chat_hub.security import (
     safe_ai_insert,
     safe_ai_set_value,
 )
-from wa_chat_hub.services import DEFAULT_CONVERSATION_STATUS, get_or_create_contact, normalize_phone
+from wa_chat_hub.services import get_or_create_contact, normalize_phone, resolve_conversation
 
 
 def get_channel_context_for_lead(lead):
@@ -33,7 +33,7 @@ def get_or_create_lead_contact(lead) -> str:
         frappe.throw(_("No mobile number found for CRM Lead {0}.").format(lead.name))
 
     contact_name = get_or_create_contact(
-        phone_number=normalized_phone,
+        phone_number=phone,
         display_name=_get_lead_display_name(lead),
     )
     updates = {
@@ -152,7 +152,7 @@ def get_or_create_patient_contact(patient) -> str:
         frappe.throw(_("No mobile number found for Patient {0}.").format(patient.name))
 
     contact_name = get_or_create_contact(
-        phone_number=normalized_phone,
+        phone_number=phone,
         display_name=_get_patient_display_name(patient),
     )
     safe_ai_set_value(
@@ -260,53 +260,35 @@ def _get_or_create_reference_conversation(
     department: str | None = None,
     defer_reference_link: bool = False,
 ) -> tuple[str, bool]:
-    conversation = _find_conversation_for_contact_on_channel(contact, channel_account, open_only=True)
-    if not conversation:
-        conversation = _find_conversation_for_contact_on_channel(contact, channel_account, open_only=False)
+    conversation, created = resolve_conversation(contact=contact, channel_account=channel_account)
+    if created and department:
+        safe_ai_set_value("Chat Conversation", conversation, "department", department)
 
-    if conversation:
-        if defer_reference_link:
-            return conversation, False
-        updates = {}
-        existing = safe_ai_get_value(
-            "Chat Conversation",
-            conversation,
-            ["linked_reference_doctype", "linked_reference_name"],
-            as_dict=True,
-        )
-        if reference_doctype == "Patient":
-            updates["linked_reference_doctype"] = "Patient"
-            updates["linked_reference_name"] = reference_name
-            if frappe.get_meta("Chat Conversation").has_field("linked_patient"):
-                updates["linked_patient"] = reference_name
-            if frappe.get_meta("Chat Conversation").has_field("party_type"):
-                updates["party_type"] = "Patient"
-                updates["identity_status"] = "Matched"
-        elif not existing.linked_reference_doctype:
-            updates["linked_reference_doctype"] = reference_doctype
-        if reference_doctype != "Patient" and not existing.linked_reference_name:
-            updates["linked_reference_name"] = reference_name
-        if updates:
-            safe_ai_set_value("Chat Conversation", conversation, updates)
-        return conversation, False
-
-    payload = {
-        "doctype": "Chat Conversation",
-        "channel_account": channel_account,
-        "contact": contact,
-        "department": department,
-        "status": DEFAULT_CONVERSATION_STATUS,
-    }
-    if not defer_reference_link:
-        payload.update(
-            {
-                "linked_reference_doctype": reference_doctype,
-                "linked_reference_name": reference_name,
-            }
-        )
-    doc = frappe.get_doc(payload)
-    safe_ai_insert(doc)
-    return doc.name, True
+    if defer_reference_link:
+        return conversation, created
+    updates = {}
+    existing = safe_ai_get_value(
+        "Chat Conversation",
+        conversation,
+        ["linked_reference_doctype", "linked_reference_name"],
+        as_dict=True,
+        for_update=True,
+    )
+    if reference_doctype == "Patient":
+        updates["linked_reference_doctype"] = "Patient"
+        updates["linked_reference_name"] = reference_name
+        if frappe.get_meta("Chat Conversation").has_field("linked_patient"):
+            updates["linked_patient"] = reference_name
+        if frappe.get_meta("Chat Conversation").has_field("party_type"):
+            updates["party_type"] = "Patient"
+            updates["identity_status"] = "Matched"
+    elif not existing.linked_reference_doctype:
+        updates["linked_reference_doctype"] = reference_doctype
+    if reference_doctype != "Patient" and not existing.linked_reference_name:
+        updates["linked_reference_name"] = reference_name
+    if updates:
+        safe_ai_set_value("Chat Conversation", conversation, updates)
+    return conversation, created
 
 
 def _conversation_department_for_account(channel_account: str) -> str | None:
@@ -322,22 +304,6 @@ def _link_crm_lead_on_conversation(conversation: str, lead_name: str) -> None:
         "linked_reference_name": lead_name,
     }
     safe_ai_set_value("Chat Conversation", conversation, updates, update_modified=False)
-
-
-def _find_conversation_for_contact_on_channel(contact: str, channel_account: str, open_only: bool) -> str | None:
-    filters: dict[str, Any] = {
-        "contact": contact,
-        "channel_account": channel_account,
-    }
-    if open_only:
-        filters["status"] = ["!=", "Closed"]
-
-    return safe_ai_get_value(
-        "Chat Conversation",
-        filters,
-        "name",
-        order_by="modified desc",
-    )
 
 
 def _get_lead_phone(lead) -> str | None:

@@ -727,6 +727,25 @@
   padding: 16px 10px 14px;
 }
 
+.wa-message-date-separator {
+  display: flex;
+  justify-content: center;
+  clear: both;
+  margin: 16px 0;
+}
+
+.wa-message-date-separator span {
+  padding: 5px 12px;
+  border: 1px solid #dce4ee;
+  border-radius: 8px;
+  background: #f0f4f8;
+  color: #526276;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+}
+
 .wa-thread-empty-state {
   min-height: 100%;
   display: flex;

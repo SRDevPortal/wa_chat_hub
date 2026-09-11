@@ -169,6 +169,7 @@ def send_reply():
 
     convo = frappe.get_doc("Chat Conversation", conversation)
     result = append_message({
+        "conversation": conversation,
         "channel_account": convo.channel_account,
         "phone_number": frappe.db.get_value("Chat Contact", convo.contact, "phone_number"),
         "direction": "Outbound",
@@ -449,6 +450,7 @@ def send_template_message():
     convo = frappe.get_doc("Chat Conversation", conversation)
     body_preview = payload.get("body") or f"Template: {template_name}"
     result = append_message({
+        "conversation": conversation,
         "channel_account": convo.channel_account,
         "phone_number": frappe.db.get_value("Chat Contact", convo.contact, "phone_number"),
         "direction": "Outbound",

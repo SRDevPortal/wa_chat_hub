@@ -18,13 +18,13 @@ from wa_chat_hub.ai.media_transcription import (
     TRANSCRIPT_CONTENT_TYPES,
     process_transcript_for_lead_summary,
 )
-from wa_chat_hub.db_retry import is_db_lock_conflict, with_db_lock_retry
+from wa_chat_hub.db_retry import with_db_lock_retry
 from wa_chat_hub.messaging.idempotency import (
     build_message_dedupe_key,
     webhook_idempotency_enabled,
 )
 from wa_chat_hub.phone_normalization import canonical_phone as _canonical_phone
-from wa_chat_hub.phone_normalization import normalize_phone
+from wa_chat_hub.phone_normalization import chat_phone_candidates, normalize_chat_phone, normalize_phone
 from wa_chat_hub.performance_flags import conversation_job_enqueue_options
 from wa_chat_hub.prompts import (
     get_conversation_crm_lead,
@@ -110,7 +110,7 @@ def _record_lock_name(prefix: str, token: str) -> str:
 
 def _append_message_lock_name(payload: Dict[str, Any]) -> str:
     channel_account = str(payload.get("channel_account") or "unknown").strip()
-    phone_number = normalize_phone(payload.get("phone_number") or payload.get("to") or payload.get("from"))
+    phone_number = normalize_chat_phone(payload.get("phone_number") or payload.get("to") or payload.get("from"))
     token = f"{channel_account}:{phone_number or payload.get('conversation') or 'unknown'}"
     return _record_lock_name("append", token)
 
@@ -222,8 +222,13 @@ def find_assignment_owner(
 
 
 def get_or_create_contact(phone_number: str, display_name: Optional[str] = None) -> str:
-    normalized = normalize_phone(phone_number)
+    normalized = normalize_chat_phone(phone_number)
     existing = safe_ai_get_value("Chat Contact", {"phone_number": normalized}, "name")
+    if not existing:
+        existing = safe_ai_get_value(
+            "Chat Contact", {"phone_number": ["in", chat_phone_candidates(phone_number)]},
+            "name", order_by="creation asc, name asc",
+        )
     if existing:
         if display_name and safe_ai_get_value("Chat Contact", existing, "display_name") != display_name:
             with_db_lock_retry(
@@ -268,7 +273,7 @@ def get_or_create_contact(phone_number: str, display_name: Optional[str] = None)
 
 def _wait_for_duplicate_contact(phone_number: str) -> Optional[str]:
     for attempt in range(CONTACT_DUPLICATE_VISIBILITY_ATTEMPTS):
-        existing = safe_ai_get_value("Chat Contact", {"phone_number": phone_number}, "name")
+        existing = safe_ai_get_value("Chat Contact", {"phone_number": phone_number}, "name", for_update=True)
         if existing:
             return existing
         time.sleep(CONTACT_DUPLICATE_VISIBILITY_DELAY_SECONDS)
@@ -281,36 +286,92 @@ def get_or_create_conversation(
     department: Optional[str] = None,
     assigned_to: Optional[str] = None,
     status: str = DEFAULT_CONVERSATION_STATUS,
+    *,
+    preferred_conversation: Optional[str] = None,
 ) -> str:
-    filters = {
-        "channel_account": channel_account,
-        "contact": contact,
-        "status": ["in", ACTIVE_CONVERSATION_STATUSES],
-    }
-
-    existing = with_db_lock_retry(
-        "conversation_lookup",
-        lambda: safe_ai_get_value("Chat Conversation", filters, "name"),
+    conversation, _created = resolve_conversation(
+        channel_account, contact, department=department, assigned_to=assigned_to, status=status,
+        preferred_conversation=preferred_conversation,
     )
-    if existing:
-        updates = {}
-        if department:
-            updates["department"] = department
-        if assigned_to:
-            updates["assigned_to"] = assigned_to
-        if updates:
-            with_db_lock_retry(
-                "conversation_routing_update",
-                lambda: safe_ai_set_value(
-                    "Chat Conversation",
-                    existing,
-                    updates,
-                    update_modified=False,
-                ),
-            )
-        return existing
+    return conversation
 
-    def _insert_conversation() -> str:
+
+def find_conversation_for_phone(
+    phone_number: str,
+    channel_account: Optional[str] = None,
+    *,
+    contact: Optional[str] = None,
+    for_update: bool = False,
+    preferred_conversation: Optional[str] = None,
+) -> Optional[str]:
+    contacts = safe_ai_get_all(
+        "Chat Contact",
+        filters={"phone_number": ["in", chat_phone_candidates(phone_number)]},
+        pluck="name",
+    )
+    if contact and contact not in contacts:
+        contacts.append(contact)
+    if not contacts:
+        return None
+    if for_update:
+        # Serialize all creation paths until the caller's transaction commits.
+        # Lock aliases in a fixed order, including legacy local-number contacts.
+        for name in sorted(contacts):
+            safe_ai_get_value("Chat Contact", name, "name", for_update=True)
+    filters = {"contact": ["in", contacts]}
+    if channel_account:
+        filters["channel_account"] = channel_account
+    if preferred_conversation:
+        existing = safe_ai_get_value(
+            "Chat Conversation", {**filters, "name": preferred_conversation}, "name",
+            for_update=for_update,
+        )
+        if not existing:
+            frappe.throw(_("The selected conversation does not match this contact and Channel Account."))
+        return existing
+    return safe_ai_get_value(
+        "Chat Conversation", filters, "name",
+        order_by="last_message_time desc, creation asc, name asc",
+        for_update=for_update,
+    )
+
+
+def resolve_conversation(
+    channel_account: str,
+    contact: str,
+    department: Optional[str] = None,
+    assigned_to: Optional[str] = None,
+    status: str = DEFAULT_CONVERSATION_STATUS,
+    *,
+    preferred_conversation: Optional[str] = None,
+) -> tuple[str, bool]:
+    if not channel_account:
+        frappe.throw(_("A Channel Account is required to open a chat."))
+    # A deadlock can release transaction locks. Retry the whole lookup/insert,
+    # so a retry always acquires the contact locks and checks for a chat again.
+    def resolve() -> tuple[str, bool]:
+        phone_number = safe_ai_get_value("Chat Contact", contact, "phone_number")
+        if not phone_number:
+            # A duplicate contact insert may have waited for another transaction.
+            phone_number = safe_ai_get_value("Chat Contact", contact, "phone_number", for_update=True)
+        if not phone_number:
+            frappe.throw(_("Cannot open a chat without a valid contact phone number."))
+        existing = find_conversation_for_phone(
+            phone_number, channel_account, contact=contact, for_update=True,
+            preferred_conversation=preferred_conversation,
+        )
+        if existing:
+            updates = {}
+            if safe_ai_get_value("Chat Conversation", existing, "status", for_update=True) == "Closed":
+                updates["status"] = DEFAULT_CONVERSATION_STATUS
+            if department:
+                updates["department"] = department
+            if assigned_to:
+                updates["assigned_to"] = assigned_to
+            if updates:
+                safe_ai_set_value("Chat Conversation", existing, updates, update_modified=False)
+            return existing, False
+
         doc = frappe.get_doc({
             "doctype": "Chat Conversation",
             "channel_account": channel_account,
@@ -319,18 +380,11 @@ def get_or_create_conversation(
             "assigned_to": assigned_to,
             "status": status,
         })
-        try:
-            safe_ai_insert(doc)
-            return doc.name
-        except Exception as exc:
-            if not is_db_lock_conflict(exc):
-                raise
-            concurrent = safe_ai_get_value("Chat Conversation", filters, "name")
-            if concurrent:
-                return concurrent
-            raise
+        safe_ai_insert(doc)
+        return doc.name, True
 
-    return with_db_lock_retry("conversation_insert", _insert_conversation)
+    return with_db_lock_retry("conversation_resolve", resolve)
+
 
 
 def append_message(payload: Dict[str, Any]) -> Dict[str, str]:
@@ -395,21 +449,13 @@ def _append_message_public_result(result: Dict[str, str]) -> Dict[str, str]:
 
 
 def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
-    phone_number = normalize_phone(payload.get("phone_number") or payload.get("to") or payload.get("from"))
+    phone_number = normalize_chat_phone(payload.get("phone_number") or payload.get("to") or payload.get("from"))
     if not phone_number:
         frappe.throw(_("Cannot store WhatsApp message: customer phone number is missing in webhook payload."))
     contact = get_or_create_contact(phone_number=phone_number, display_name=payload.get("display_name"))
 
     channel_account = payload["channel_account"]
-    existing_conversation = safe_ai_get_value(
-        "Chat Conversation",
-        {
-            "channel_account": channel_account,
-            "contact": contact,
-            "status": ["in", ACTIVE_CONVERSATION_STATUSES],
-        },
-        "name",
-    )
+    existing_conversation = find_conversation_for_phone(phone_number, channel_account, contact=contact)
 
     # Preserve existing conversations: map defaults apply only when creating a new thread.
     # Chat Conversation.department → ERPNext "Department", not Medical Department.
@@ -434,7 +480,11 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
         department=routing.get("department"),
         assigned_to=routing.get("assigned_to"),
         status=routing.get("queue_status") or DEFAULT_CONVERSATION_STATUS,
+        preferred_conversation=(
+            payload.get("conversation") if payload.get("direction") == "Outbound" else None
+        ),
     )
+    contact = safe_ai_get_value("Chat Conversation", conversation, "contact", for_update=True)
 
     direction = payload.get("direction", "Inbound")
     provider_name = str(

@@ -64,6 +64,12 @@ def extract_interakt_customer_phone(customer: Any, payload: Dict[str, Any] | Non
         ):
             value = source.get(key)
             if value not in (None, ""):
+                country = source.get("country_code") or source.get("countryCode")
+                if key in {"phone_number", "phoneNumber"} and country and not str(value).strip().startswith("+"):
+                    digits = re.sub(r"\D", "", str(value))
+                    country_digits = re.sub(r"\D", "", str(country))
+                    if country_digits and len(digits) <= 10:
+                        return f"+{country_digits}{digits}"
                 return str(value).strip()
 
         country = source.get("country_code") or source.get("countryCode") or "+91"

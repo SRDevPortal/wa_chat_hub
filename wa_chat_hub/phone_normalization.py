@@ -8,6 +8,31 @@ def normalize_phone(value: Optional[str]) -> str:
     return "".join(character for character in str(value or "") if character.isdigit())
 
 
+def normalize_chat_phone(value: Optional[str]) -> str:
+    """Use India's country code for local numbers, preserving international numbers."""
+    raw = str(value or "").strip()
+    digits = normalize_phone(raw)
+    if digits.startswith("00"):
+        return digits[2:]
+    if not raw.startswith("+"):
+        if len(digits) == 11 and digits.startswith("0"):
+            digits = digits[1:]
+        if len(digits) == 10:
+            return "91" + digits
+    return digits
+
+
+def chat_phone_candidates(value: Optional[str]) -> list[str]:
+    """Include historical Indian local-number contacts without matching other countries."""
+    phone = normalize_chat_phone(value)
+    if not phone:
+        return []
+    candidates = [phone]
+    if len(phone) == 12 and phone.startswith("91"):
+        candidates.extend([phone[2:], "0" + phone[2:], "00" + phone])
+    return candidates
+
+
 def last10(value: Optional[str]) -> str:
     digits = normalize_phone(value)
     return digits[-10:] if len(digits) >= 10 else digits
