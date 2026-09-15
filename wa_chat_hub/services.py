@@ -303,6 +303,7 @@ def find_conversation_for_phone(
     contact: Optional[str] = None,
     for_update: bool = False,
     preferred_conversation: Optional[str] = None,
+    order_by: str = "last_message_time desc, creation asc, name asc",
 ) -> Optional[str]:
     contacts = safe_ai_get_all(
         "Chat Contact",
@@ -331,7 +332,7 @@ def find_conversation_for_phone(
         return existing
     return safe_ai_get_value(
         "Chat Conversation", filters, "name",
-        order_by="last_message_time desc, creation asc, name asc",
+        order_by=order_by,
         for_update=for_update,
     )
 
