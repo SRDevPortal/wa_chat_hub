@@ -897,15 +897,25 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     }
 
     function renderMessageContent(row) {
-        const contentType = row.content_type || 'Text';
-        const mediaUrl = safeMediaUrl(row.attachment_url || row.media_url || '');
-        const previewUrl = safeMediaUrl(row.media_proxy_url || row.attachment_url || row.media_url || '');
+        const transport = parseJson(row.raw_transport_payload);
+        let contentType = row.media_content_type || row.content_type || 'Text';
+        const mediaUrl = safeMediaUrl(row.attachment_url || row.media_url || transport.header_media_url || '');
+        if (contentType === 'Template' && mediaUrl) {
+            const format = String(transport.header_format || '').toUpperCase();
+            if (format === 'IMAGE' || /\.(png|jpe?g|gif|webp)([?#]|$)/i.test(mediaUrl)) contentType = 'Image';
+            else if (format === 'VIDEO') contentType = 'Video';
+            else if (format === 'DOCUMENT') contentType = 'Document';
+        }
+        const localMedia = /^\/(?:private\/)?files\//.test(mediaUrl);
+        const remoteProxy = row.name && /^https?:\/\//i.test(mediaUrl)
+            ? `/api/method/wa_chat_hub.api.chat.get_message_media?message=${encodeURIComponent(row.name)}`
+            : '';
+        const previewUrl = safeMediaUrl(localMedia ? mediaUrl : (row.media_proxy_url || remoteProxy || mediaUrl));
         const rawBody = row.body || '';
         const body = ['none', 'null', 'undefined'].includes(String(rawBody).trim().toLowerCase()) ? '' : rawBody;
         const safeUrl = escapeHtml(mediaUrl);
         const safePreviewUrl = escapeHtml(previewUrl);
         const safeBody = escapeHtml(body);
-        const transport = parseJson(row.raw_transport_payload);
 
         if (!previewUrl) {
             return `<div class="wa-message-body">${safeBody}</div>`;

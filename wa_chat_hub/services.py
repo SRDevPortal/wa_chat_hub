@@ -873,7 +873,10 @@ def _clean_media_body(content_type: str, body: Optional[str]) -> str:
 
 def mark_conversation_read(conversation_name: str) -> None:
     assert_ai_doctype_permission("Chat Conversation", "write")
-    unread_count = cint(frappe.db.get_value("Chat Conversation", conversation_name, "unread_count") or 0)
+    # Use the current row, including when the caller already locked a read snapshot.
+    unread_count = cint(frappe.db.get_value(
+        "Chat Conversation", conversation_name, "unread_count", for_update=True
+    ) or 0)
     if unread_count <= 0:
         return
 

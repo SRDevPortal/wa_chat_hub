@@ -140,6 +140,9 @@ def resolve_approved_template(
                 "WhatsApp template '{0}' expects {1} body variables, but {2} were provided."
             ).format(match.get("name") or template_name, variable_count, len(body_values))
         )
+    for index, value in enumerate(body_values, 1):
+        if value is None or not str(value).strip():
+            frappe.throw(_("Body variable {{{{{0}}}}} is required.").format(index))
 
     resolved = {
         **template,
@@ -149,6 +152,16 @@ def resolve_approved_template(
         resolved["configured_template_name"] = template_name
 
     header_format = str(match.get("header_format") or "").strip().upper()
+    if header_format not in {"IMAGE", "VIDEO", "DOCUMENT"}:
+        header_values = template.get("header_values") or []
+        header_count = int(match.get("header_variable_count") or len(match.get("header_variables") or []))
+        if header_count != len(header_values):
+            frappe.throw(_("WhatsApp template '{0}' expects {1} header variables, but {2} were provided.").format(
+                match.get("name") or template_name, header_count, len(header_values)
+            ))
+        for index, value in enumerate(header_values, 1):
+            if value is None or not str(value).strip():
+                frappe.throw(_("Header variable {{{{{0}}}}} is required.").format(index))
     if header_format in {"IMAGE", "VIDEO", "DOCUMENT"}:
         supplied_header_values = template.get("header_values") or []
         media_url = str(

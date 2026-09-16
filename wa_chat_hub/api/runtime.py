@@ -22,6 +22,17 @@ from wa_chat_hub.security import safe_ai_get_doc, safe_ai_set_value, set_ai_secu
 from wa_chat_hub.task_logger import elapsed, task_log
 
 TEMPLATE_MEDIA_PREVIEW_MAX_BYTES = 20 * 1024 * 1024
+DOCUMENT_UPLOAD_MIMETYPES = {
+    "application/pdf",
+    "text/plain",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/octet-stream",
+}
 
 
 @frappe.whitelist()
@@ -40,18 +51,7 @@ def upload_image_for_send():
 @frappe.whitelist(methods=["POST"])
 def upload_document_for_send():
     """Upload a document to Interakt and return its hosted media URL."""
-    allowed = {
-        "application/pdf",
-        "text/plain",
-        "application/msword",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "application/vnd.ms-excel",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "application/vnd.ms-powerpoint",
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        "application/octet-stream",
-    }
-    return _upload_media_for_send(allowed, _("Document file is required"), _("Only document files are supported right now"))
+    return _upload_media_for_send(DOCUMENT_UPLOAD_MIMETYPES, _("Document file is required"), _("Only document files are supported right now"))
 
 
 def _upload_media_for_send(allowed_mimetypes, missing_file_message, invalid_file_message):
@@ -60,11 +60,21 @@ def _upload_media_for_send(allowed_mimetypes, missing_file_message, invalid_file
         frappe.throw(_("conversation is required"))
     ensure_can_read_conversation(conversation)
 
+    return _upload_authorized_media_for_send(
+        conversation, allowed_mimetypes, missing_file_message, invalid_file_message
+    )
+
+
+def _upload_authorized_media_for_send(
+    conversation, allowed_mimetypes, missing_file_message, invalid_file_message, *, mimetype=None
+):
+    """Upload media after the calling application has authorized the conversation."""
     file_storage = frappe.request.files.get("file") if frappe.request and frappe.request.files else None
     if not file_storage:
         frappe.throw(missing_file_message)
 
-    mimetype = file_storage.mimetype or ""
+    # Callers may supply a MIME type after validating and normalizing the file.
+    mimetype = mimetype or file_storage.mimetype or ""
     if not _is_allowed_mimetype(mimetype, allowed_mimetypes):
         frappe.throw(invalid_file_message)
 
@@ -133,11 +143,20 @@ def _upload_media_for_send(allowed_mimetypes, missing_file_message, invalid_file
 
 @frappe.whitelist(methods=["POST"])
 def send_reply():
-    started = time.monotonic()
     payload = frappe.local.form_dict or {}
     if frappe.request and frappe.request.get_json(silent=True):
         payload = frappe.request.get_json()
 
+    conversation = payload.get("conversation")
+    if not conversation:
+        frappe.throw(_("conversation is required"))
+    ensure_can_read_conversation(conversation)
+    return _send_authorized_reply(payload)
+
+
+def _send_authorized_reply(payload):
+    """Queue a reply after the calling application has authorized the conversation."""
+    started = time.monotonic()
     conversation = payload.get("conversation")
     body = payload.get("body")
     media_url = payload.get("media_url")
@@ -147,8 +166,6 @@ def send_reply():
     display_media_url = payload.get("display_media_url") or media_url
     if not conversation:
         frappe.throw(_("conversation is required"))
-    ensure_can_read_conversation(conversation)
-
     content_type = str(payload.get("content_type") or "Text").title()
     is_media_message = content_type in {"Image", "Document", "Audio", "Video", "Sticker"}
     if is_media_message and not media_url:
@@ -457,9 +474,14 @@ def send_template_message():
         "sender_type": payload.get("sender_type", "Agent"),
         "content_type": "Template",
         "body": body_preview,
+        "media_url": template.get("header_media_url"),
         "delivery_status": delivery_status,
         "channel_message_id": outbound.get("provider_message_id"),
-        "raw_transport_payload": outbound,
+        "raw_transport_payload": {
+            **outbound,
+            "header_format": template.get("header_format"),
+            "header_media_url": template.get("header_media_url"),
+        },
         "template_category": template.get("template_category"),
     })
     return {"success": True, "result": {**outbound, **result}}

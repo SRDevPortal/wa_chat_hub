@@ -729,11 +729,49 @@ def _attach_message_file_urls(rows: list) -> None:
 
 def _attach_message_media_proxy_urls(rows: list) -> None:
     for row in rows:
-        if row.get("media_url") and row.get("content_type") in MEDIA_PROXY_CONTENT_TYPES:
+        _attach_template_media(row)
+        media_url = str(row.get("attachment_url") or row.get("media_url") or "").strip()
+        # Uploaded files are already served by Frappe, including private-file access checks.
+        # The remote proxy only accepts HTTP URLs and must not receive /files/... paths.
+        if media_url.startswith(("/files/", "/private/files/")):
+            row.pop("media_proxy_url", None)
+            continue
+        if media_url and (row.get("media_content_type") or row.get("content_type")) in MEDIA_PROXY_CONTENT_TYPES:
             row["media_proxy_url"] = (
                 "/api/method/wa_chat_hub.api.chat.get_message_media"
                 f"?message={quote(str(row.get('name') or ''))}"
             )
+
+
+def _attach_template_media(row) -> None:
+    """Expose template header media without changing the stored Template message type."""
+    if row.get("content_type") != "Template":
+        return
+    try:
+        transport = frappe.parse_json(row.get("raw_transport_payload") or "{}")
+    except (TypeError, ValueError):
+        transport = {}
+    if not isinstance(transport, dict):
+        transport = {}
+    payload = transport.get("payload") or {}
+    template = payload.get("template") if isinstance(payload, dict) else {}
+    template = template if isinstance(template, dict) else {}
+    header_values = template.get("headerValues") or []
+    media_url = row.get("media_url") or transport.get("header_media_url") or ""
+    if not media_url and isinstance(header_values, list) and header_values:
+        candidate = str(header_values[0])
+        candidate_mime = mimetypes.guess_type(urlparse(candidate).path)[0] or ""
+        is_media_header = str(transport.get("header_format") or "").upper() in {"IMAGE", "VIDEO", "DOCUMENT"}
+        if urlparse(candidate).scheme in {"http", "https"} and (is_media_header or candidate_mime):
+            media_url = candidate
+    if not media_url:
+        return
+    header_format = str(transport.get("header_format") or "").title()
+    if header_format not in {"Image", "Video", "Document"}:
+        mime = mimetypes.guess_type(urlparse(str(media_url)).path)[0] or ""
+        header_format = "Image" if mime.startswith("image/") else "Video" if mime.startswith("video/") else "Document"
+    row["media_url"] = media_url
+    row["media_content_type"] = header_format
 
 
 @frappe.whitelist()
@@ -741,15 +779,21 @@ def get_message_media(message):
     row = frappe.db.get_value(
         "Chat Message",
         message,
-        ["name", "conversation", "content_type", "media_url", "attachment_file"],
+        ["name", "conversation", "content_type", "media_url", "attachment_file", "raw_transport_payload"],
         as_dict=True,
     )
     if not row:
         frappe.throw(_("Message not found"))
     ensure_can_read_conversation(row.conversation)
+    return _serve_authorized_message_media(row)
+
+
+def _serve_authorized_message_media(row, *, download=False):
+    """Serve media after the caller has authorized its stored conversation."""
+    _attach_template_media(row)
 
     media_url = str(row.media_url or "").strip()
-    file_name = "wa-media"
+    file_name = urlparse(media_url).path.rsplit("/", 1)[-1] or "wa-media"
     if row.attachment_file:
         file_doc = frappe.db.get_value(
             "File",
@@ -786,11 +830,15 @@ def get_message_media(message):
         chunks.append(chunk)
 
     content_type = response.headers.get("content-type") or mimetypes.guess_type(media_url.split("?", 1)[0])[0]
+    if "." not in file_name:
+        file_name += mimetypes.guess_extension(str(content_type or "").split(";", 1)[0]) or ""
     frappe.response["type"] = "download"
     frappe.response["filename"] = file_name
     frappe.response["filecontent"] = b"".join(chunks)
     frappe.response["content_type"] = content_type or "application/octet-stream"
-    frappe.response["display_content_as"] = "inline"
+    inline_type = str(content_type or "").split(";", 1)[0].lower()
+    can_preview = inline_type in {"image/png", "image/jpeg", "image/gif", "image/webp", "image/avif", "image/bmp", "application/pdf"} or inline_type.startswith(("audio/", "video/"))
+    frappe.response["display_content_as"] = "inline" if can_preview and not download else "attachment"
 
 
 @frappe.whitelist(methods=["POST"])
