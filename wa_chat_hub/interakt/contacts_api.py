@@ -22,6 +22,12 @@ def get_interakt_api_key(channel_account: str) -> str:
 
 def track_user(channel_account: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     """POST /v1/public/track/users/ — create or update Interakt user."""
+    payload = dict(payload)
+    if isinstance(payload.get("traits"), dict):
+        payload["traits"] = {
+            key: " ".join(value.split()) if isinstance(value, str) else value
+            for key, value in payload["traits"].items()
+        }
     account = get_interakt_account(channel_account)
     api_key = get_interakt_api_key(channel_account)
     response = requests.post(
