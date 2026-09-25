@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 import frappe
+import phonenumbers
 from frappe import _
 from frappe.utils import cint, now_datetime
 from frappe.utils.file_lock import LockTimeoutError
@@ -24,7 +25,7 @@ from wa_chat_hub.messaging.idempotency import (
     webhook_idempotency_enabled,
 )
 from wa_chat_hub.phone_normalization import canonical_phone as _canonical_phone
-from wa_chat_hub.phone_normalization import chat_phone_candidates, normalize_chat_phone, normalize_phone
+from wa_chat_hub.phone_normalization import chat_phone_candidates, mobile_phone_candidates, normalize_chat_phone, normalize_phone
 from wa_chat_hub.performance_flags import conversation_job_enqueue_options
 from wa_chat_hub.prompts import (
     get_conversation_crm_lead,
@@ -111,6 +112,9 @@ def _record_lock_name(prefix: str, token: str) -> str:
 def _append_message_lock_name(payload: Dict[str, Any]) -> str:
     channel_account = str(payload.get("channel_account") or "unknown").strip()
     phone_number = normalize_chat_phone(payload.get("phone_number") or payload.get("to") or payload.get("from"))
+    if payload.get("provider_name") == "Mobile App":
+        candidates = channel_phone_candidates(payload.get("phone_number"), channel_account)
+        phone_number = candidates[0] if candidates else ""
     token = f"{channel_account}:{phone_number or payload.get('conversation') or 'unknown'}"
     return _record_lock_name("append", token)
 
@@ -221,12 +225,30 @@ def find_assignment_owner(
     return rows[0].assign_to if rows else None
 
 
-def get_or_create_contact(phone_number: str, display_name: Optional[str] = None) -> str:
-    normalized = normalize_chat_phone(phone_number)
+def channel_phone_candidates(phone_number: str, channel_account: Optional[str] = None) -> list[str]:
+    """Use country-aware identities for app channels; retain WhatsApp behavior."""
+    if channel_account:
+        account = frappe.get_cached_doc("Chat Channel Account", channel_account)
+        if account.channel_type == "Mobile App":
+            region = str(frappe.conf.get("mobile_app_ai_phone_region") or "").strip().upper()
+            if not region:
+                code = normalize_phone(account.get("interakt_default_country_code"))
+                region = phonenumbers.region_code_for_country_code(int(code)) if code else None
+            return mobile_phone_candidates(phone_number, region)
+    return chat_phone_candidates(phone_number)
+
+
+def get_or_create_contact(
+    phone_number: str, display_name: Optional[str] = None, *, channel_account: Optional[str] = None,
+) -> str:
+    candidates = channel_phone_candidates(phone_number, channel_account)
+    if not candidates:
+        frappe.throw(_("Enter a valid phone number including its country code."))
+    normalized = candidates[0]
     existing = safe_ai_get_value("Chat Contact", {"phone_number": normalized}, "name")
     if not existing:
         existing = safe_ai_get_value(
-            "Chat Contact", {"phone_number": ["in", chat_phone_candidates(phone_number)]},
+            "Chat Contact", {"phone_number": ["in", candidates]},
             "name", order_by="creation asc, name asc",
         )
     if existing:
@@ -304,10 +326,11 @@ def find_conversation_for_phone(
     for_update: bool = False,
     preferred_conversation: Optional[str] = None,
     order_by: str = "last_message_time desc, creation asc, name asc",
+    patient_scope: Optional[str] = None,
 ) -> Optional[str]:
     contacts = safe_ai_get_all(
         "Chat Contact",
-        filters={"phone_number": ["in", chat_phone_candidates(phone_number)]},
+        filters={"phone_number": ["in", channel_phone_candidates(phone_number, channel_account)]},
         pluck="name",
     )
     if contact and contact not in contacts:
@@ -322,6 +345,8 @@ def find_conversation_for_phone(
     filters = {"contact": ["in", contacts]}
     if channel_account:
         filters["channel_account"] = channel_account
+    if patient_scope is not None:
+        filters["linked_patient"] = patient_scope
     if preferred_conversation:
         existing = safe_ai_get_value(
             "Chat Conversation", {**filters, "name": preferred_conversation}, "name",
@@ -330,11 +355,18 @@ def find_conversation_for_phone(
         if not existing:
             frappe.throw(_("The selected conversation does not match this contact and Channel Account."))
         return existing
-    return safe_ai_get_value(
+    existing = safe_ai_get_value(
         "Chat Conversation", filters, "name",
         order_by=order_by,
         for_update=for_update,
     )
+    if not existing and patient_scope:
+        # Preserve pre-profile history, but never reassign another patient's chat.
+        existing = safe_ai_get_value(
+            "Chat Conversation", {**filters, "linked_patient": ["is", "not set"]}, "name",
+            order_by=order_by, for_update=for_update,
+        )
+    return existing
 
 
 def resolve_conversation(
@@ -345,6 +377,7 @@ def resolve_conversation(
     status: str = DEFAULT_CONVERSATION_STATUS,
     *,
     preferred_conversation: Optional[str] = None,
+    patient_scope: Optional[str] = None,
 ) -> tuple[str, bool]:
     if not channel_account:
         frappe.throw(_("A Channel Account is required to open a chat."))
@@ -360,6 +393,7 @@ def resolve_conversation(
         existing = find_conversation_for_phone(
             phone_number, channel_account, contact=contact, for_update=True,
             preferred_conversation=preferred_conversation,
+            patient_scope=patient_scope,
         )
         if existing:
             updates = {}
@@ -380,6 +414,7 @@ def resolve_conversation(
             "department": department,
             "assigned_to": assigned_to,
             "status": status,
+            **({"linked_patient": patient_scope} if patient_scope else {}),
         })
         safe_ai_insert(doc)
         return doc.name, True
@@ -450,12 +485,16 @@ def _append_message_public_result(result: Dict[str, str]) -> Dict[str, str]:
 
 
 def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
-    phone_number = normalize_chat_phone(payload.get("phone_number") or payload.get("to") or payload.get("from"))
+    channel_account = payload["channel_account"]
+    raw_phone = payload.get("phone_number") or payload.get("to") or payload.get("from")
+    candidates = channel_phone_candidates(raw_phone, channel_account)
+    phone_number = candidates[0] if candidates else ""
     if not phone_number:
         frappe.throw(_("Cannot store WhatsApp message: customer phone number is missing in webhook payload."))
-    contact = get_or_create_contact(phone_number=phone_number, display_name=payload.get("display_name"))
+    contact = get_or_create_contact(
+        phone_number=raw_phone, display_name=payload.get("display_name"), channel_account=channel_account,
+    )
 
-    channel_account = payload["channel_account"]
     existing_conversation = find_conversation_for_phone(phone_number, channel_account, contact=contact)
 
     # Preserve existing conversations: map defaults apply only when creating a new thread.
@@ -482,7 +521,9 @@ def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
         assigned_to=routing.get("assigned_to"),
         status=routing.get("queue_status") or DEFAULT_CONVERSATION_STATUS,
         preferred_conversation=(
-            payload.get("conversation") if payload.get("direction") == "Outbound" else None
+            payload.get("conversation")
+            if payload.get("direction") == "Outbound" or payload.get("provider_name") == "Mobile App"
+            else None
         ),
     )
     contact = safe_ai_get_value("Chat Conversation", conversation, "contact", for_update=True)

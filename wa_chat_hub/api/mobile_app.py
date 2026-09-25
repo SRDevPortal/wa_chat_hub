@@ -17,6 +17,7 @@ from wa_chat_hub.phone_normalization import normalize_phone
 from wa_chat_hub.policy import get_channel_policy
 from wa_chat_hub.services import (
     append_message,
+    channel_phone_candidates,
     find_indexed_phone_match_names,
     get_or_create_contact,
     get_or_create_conversation,
@@ -226,19 +227,31 @@ def _patient_from_phone(phone: str, channel_account: str) -> str | None:
     if not fields:
         return None
     matches = find_indexed_phone_match_names("Patient", fields, phone, limit=2)
+    # Indexed keys may contain only the last ten digits. They are candidates,
+    # never proof of ownership across countries.
     if len(matches) == 1:
-        return next(iter(matches))
+        patient = next(iter(matches))
+        doc = frappe.get_doc("Patient", patient)
+        expected = channel_phone_candidates("+" + phone, channel_account)
+        for fieldname in fields:
+            actual = channel_phone_candidates(doc.get(fieldname), channel_account)
+            if expected and actual and expected[0] == actual[0]:
+                return patient
     return None
 
 
 def _resolve_context(external_id: str, profile_id: str | None = None) -> dict[str, Any]:
     user = _mobile_user(external_id)
     account = _mobile_channel_account()
-    phone = normalize_phone(user.phone)
-    if not phone:
-        frappe.throw(_("Add a verified mobile number to your app profile before using AI chat."))
-    patient = _profile_patient(user, profile_id) or _patient_from_phone(phone, account)
-    return {"user": user, "account": account, "phone": phone, "patient": patient}
+    phones = channel_phone_candidates(user.phone, account)
+    if not phones:
+        frappe.throw(_("Add a verified mobile number including its country code before using AI chat."))
+    profile_patient = _profile_patient(user, profile_id)
+    patient = profile_patient or _patient_from_phone(phones[0], account)
+    return {
+        "user": user, "account": account, "phone": phones[0], "patient": patient,
+        "profile_patient": profile_patient,
+    }
 
 
 def _ensure_conversation(context: dict[str, Any]) -> str:
@@ -265,7 +278,8 @@ def _ensure_conversation(context: dict[str, Any]) -> str:
         return conversation
 
     contact = get_or_create_contact(
-        context["phone"], context["user"].full_name or context["phone"]
+        context["phone"], context["user"].full_name or context["phone"],
+        channel_account=context["account"],
     )
     return get_or_create_conversation(context["account"], contact)
 
@@ -275,15 +289,28 @@ def _assert_conversation_owner(conversation: str, context: dict[str, Any]):
     account = frappe.get_doc("Chat Channel Account", convo.channel_account)
     if account.channel_type != "Mobile App" or account.name != context["account"]:
         frappe.throw(_("Conversation was not found."), frappe.PermissionError)
-    contact_phone = normalize_phone(
-        frappe.db.get_value("Chat Contact", convo.contact, "phone_number")
-    )
-    if not contact_phone or contact_phone != context["phone"]:
-        frappe.throw(_("Conversation was not found."), frappe.PermissionError)
     linked_patient = str(convo.linked_patient or "").strip()
     if linked_patient and linked_patient != str(context["patient"] or "").strip():
         frappe.throw(_("Conversation was not found."), frappe.PermissionError)
+    # Only a patient link resolved from this authenticated user's own profile
+    # can authorize access when the patient's phone differs from the login.
+    if linked_patient and linked_patient == context.get("profile_patient"):
+        return convo
+    phones = channel_phone_candidates(
+        frappe.db.get_value("Chat Contact", convo.contact, "phone_number"), context["account"],
+    )
+    if not phones or phones[0] != context["phone"]:
+        frappe.throw(_("Conversation was not found."), frappe.PermissionError)
     return convo
+
+
+def _conversation_phone(convo) -> str:
+    phones = channel_phone_candidates(
+        frappe.db.get_value("Chat Contact", convo.contact, "phone_number"), convo.channel_account,
+    )
+    if not phones:
+        frappe.throw(_("The chat contact needs a valid phone number including its country code."))
+    return phones[0]
 
 
 def _message_rows(conversation: str, after: str | None = None, limit: int = DEFAULT_MESSAGE_LIMIT):
@@ -358,7 +385,8 @@ def send_message(
     result = append_message(
         {
             "channel_account": convo.channel_account,
-            "phone_number": context["phone"],
+            "phone_number": _conversation_phone(convo),
+            "conversation": str(convo.name),
             "display_name": context["user"].full_name,
             "direction": "Inbound",
             "sender_type": "Customer",
@@ -409,7 +437,8 @@ def send_attachment(
     result = append_message(
         {
             "channel_account": convo.channel_account,
-            "phone_number": context["phone"],
+            "phone_number": _conversation_phone(convo),
+            "conversation": str(convo.name),
             "display_name": context["user"].full_name,
             "direction": "Inbound",
             "sender_type": "Customer",
