@@ -13,6 +13,14 @@ the `+91` default. Do not guess a country from the account's display name.
 New mobile contacts store the explicit `+` country prefix. Legacy international
 digits and local aliases in the configured country are reused when unambiguous.
 
+For a multi-country app, set `mobile_app_ai_require_country_code` to `1`.
+This takes precedence over both the region setting and the channel's old default:
+app, patient and contact phones must carry `+` or `00` country prefixes. Bare
+numbers are rejected, including full international digits without a prefix.
+Audit existing records and correct their verified country prefixes before enabling
+this on a live multi-country site. No country is guessed and no bulk data rewrite
+is performed; existing unqualified records will require correction to open chat.
+
 A selected patient must come from the authenticated Mobile App User's stored
 profile list. That link permits the patient's phone to differ from the login
 phone. A patient inferred only by phone lookup must still pass the phone check.
@@ -47,3 +55,32 @@ this change does not automatically rewrite them.
 Run `wa_chat_hub.tests.test_mobile_app_identity_database` and
 `wa_chat_hub.tests.test_chat_thread_continuity` with a connected local test site.
 The database tests roll back fixtures and suppress jobs and external providers.
+
+## International email-login accounts (Mobile App only)
+
+Deploy wa_chat_hub with its Chat Contact schema and run `bench --site SITE migrate`
+before enabling `mobile_app_ai_account_identity: 1`. The international mobileintl_app
+migration enables this setting; the domestic mobile_app does not. The runtime also
+checks that the account Channel Type is exactly `Mobile App`. Other channel types
+always retain their phone-based path, even when this site setting is enabled.
+
+The backend resolves the authenticated Mobile App User and a stable profile child
+row ID. With one profile it selects that row; with none it opens an account chat;
+with multiple it requires `profile_id`. Unknown or another user's profile IDs are
+rejected. The middleware must derive external_id from its verified login session.
+Neither the email address nor phone number is used as a chat ownership key.
+
+Contacts store a unique digest of channel + ERP user name + profile row ID and no
+routable phone. Messages, attachments, AI/agent replies and care-team confirmations
+stay on the authorized conversation. Phone validation and country defaults do not
+apply to these contacts. Domestic mode remains off unless explicitly enabled.
+
+Legacy phone-owned history is retained but not automatically adopted. A raw profile
+patient_id is insufficient proof for exposing medical history: profile sync accepts
+user input. This mode starts an unlinked chat; reuse of historical patient chats
+requires a separately reviewed ownership migration. No Patient is required to chat.
+Account chats created before a profile exists remain distinct from later profile chats.
+
+Deploy the shared schema to both benches if both run this version. Do not disable
+account mode after users start chats without planning history access; mode-off
+requests intentionally cannot fall back to phone access for an account contact.

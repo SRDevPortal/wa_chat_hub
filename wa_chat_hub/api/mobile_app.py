@@ -13,6 +13,7 @@ from frappe.utils import cint, now_datetime
 from wa_chat_hub.channel_resolver import (
     get_or_create_patient_conversation_for_channel_account,
 )
+from wa_chat_hub import mobile_account_identity
 from wa_chat_hub.phone_normalization import normalize_phone
 from wa_chat_hub.policy import get_channel_policy
 from wa_chat_hub.services import (
@@ -243,6 +244,13 @@ def _patient_from_phone(phone: str, channel_account: str) -> str | None:
 def _resolve_context(external_id: str, profile_id: str | None = None) -> dict[str, Any]:
     user = _mobile_user(external_id)
     account = _mobile_channel_account()
+    if mobile_account_identity.enabled(account):
+        profile = mobile_account_identity.profile_key(user, profile_id)
+        return {
+            "user": user, "account": account, "phone": None, "patient": None,
+            "profile_patient": None, "profile_key": profile,
+            "mobile_account_key": mobile_account_identity.identity_key(account, user.name, profile),
+        }
     phones = channel_phone_candidates(user.phone, account)
     if not phones:
         frappe.throw(_("Add a verified mobile number including its country code before using AI chat."))
@@ -255,6 +263,9 @@ def _resolve_context(external_id: str, profile_id: str | None = None) -> dict[st
 
 
 def _ensure_conversation(context: dict[str, Any]) -> str:
+    if context.get("mobile_account_key"):
+        contact = mobile_account_identity.ensure_contact(context)
+        return get_or_create_conversation(context["account"], contact)
     patient = context["patient"]
     if patient:
         result = get_or_create_patient_conversation_for_channel_account(
@@ -289,6 +300,18 @@ def _assert_conversation_owner(conversation: str, context: dict[str, Any]):
     account = frappe.get_doc("Chat Channel Account", convo.channel_account)
     if account.channel_type != "Mobile App" or account.name != context["account"]:
         frappe.throw(_("Conversation was not found."), frappe.PermissionError)
+    contact = frappe.get_doc("Chat Contact", convo.contact)
+    if context.get("mobile_account_key"):
+        if (
+            contact.get("mobile_account_key") != context["mobile_account_key"]
+            or contact.get("mobile_app_user") != str(context["user"].name)
+            or (contact.get("mobile_profile_id") or "") != context["profile_key"]
+            or contact.get("mobile_channel_account") != context["account"]
+        ):
+            frappe.throw(_("Conversation was not found."), frappe.PermissionError)
+        return convo
+    if contact.get("mobile_account_key"):
+        frappe.throw(_("Conversation was not found."), frappe.PermissionError)
     linked_patient = str(convo.linked_patient or "").strip()
     if linked_patient and linked_patient != str(context["patient"] or "").strip():
         frappe.throw(_("Conversation was not found."), frappe.PermissionError)
@@ -304,7 +327,11 @@ def _assert_conversation_owner(conversation: str, context: dict[str, Any]):
     return convo
 
 
-def _conversation_phone(convo) -> str:
+def _conversation_phone(convo) -> str | None:
+    if mobile_account_identity.enabled(convo.channel_account) and frappe.db.get_value(
+        "Chat Contact", convo.contact, "mobile_account_key"
+    ):
+        return None
     phones = channel_phone_candidates(
         frappe.db.get_value("Chat Contact", convo.contact, "phone_number"), convo.channel_account,
     )
@@ -347,7 +374,7 @@ def _session_payload(convo, context: dict[str, Any]) -> dict[str, Any]:
         "status": convo.status,
         "identity_status": convo.identity_status or "Unverified",
         "patient": context["patient"],
-        "profile_required": not bool(context["patient"]),
+        "profile_required": not bool(context["patient"]) and not bool(context.get("mobile_account_key")),
         "messages": _message_rows(str(convo.name)),
     }
 
@@ -559,7 +586,8 @@ def escalate(
     append_message(
         {
             "channel_account": convo.channel_account,
-            "phone_number": context["phone"],
+            "phone_number": _conversation_phone(convo),
+            "conversation": str(convo.name),
             "display_name": "SRIAAS Care Team",
             "direction": "Outbound",
             "sender_type": "Agent",

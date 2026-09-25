@@ -23,7 +23,10 @@ class TestMobileAppIdentityDatabase(TestCase):
         self.stack.enter_context(patch("wa_chat_hub.messaging.windows.update_windows_on_message"))
         self.stack.enter_context(patch("wa_chat_hub.services._run_append_message_followups"))
         self.stack.enter_context(patch.object(frappe.db, "commit"))
-        self.stack.enter_context(patch.dict(frappe.conf, {"mobile_app_ai_phone_region": "IN"}))
+        self.stack.enter_context(patch.dict(frappe.conf, {
+            "mobile_app_ai_phone_region": "IN", "mobile_app_ai_require_country_code": 0,
+            "mobile_app_ai_account_identity": 0,
+        }))
         self.savepoint = "mobile_identity_" + uuid4().hex
         frappe.db.savepoint(self.savepoint)
         self.addCleanup(lambda: frappe.db.rollback(save_point=self.savepoint))
@@ -98,3 +101,13 @@ class TestMobileAppIdentityDatabase(TestCase):
             self.assertEqual(get_or_create_contact("+14155550123", channel_account=self.account), contact)
             india = get_or_create_contact("+914155550123", channel_account=self.account)
             self.assertNotEqual(india, contact)
+
+    def test_explicit_country_chat_can_be_reopened_without_country_fallback(self):
+        with patch.dict(frappe.conf, {"mobile_app_ai_require_country_code": 1}):
+            context = dict(
+                phone="+91" + self.phone, account=self.account, patient=None, profile_patient=None,
+                user=frappe._dict(full_name="Test user"),
+            )
+            conversation = api._ensure_conversation(context)
+            self.assertEqual(api._ensure_conversation(context), conversation)
+            self.assertEqual(str(api._assert_conversation_owner(conversation, context).name), str(conversation))

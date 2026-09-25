@@ -1,6 +1,6 @@
 {
  "actions": [],
- "autoname": "field:phone_number",
+ "autoname": "",
  "creation": "2026-04-08 18:13:31.288262",
  "doctype": "DocType",
  "engine": "InnoDB",
@@ -10,7 +10,11 @@
   "source_doctype",
   "source_name",
   "linked_lead",
-  "linked_patient"
+  "linked_patient",
+  "mobile_account_key",
+  "mobile_channel_account",
+  "mobile_app_user",
+  "mobile_profile_id"
  ],
  "fields": [
   {
@@ -23,8 +27,9 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Phone Number",
-   "reqd": 1,
-   "unique": 1
+   "reqd": 0,
+   "unique": 1,
+   "mandatory_depends_on": "eval:!doc.mobile_account_key"
   },
   {
    "fieldname": "source_doctype",
@@ -47,6 +52,31 @@
    "fieldtype": "Link",
    "label": "Linked Patient",
    "options": "Patient"
+  },
+  {
+   "fieldname": "mobile_account_key",
+   "fieldtype": "Data",
+   "label": "Mobile Account Identity",
+   "read_only": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "mobile_channel_account",
+   "fieldtype": "Data",
+   "label": "Mobile Channel Account",
+   "read_only": 1
+  },
+  {
+   "fieldname": "mobile_app_user",
+   "fieldtype": "Data",
+   "label": "Mobile App User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "mobile_profile_id",
+   "fieldtype": "Data",
+   "label": "Mobile Profile ID",
+   "read_only": 1
   }
  ],
  "links": [],

@@ -137,6 +137,20 @@ class TestMobileAppOwnership(TestCase):
         with patch.object(api.frappe, "conf", frappe._dict(mobile_app_ai_phone_region="US")):
             self.assertEqual(services.channel_phone_candidates("4155550123", "APP")[0], "+14155550123")
 
+    def test_explicit_country_mode_overrides_region_and_legacy_default(self):
+        with patch.object(api.frappe, "conf", frappe._dict(
+            mobile_app_ai_require_country_code=1, mobile_app_ai_phone_region="IN",
+        )):
+            for phone in ("9876543210", "4155550123", "14155550123", "919876543210"):
+                self.assertEqual(services.channel_phone_candidates(phone, "APP"), [])
+            for phone, expected in (("+14155550123", "+14155550123"), ("00919876543210", "+919876543210")):
+                self.assertEqual(services.channel_phone_candidates(phone, "APP")[0], expected)
+
+    def test_explicit_country_mode_does_not_change_whatsapp_identity(self):
+        self.account.channel_type = "Interakt"
+        with patch.object(api.frappe, "conf", frappe._dict(mobile_app_ai_require_country_code=1)):
+            self.assertEqual(services.channel_phone_candidates("9876543210", "APP")[0], "919876543210")
+
     def test_text_and_attachment_use_authorized_chat_phone_and_id(self):
         self.context["profile_patient"] = "PATIENT"
         self.db.get_value.return_value = "+14155550123"
