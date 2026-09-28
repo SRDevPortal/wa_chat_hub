@@ -1805,7 +1805,6 @@ def _deliver_ai_reply(conversation: str, response_text: str) -> None:
         append_message(
             {
                 "channel_account": convo.channel_account,
-                "conversation": str(convo.name),
                 "phone_number": phone_number,
                 "direction": "Outbound",
                 "sender_type": "AI",
