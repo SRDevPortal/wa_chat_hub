@@ -145,7 +145,7 @@ def get_or_create_lead_conversation_for_channel_account(
     }
 
 
-def get_or_create_patient_contact(patient, *, channel_account: str | None = None) -> str:
+def get_or_create_patient_contact(patient) -> str:
     phone = _get_patient_phone(patient)
     normalized_phone = normalize_phone(phone)
     if not normalized_phone:
@@ -154,7 +154,6 @@ def get_or_create_patient_contact(patient, *, channel_account: str | None = None
     contact_name = get_or_create_contact(
         phone_number=phone,
         display_name=_get_patient_display_name(patient),
-        **({"channel_account": channel_account} if channel_account else {}),
     )
     safe_ai_set_value(
         "Chat Contact",
@@ -190,9 +189,7 @@ def get_or_create_patient_conversation_for_channel_account(
             )
         )
 
-    contact = get_or_create_patient_contact(
-        patient, channel_account=channel_account if account.channel_type == "Mobile App" else None,
-    )
+    contact = get_or_create_patient_contact(patient)
     if account.channel_type == "Interakt":
         ensure_interakt_contact_for_reference(
             channel_account,
@@ -210,7 +207,6 @@ def get_or_create_patient_conversation_for_channel_account(
         reference_doctype="Patient",
         reference_name=patient.name,
         department=_conversation_department_for_account(channel_account),
-        patient_scope=patient.name if account.channel_type == "Mobile App" else None,
     )
     try:
         from wa_chat_hub.identity import reconcile_conversation_identity
@@ -263,11 +259,8 @@ def _get_or_create_reference_conversation(
     reference_name: str,
     department: str | None = None,
     defer_reference_link: bool = False,
-    patient_scope: str | None = None,
 ) -> tuple[str, bool]:
-    conversation, created = resolve_conversation(
-        contact=contact, channel_account=channel_account, patient_scope=patient_scope,
-    )
+    conversation, created = resolve_conversation(contact=contact, channel_account=channel_account)
     if created and department:
         safe_ai_set_value("Chat Conversation", conversation, "department", department)
 
