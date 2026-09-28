@@ -129,6 +129,7 @@ class TestChatThreadContinuity(TestCase):
         contact = get_or_create_contact(self.phone)
         original = self.open_reference(contact)
         other_account = self.account + " other"
+        frappe.get_doc({"doctype": "Chat Channel Account", "name": other_account, "channel_type": "Interakt", "is_active": 1}).db_insert()
         other, created = resolve_conversation(other_account, contact)
         self.assertTrue(created)
         self.assertNotEqual(original, other)
@@ -144,6 +145,7 @@ class TestChatThreadContinuity(TestCase):
         with (
             patch("vobiz_click_to_call.api.console._ensure_whatsapp_conversation_read"),
             patch("vobiz_click_to_call.api.console._whatsapp_messages_page", return_value={}),
+            patch("wa_chat_hub.interakt.templates_api.resolve_approved_template", side_effect=lambda account, template: template),
             patch("wa_chat_hub.outbound.send_interakt_template_message", return_value={"provider_message_id": uuid4().hex, "delivery_status": "Sent"}) as send,
         ):
             result = send_whatsapp_template(conversation, "test_template")

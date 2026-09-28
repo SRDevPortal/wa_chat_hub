@@ -110,8 +110,12 @@ def _record_lock_name(prefix: str, token: str) -> str:
 
 def _append_message_lock_name(payload: Dict[str, Any]) -> str:
     channel_account = str(payload.get("channel_account") or "unknown").strip()
-    phone_number = normalize_chat_phone(payload.get("phone_number") or payload.get("to") or payload.get("from"))
-    token = f"{channel_account}:{phone_number or payload.get('conversation') or 'unknown'}"
+    from wa_chat_hub.mobile_account_identity import enabled
+    if payload.get("conversation") and enabled(channel_account):
+        token = f"{channel_account}:{payload['conversation']}"
+    else:
+        phone_number = normalize_chat_phone(payload.get("phone_number") or payload.get("to") or payload.get("from"))
+        token = f"{channel_account}:{phone_number or payload.get('conversation') or 'unknown'}"
     return _record_lock_name("append", token)
 
 
@@ -351,6 +355,41 @@ def resolve_conversation(
     # A deadlock can release transaction locks. Retry the whole lookup/insert,
     # so a retry always acquires the contact locks and checks for a chat again.
     def resolve() -> tuple[str, bool]:
+        from wa_chat_hub.mobile_account_identity import enabled
+        if enabled(channel_account):
+            identity = safe_ai_get_value(
+                "Chat Contact", contact, ["mobile_account_key", "mobile_channel_account"],
+                as_dict=True, for_update=True,
+            )
+            if not identity or not identity.mobile_account_key or identity.mobile_channel_account != channel_account:
+                frappe.throw(_("A Mobile App account identity is required to open this chat."), frappe.PermissionError)
+            filters = {"channel_account": channel_account, "contact": contact}
+            if preferred_conversation:
+                filters["name"] = preferred_conversation
+            existing = safe_ai_get_value("Chat Conversation", filters, "name", order_by="creation asc", for_update=True)
+            if preferred_conversation and not existing:
+                frappe.throw(_("Conversation was not found."), frappe.PermissionError)
+            if existing:
+                updates = {}
+                if safe_ai_get_value("Chat Conversation", existing, "status") == "Closed":
+                    updates["status"] = DEFAULT_CONVERSATION_STATUS
+                if department:
+                    updates["department"] = department
+                if assigned_to:
+                    updates["assigned_to"] = assigned_to
+                if updates:
+                    safe_ai_set_value("Chat Conversation", existing, updates, update_modified=False)
+                return existing, False
+            account_department = _valid_link("Department", safe_ai_get_value("Chat Channel Account", channel_account, "department"))
+            routing = route_conversation({"channel_account": channel_account, "channel_department": department or account_department})
+            doc = frappe.get_doc({
+                "doctype": "Chat Conversation", "channel_account": channel_account, "contact": contact,
+                "status": routing.get("queue_status") or status,
+                "department": department or routing.get("department"),
+                "assigned_to": assigned_to or routing.get("assigned_to"),
+            })
+            safe_ai_insert(doc)
+            return doc.name, True
         phone_number = safe_ai_get_value("Chat Contact", contact, "phone_number")
         if not phone_number:
             # A duplicate contact insert may have waited for another transaction.
@@ -450,42 +489,62 @@ def _append_message_public_result(result: Dict[str, str]) -> Dict[str, str]:
 
 
 def _append_message_impl(payload: Dict[str, Any]) -> Dict[str, str]:
-    phone_number = normalize_chat_phone(payload.get("phone_number") or payload.get("to") or payload.get("from"))
-    if not phone_number:
-        frappe.throw(_("Cannot store WhatsApp message: customer phone number is missing in webhook payload."))
-    contact = get_or_create_contact(phone_number=phone_number, display_name=payload.get("display_name"))
-
     channel_account = payload["channel_account"]
-    existing_conversation = find_conversation_for_phone(phone_number, channel_account, contact=contact)
+    from wa_chat_hub.mobile_account_identity import enabled
 
-    # Preserve existing conversations: map defaults apply only when creating a new thread.
-    # Chat Conversation.department → ERPNext "Department", not Medical Department.
-    # sr_medical_department on WA Channel Pipeline Map is only for Patient routing / Interakt traits.
-    channel_department = _valid_link("Department", payload.get("channel_department"))
-    if not channel_department and not existing_conversation:
-        account_department = safe_ai_get_value(
-            "Chat Channel Account", channel_account, "department"
+    if enabled(channel_account):
+        # Mobile callers authorize the conversation before appending. Never
+        # rediscover a mobile thread by phone, including for staff/AI replies.
+        if not payload.get("conversation"):
+            frappe.throw(_("A conversation is required for Mobile App messages."))
+        convo = safe_ai_get_doc("Chat Conversation", str(payload["conversation"]))
+        contact_doc = safe_ai_get_doc("Chat Contact", convo.contact)
+        if convo.channel_account != channel_account or (
+            contact_doc.get("mobile_account_key") and contact_doc.get("mobile_channel_account") != channel_account
+        ):
+            frappe.throw(_("Conversation was not found."), frappe.PermissionError)
+        # Existing phone-owned history remains available to authorized staff,
+        # but the mobile API never grants account users ownership by phone.
+        if not contact_doc.get("mobile_account_key") and payload.get("direction", "Inbound") != "Outbound":
+            frappe.throw(_("A Mobile App account identity is required for this chat."), frappe.PermissionError)
+        conversation, contact, phone_number = convo.name, convo.contact, ""
+    else:
+        phone_number = normalize_chat_phone(payload.get("phone_number") or payload.get("to") or payload.get("from"))
+        if not phone_number:
+            frappe.throw(_("Cannot store WhatsApp message: customer phone number is missing in webhook payload."))
+        contact = get_or_create_contact(phone_number=phone_number, display_name=payload.get("display_name"))
+
+        existing_conversation = find_conversation_for_phone(phone_number, channel_account, contact=contact)
+
+        # Preserve existing conversations: map defaults apply only when creating a new thread.
+        # Chat Conversation.department → ERPNext "Department", not Medical Department.
+        # sr_medical_department on WA Channel Pipeline Map is only for Patient routing / Interakt traits.
+        channel_department = _valid_link("Department", payload.get("channel_department"))
+        if not channel_department and not existing_conversation:
+            account_department = safe_ai_get_value(
+                "Chat Channel Account", channel_account, "department"
+            )
+            channel_department = _valid_link("Department", account_department)
+
+        routing = route_conversation({
+            "channel_department": channel_department,
+            "detected_department": payload.get("detected_department"),
+            "channel_account": channel_account,
+            "priority": payload.get("priority"),
+        })
+
+        conversation = get_or_create_conversation(
+            channel_account=channel_account,
+            contact=contact,
+            department=routing.get("department"),
+            assigned_to=routing.get("assigned_to"),
+            status=routing.get("queue_status") or DEFAULT_CONVERSATION_STATUS,
+            preferred_conversation=(
+                payload.get("conversation") if payload.get("direction") == "Outbound" else None
+            ),
         )
-        channel_department = _valid_link("Department", account_department)
+        contact = safe_ai_get_value("Chat Conversation", conversation, "contact", for_update=True)
 
-    routing = route_conversation({
-        "channel_department": channel_department,
-        "detected_department": payload.get("detected_department"),
-        "channel_account": channel_account,
-        "priority": payload.get("priority"),
-    })
-
-    conversation = get_or_create_conversation(
-        channel_account=channel_account,
-        contact=contact,
-        department=routing.get("department"),
-        assigned_to=routing.get("assigned_to"),
-        status=routing.get("queue_status") or DEFAULT_CONVERSATION_STATUS,
-        preferred_conversation=(
-            payload.get("conversation") if payload.get("direction") == "Outbound" else None
-        ),
-    )
-    contact = safe_ai_get_value("Chat Conversation", conversation, "contact", for_update=True)
 
     direction = payload.get("direction", "Inbound")
     provider_name = str(
@@ -625,9 +684,8 @@ def _run_append_message_followups(payload: Dict[str, Any], result: Dict[str, str
         payload.get("phone_number") or payload.get("to") or payload.get("from")
     )
     direction = result.get("direction") or payload.get("direction", "Inbound")
-    is_mobile_app = str(
-        payload.get("provider_name") or payload.get("channel_type") or ""
-    ).strip().lower() == "mobile app"
+    from wa_chat_hub.mobile_account_identity import enabled
+    is_mobile_app = enabled(payload["channel_account"])
 
     message = None
     if message_name:

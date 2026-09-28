@@ -103,6 +103,11 @@ def ingest_message():
     if missing:
         frappe.throw(_("Missing required fields: {0}").format(", ".join(missing)))
 
+    from wa_chat_hub.mobile_account_identity import enabled
+    if enabled(payload["channel_account"]):
+        if not payload.get("conversation"):
+            frappe.throw(_("A conversation is required for Mobile App messages."))
+        _ensure_conversation_write(payload["conversation"])
     result = append_message(payload)
     return {"success": True, "result": result}
 
