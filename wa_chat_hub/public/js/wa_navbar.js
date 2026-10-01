@@ -319,7 +319,7 @@ wa_chat_hub.notifications = {
         }
         this.events_bound = true;
         frappe.realtime.on("wa_chat_new_message", function(data) {
-            const message = (data || {}).message || {};
+            const message = (data || {}).message || data || {};
             const shouldRefresh = message.direction === "Inbound"
                 || (message.direction === "Outbound" && message.sender_type === "AI");
             if (shouldRefresh) {

@@ -1,3 +1,28 @@
+// Large account prompts exceed Werkzeug's URL-encoded form-memory limit.
+// Keep the standard save endpoint and callbacks; send this settings document as JSON.
+if (!frappe._wa_settings_json_save_registered) {
+    frappe._wa_settings_json_save_registered = true;
+    $.ajaxPrefilter(function (options, originalOptions) {
+        const path = (options.url || "").split("?")[0];
+        if (!path.endsWith("/api/method/frappe.desk.form.save.savedocs") ||
+            (options.type || "").toUpperCase() !== "POST") {
+            return;
+        }
+        const args = originalOptions.data;
+        if (!args || typeof args !== "object" || !args.doc) return;
+        let doc;
+        try {
+            doc = typeof args.doc === "string" ? JSON.parse(args.doc) : args.doc;
+        } catch (e) {
+            return;
+        }
+        if (!doc || doc.doctype !== "WA Chat Hub Settings") return;
+        options.data = JSON.stringify(args);
+        options.contentType = "application/json; charset=UTF-8";
+        options.processData = false;
+    });
+}
+
 frappe.ui.form.on("WA Chat Hub Settings", {
     refresh(frm) {
         frm.trigger("toggle_autopilot_reply_batching_fields");

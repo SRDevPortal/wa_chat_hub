@@ -452,7 +452,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     function renderConversations(rows) {
         const html = rows.length ? rows.map(row => `
             <button class="wa-conversation-item ${sameConversation(row.name, currentConversation) ? 'active' : ''}" data-name="${escapeHtml(row.name)}">
-                <div class="wa-conversation-avatar">${getAvatarText(row)}</div>
+                <div class="wa-conversation-avatar">${escapeHtml(getAvatarText(row))}</div>
                 <div class="wa-conversation-main">
                     <div class="wa-conversation-top">
                         <strong>${escapeHtml(row.contact_display_name || row.contact_phone_number || row.name)}</strong>
@@ -525,7 +525,12 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
 
     function getAvatarText(row) {
         const value = row.contact_display_name || row.contact_phone_number || row.name || '';
-        return frappe.utils.escape_html(String(value).trim().charAt(0).toUpperCase() || '?');
+        const text = String(value).trim();
+        if (!text) return '?';
+        const first = typeof Intl.Segmenter === 'function'
+            ? new Intl.Segmenter(undefined, {granularity: 'grapheme'}).segment(text)[Symbol.iterator]().next().value.segment
+            : Array.from(text)[0];
+        return first.toUpperCase();
     }
 
     function formatConversationTime(value) {
@@ -1418,7 +1423,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         const displayPhone = formatPhoneNumber(c.phone_number);
         $('#wa-context-card').html(`
             <div class="wa-profile-card">
-                <div class="wa-profile-avatar">${getAvatarText({contact_display_name: displayName})}</div>
+                <div class="wa-profile-avatar">${escapeHtml(getAvatarText({contact_display_name: displayName}))}</div>
                 <div class="wa-profile-name">${escapeHtml(displayName)}</div>
             </div>
             <div class="wa-meta-row"><span>Name</span><strong>${formatMetaValue(c.display_name)}</strong></div>
@@ -1469,6 +1474,8 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     }
 
     function formatPhoneNumber(value) {
+        const text = String(value || '').trim();
+        if (text.includes('*') || text === '[masked]') return text;
         const digits = String(value || '').replace(/\D/g, '');
         if (!digits) return '';
         if (digits.length === 12 && digits.startsWith('91')) {
@@ -1635,7 +1642,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
             if (!isWaChatHubCurrentRoute()) return;
             scheduleConversationRefresh();
             if (isWaChatHubRouteActive() && data && sameConversation(data.conversation, currentConversation)) {
-                if (!appendRealtimeMessage(data.message)) {
+                if (data.refresh_required || !appendRealtimeMessage(data.message)) {
                     refreshCurrentConversation();
                 }
             }
@@ -2277,7 +2284,12 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         function collectTemplateVariableValues(dlg, row, section) {
             return templateVariableSlots(row, section)
                 .sort((a, b) => a.index - b.index)
-                .map((slot) => (dlg.$wrapper.find(`[data-wa-var-input="${section}_${slot.index}"]`).val() || '').trim());
+                .map((slot) => {
+                    const key = `${section}_${slot.index}`;
+                    const field = dlg.$wrapper.find(`[data-wa-var-map="${key}"]`).val();
+                    if (field) return {field};
+                    return (dlg.$wrapper.find(`[data-wa-var-input="${key}"]`).val() || '').trim();
+                });
         }
 
         function setVariableSectionHtml(field, html) {
@@ -2300,6 +2312,8 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
                 }
             });
             dialog.$wrapper.on('input.waTplVar', '.wa-tpl-var-input', function() {
+                const key = $(this).data('wa-var-input');
+                dialog.$wrapper.find(`[data-wa-var-map="${key}"]`).val('');
                 applyTemplatePreviewWithVariables(dialog, selected);
             });
         }

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from wa_chat_hub.number_privacy import browser_response, resolve_template_values
+
 import mimetypes
 import time
 
@@ -142,6 +144,7 @@ def _upload_authorized_media_for_send(
 
 
 @frappe.whitelist(methods=["POST"])
+@browser_response
 def send_reply():
     payload = frappe.local.form_dict or {}
     if frappe.request and frappe.request.get_json(silent=True):
@@ -422,6 +425,7 @@ def get_interakt_template_header_media(conversation, template_name, language_cod
 
 
 @frappe.whitelist(methods=["POST"])
+@browser_response
 def send_template_message():
     payload = frappe.local.form_dict or {}
     if frappe.request and frappe.request.get_json(silent=True):
@@ -447,6 +451,9 @@ def send_template_message():
         "campaign_id": payload.get("campaign_id"),
         "template_category": payload.get("template_category"),
     }
+    template_conversation = frappe.get_doc("Chat Conversation", conversation)
+    for field in ("header_values", "body_values"):
+        template[field] = resolve_template_values(template[field], template_conversation)
     channel_account = resolve_channel_account_from_conversation(conversation)
     template = resolve_approved_template(channel_account, template)
 

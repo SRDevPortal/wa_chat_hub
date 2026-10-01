@@ -1,3 +1,4 @@
+from wa_chat_hub.number_privacy import browser_response
 import frappe
 from frappe.utils import add_to_date, cint, now_datetime
 
@@ -219,6 +220,7 @@ def get_notification_counts():
 
 
 @frappe.whitelist()
+@browser_response
 def get_recent_messages():
     if not NOTIFICATION_SERVICE_ENABLED:
         return []
@@ -247,6 +249,7 @@ def get_recent_messages():
 
 
 @frappe.whitelist()
+@browser_response
 def get_recent_notifications(category="all", limit=10):
     if not NOTIFICATION_SERVICE_ENABLED:
         return []

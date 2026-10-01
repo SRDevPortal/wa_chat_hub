@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from wa_chat_hub.number_privacy import browser_response
+
 import json
 import mimetypes
 import time
@@ -548,6 +550,7 @@ def _bounded_conversation_search_names(query: str, base_filters: dict, limit) ->
 
 
 @frappe.whitelist()
+@browser_response
 def get_conversations(
     limit=50,
     status=None,
@@ -591,6 +594,7 @@ def get_conversations(
 
 
 @frappe.whitelist()
+@browser_response
 def search_conversations(
     query,
     limit=100,
@@ -683,6 +687,7 @@ def search_conversations(
 
 
 @frappe.whitelist()
+@browser_response
 def get_messages(conversation, limit=100):
     ensure_can_read_conversation(conversation)
     rows = frappe.get_all(
@@ -935,6 +940,7 @@ def bulk_update(conversations, fieldname, value):
 
 
 @frappe.whitelist(methods=["POST"])
+@browser_response
 def add_external_outbound_message(conversation, body, delivery_status="Sent", channel_message_id=None):
     if not conversation:
         frappe.throw(_("conversation is required"))
@@ -962,6 +968,7 @@ def add_external_outbound_message(conversation, body, delivery_status="Sent", ch
 
 
 @frappe.whitelist()
+@browser_response
 def get_sidebar_context(conversation):
     started = time.monotonic()
     task_log("chat", "sidebar_start", conversation=conversation)
@@ -1129,6 +1136,7 @@ def _crm_lead_reference_lookup(reference_names: list[str]) -> dict[str, str]:
 
 
 @frappe.whitelist()
+@browser_response
 def get_conversation_for_reference(reference_doctype, reference_name, channel_account=None):
     if not reference_doctype or not reference_name:
         frappe.throw(_("reference_doctype and reference_name are required"))
@@ -1284,11 +1292,14 @@ def _find_existing_conversation_by_phone(phone_number: str) -> str | None:
 
 
 @frappe.whitelist()
+@browser_response
 def get_existing_conversation_for_patient(patient):
     if not patient:
         frappe.throw(_("patient is required"))
     if not frappe.db.exists("Patient", patient):
         frappe.throw(_("Patient {0} not found").format(patient))
+
+    frappe.get_doc("Patient", patient).check_permission("read")
 
     linked = _conversation_for_reference("Patient", patient)
     if linked:
@@ -1430,6 +1441,7 @@ def _accumulate_reference_chat_status(stats_by_name: dict, reference_name: str |
 
 
 @frappe.whitelist()
+@browser_response
 def resolve_chat_for_reference(reference_doctype, reference_name=None, phone_number=None):
     if not reference_doctype:
         frappe.throw(_("reference_doctype is required"))

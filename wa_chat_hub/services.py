@@ -769,13 +769,10 @@ def _run_append_message_followups(payload: Dict[str, Any], result: Dict[str, str
         except Exception:
             frappe.log_error(frappe.get_traceback(), "WA AI Autopilot Schedule Failed")
     if message:
+        from wa_chat_hub.number_privacy import message_event
         frappe.publish_realtime(
             "wa_chat_new_message",
-            {
-                "conversation": conversation,
-                "message": message.as_dict(),
-                "direction": message.direction,
-            },
+            message_event(conversation, message),
             after_commit=True,
         )
 
