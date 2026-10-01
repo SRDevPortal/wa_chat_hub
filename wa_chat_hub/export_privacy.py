@@ -3,7 +3,7 @@ import csv
 import io
 
 import frappe
-from wa_chat_hub.number_privacy import restricted
+from wa_chat_hub.number_privacy import restricted, is_safe_record_reference
 
 FIELDS = {
     "Chat Contact": {"name", "display_name", "phone_number", "source_doctype", "source_name", "linked_patient", "linked_lead", "owner", "creation", "modified"},
@@ -32,6 +32,10 @@ def mask_cell(value):
     from privacy_shield.display_text import mask_display
     from privacy_shield.outputs import safe_cell
     if isinstance(value, str):
+        # Export layouts differ: preserve only an entire recognized record ID.
+        # Phone-based Chat Contact IDs and embedded free text remain masked.
+        if is_safe_record_reference("linked_reference_name", value):
+            return safe_cell(value)
         return safe_cell(mask_display(value))
     if isinstance(value, int) and not isinstance(value, bool) and 10 <= len(str(abs(value))) <= 15:
         return mask_display(str(value))

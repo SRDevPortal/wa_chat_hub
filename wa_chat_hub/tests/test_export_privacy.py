@@ -100,3 +100,45 @@ class ExportPrivacyTests(unittest.TestCase):
                             with patch.object(frappe.local, "form_dict", frappe._dict(
                                 doctype="Chat Conversation", fields='["raw_payload"]')):
                                 endpoint()
+
+    def test_csv_and_excel_preserve_only_exact_record_ids(self):
+        from openpyxl import Workbook
+        values = ["CRM-LEAD-2026-687089", "HLC-PAT-2026-38721",
+                  "919876501234", "Call 919876501234 about CRM-LEAD-2026-687089",
+                  "=919876501234", "CRM-LEAD-2026-687089 919876501234"]
+        for file_type in ("CSV", "Excel"):
+            frappe.local.response = frappe._dict()
+            if file_type == "CSV":
+                output = io.StringIO(); csv.writer(output).writerow(values)
+                frappe.response["filecontent"] = output.getvalue().encode("utf-8-sig")
+            else:
+                wb = Workbook(); wb.active.append(values)
+                output = io.BytesIO(); wb.save(output); wb.close()
+                frappe.response["filecontent"] = output.getvalue()
+            privacy.mask_download(file_type)
+            if file_type == "CSV":
+                row = next(csv.reader(io.StringIO(frappe.response["filecontent"].decode("utf-8-sig"))))
+            else:
+                wb = load_workbook(io.BytesIO(frappe.response["filecontent"]))
+                row = list(next(wb.active.values)); wb.close()
+            self.assertEqual(row[:2], values[:2])
+            self.assertNotIn("919876501234", str(row))
+            self.assertTrue(row[4].startswith("'="))
+
+    def test_native_query_preserves_crm_reference(self):
+        reference = frappe.db.get_value("Chat Conversation", "195854", "linked_reference_name")
+        self.assertTrue(reference)
+        for file_type in ("CSV", "Excel"):
+            frappe.local.response = frappe._dict()
+            with patch.object(frappe.local, "form_dict", frappe._dict(
+                doctype="Chat Conversation", fields='["name", "contact", "linked_reference_name"]',
+                file_format_type=file_type, selected_items='["195854"]')):
+                with patch.object(privacy, "restricted", return_value=True):
+                    privacy.export_query()
+            if file_type == "CSV":
+                text = frappe.response["filecontent"].decode("utf-8-sig")
+            else:
+                wb = load_workbook(io.BytesIO(frappe.response["filecontent"]))
+                text = str(list(wb.active.values)); wb.close()
+            self.assertIn(reference, text)
+            self.assertNotIn(frappe.db.get_value("Chat Conversation", "195854", "contact"), text)
