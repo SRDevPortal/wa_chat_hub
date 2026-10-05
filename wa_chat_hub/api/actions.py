@@ -4,6 +4,7 @@ import frappe
 from frappe import _
 
 from wa_chat_hub.ai.lead_scoring import score_and_sync_conversation, sync_to_linked_lead
+from wa_chat_hub.number_privacy import browser_response
 from wa_chat_hub.permissions import ensure_can_read_conversation
 from wa_chat_hub.prompts import get_conversation_crm_lead, set_conversation_crm_lead
 from wa_chat_hub.security import safe_ai_exists
@@ -24,6 +25,7 @@ def _load_payload():
 
 
 @frappe.whitelist(methods=["POST"])
+@browser_response
 def create_lead_from_conversation():
     payload = _load_payload()
     conversation = payload.get("conversation")
@@ -56,6 +58,7 @@ def create_lead_from_conversation():
 
 
 @frappe.whitelist(methods=["POST"])
+@browser_response
 def create_crm_lead_from_conversation():
     """Create or reuse one CRM Lead and link it to the current conversation in place."""
     payload = _load_payload()
@@ -126,6 +129,7 @@ def create_crm_lead_from_conversation():
 
 
 @frappe.whitelist(methods=["POST"])
+@browser_response
 def create_issue_from_conversation():
     payload = _load_payload()
     conversation = payload.get("conversation")
@@ -151,6 +155,7 @@ def create_issue_from_conversation():
 
 
 @frappe.whitelist(methods=["POST"])
+@browser_response
 def create_patient_encounter_from_conversation():
     payload = _load_payload()
     conversation = payload.get("conversation")

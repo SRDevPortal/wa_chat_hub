@@ -18,9 +18,16 @@ def restricted():
 
 RAW_KEYS = frozenset(("raw_payload", "raw_transport_payload", "payload", "provider_response",
                       "ai_workflow_state", "pending_patient_request", "pending_request_message"))
-PHONE_KEYS = frozenset(("phone_number", "contact_phone_number", "mobile_no", "mobile", "phone"))
+PHONE_KEYS = frozenset((
+    "phone_number", "contact_phone_number", "channel_phone_number",
+    "phoneNumber", "mobile_no", "mobile", "phone", "user_phone",
+    "normalized_phone", "extracted_phone", "searched_phone",
+    "custom_whatsapp_number", "aliased_phone", "sr_mobile_norm",
+    "vobiz_mobile_last10", "vobiz_normalized_phone",
+    "vobiz_phone_last10", "vobiz_whatsapp_last10",
+))
 TEXT_KEYS = frozenset(("body", "last_message_preview", "ai_summary", "display_name", "contact_display_name",
-                       "error", "warning", "message", "content", "sender_name"))
+                       "error", "warning", "message", "content", "sender_name", "short_reason"))
 
 
 def is_safe_record_reference(field, value):

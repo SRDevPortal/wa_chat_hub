@@ -14,3 +14,7 @@ WhatsApp Operations Hub for ERPNext / Frappe.
 - Phase 2: unofficial/QR-based WhatsApp connectors
 - Phase 3: AI copilot and controlled automation
 # wa_chat_hub
+
+## Customer number privacy
+
+When privacy_shield is enabled, restricted Desk users receive masked phone fields and masked phone numbers embedded in chat text. The protection covers conversation and contact reads, notifications, AI responses, exports, diagnostics, action results, Interakt contact-sync results, and configured MCP tool responses. Raw provider payloads stay server-side, while users with full-number capability keep the original response.

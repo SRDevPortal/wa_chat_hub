@@ -495,6 +495,7 @@ def send_template_message():
 
 
 @frappe.whitelist(methods=["POST"])
+@browser_response
 def call_mcp_tool():
     from wa_chat_hub.mcp import invoke_mcp_tool
 

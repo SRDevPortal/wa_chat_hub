@@ -9,6 +9,7 @@ import frappe
 from frappe import _
 from frappe.utils import add_to_date, now_datetime
 
+from wa_chat_hub.number_privacy import browser_response
 from wa_chat_hub.phone_normalization import normalize_phone
 
 
@@ -75,6 +76,7 @@ def _ensure_error_access() -> None:
 
 
 @frappe.whitelist()
+@browser_response
 def get_error_logs(category: str | None = None, since: str = "24h", search: str | None = None, limit: int = 100):
     _ensure_error_access()
 
@@ -108,6 +110,7 @@ def get_error_logs(category: str | None = None, since: str = "24h", search: str 
 
 
 @frappe.whitelist()
+@browser_response
 def get_error_detail(error_log: str):
     _ensure_error_access()
     if not error_log:

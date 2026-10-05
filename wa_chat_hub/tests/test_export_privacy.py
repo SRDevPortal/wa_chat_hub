@@ -36,15 +36,21 @@ class ExportPrivacyTests(unittest.TestCase):
             self.assertEqual(frappe.db.get_value("Chat Contact", name, "phone_number"), original)
 
     def test_native_query_preserves_record_selection(self):
+        conversation = frappe.db.get_value(
+            "Chat Conversation", {"contact": ["is", "set"]}, "name"
+        )
+        if not conversation:
+            self.skipTest("No Chat Conversation with a contact is available")
+
         with patch.object(frappe.local, "form_dict", frappe._dict(
             doctype="Chat Conversation", fields='["name", "contact", "status"]',
-            file_format_type="CSV", selected_items='["195854"]')):
+            file_format_type="CSV", selected_items=json.dumps([conversation]))):
             with patch.object(privacy, "restricted", return_value=True):
                 privacy.export_query()
         rows = list(csv.reader(io.StringIO(frappe.response["filecontent"].decode("utf-8-sig"))))
         self.assertEqual(len(rows), 2)
-        self.assertIn("195854", rows[1])
-        raw = frappe.db.get_value("Chat Conversation", "195854", "contact")
+        self.assertIn(str(conversation), rows[1])
+        raw = frappe.db.get_value("Chat Conversation", conversation, "contact")
         self.assertNotIn(raw, str(rows))
 
     def test_unsafe_columns_rejected(self):
@@ -126,13 +132,20 @@ class ExportPrivacyTests(unittest.TestCase):
             self.assertTrue(row[4].startswith("'="))
 
     def test_native_query_preserves_crm_reference(self):
-        reference = frappe.db.get_value("Chat Conversation", "195854", "linked_reference_name")
-        self.assertTrue(reference)
+        row = frappe.db.get_value(
+            "Chat Conversation",
+            {"linked_reference_name": ["is", "set"], "contact": ["is", "set"]},
+            ["name", "linked_reference_name", "contact"],
+            as_dict=True,
+        )
+        if not row:
+            self.skipTest("No Chat Conversation with a CRM reference is available")
+
         for file_type in ("CSV", "Excel"):
             frappe.local.response = frappe._dict()
             with patch.object(frappe.local, "form_dict", frappe._dict(
                 doctype="Chat Conversation", fields='["name", "contact", "linked_reference_name"]',
-                file_format_type=file_type, selected_items='["195854"]')):
+                file_format_type=file_type, selected_items=json.dumps([row.name]))):
                 with patch.object(privacy, "restricted", return_value=True):
                     privacy.export_query()
             if file_type == "CSV":
@@ -140,5 +153,5 @@ class ExportPrivacyTests(unittest.TestCase):
             else:
                 wb = load_workbook(io.BytesIO(frappe.response["filecontent"]))
                 text = str(list(wb.active.values)); wb.close()
-            self.assertIn(reference, text)
-            self.assertNotIn(frappe.db.get_value("Chat Conversation", "195854", "contact"), text)
+            self.assertIn(row.linked_reference_name, text)
+            self.assertNotIn(row.contact, text)

@@ -3,6 +3,8 @@ from __future__ import annotations
 import frappe
 from frappe import _
 
+from wa_chat_hub.number_privacy import browser_response
+
 
 def _ensure_diagnostic_access() -> None:
     roles = set(frappe.get_roles())
@@ -14,6 +16,7 @@ def _ensure_diagnostic_access() -> None:
 
 
 @frappe.whitelist()
+@browser_response
 def get_latest_inbound_media(limit: int = 10):
     """Return recent inbound media messages with linked File state for quick debugging."""
     _ensure_diagnostic_access()
@@ -64,6 +67,7 @@ def get_latest_inbound_media(limit: int = 10):
 
 
 @frappe.whitelist()
+@browser_response
 def get_latest_crm_lead_media_files(limit: int = 10):
     """Return recent WA media File rows attached to CRM Lead records."""
     _ensure_diagnostic_access()
@@ -87,6 +91,7 @@ def get_latest_crm_lead_media_files(limit: int = 10):
 
 
 @frappe.whitelist()
+@browser_response
 def get_crm_lead_files(lead: str):
     """Return File and attachment-comment URL state for one CRM Lead."""
     _ensure_diagnostic_access()

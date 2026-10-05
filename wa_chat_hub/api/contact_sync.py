@@ -5,6 +5,7 @@ from __future__ import annotations
 import frappe
 from frappe import _
 
+from wa_chat_hub.number_privacy import browser_response
 from wa_chat_hub.interakt.contact_sync import (
     push_contact_to_interakt,
     push_pipeline_map_contacts,
@@ -12,7 +13,8 @@ from wa_chat_hub.interakt.contact_sync import (
 )
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
+@browser_response
 def sync_pipeline_map_to_interakt(pipeline_map: str):
     """Bulk push patients, leads, and conversation contacts for one WA Channel Pipeline Map."""
     if not pipeline_map:
@@ -21,7 +23,8 @@ def sync_pipeline_map_to_interakt(pipeline_map: str):
     return {"success": True, "result": result}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
+@browser_response
 def push_patient_to_interakt(patient: str):
     if not patient or not frappe.db.exists("Patient", patient):
         frappe.throw(_("Patient not found"))
@@ -29,7 +32,8 @@ def push_patient_to_interakt(patient: str):
     return {"success": True, "result": result}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
+@browser_response
 def push_crm_lead_to_interakt(lead: str):
     if not lead or not frappe.db.exists("CRM Lead", lead):
         frappe.throw(_("CRM Lead not found"))
@@ -37,7 +41,8 @@ def push_crm_lead_to_interakt(lead: str):
     return {"success": True, "result": result}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
+@browser_response
 def push_chat_contact_to_interakt(contact: str, channel_account: str):
     if not contact or not channel_account:
         frappe.throw(_("contact and channel_account are required"))
