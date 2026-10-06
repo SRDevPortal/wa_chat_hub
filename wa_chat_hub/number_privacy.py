@@ -44,10 +44,56 @@ def is_safe_record_reference(field, value):
     return bool(field in patterns and re.fullmatch(patterns[field], value))
 
 
-def project(payload):
+
+def is_customer_reply(message):
+    return message.get("direction") == "Inbound" and message.get("sender_type") == "Customer"
+
+
+def customer_preview_values(payload):
+    """Verify previews against stored messages, never client-supplied direction flags."""
+    names = set()
+    def collect(value):
+        if isinstance(value, list):
+            for item in value:
+                collect(item)
+        elif isinstance(value, dict):
+            if value.get("name") and "last_message_preview" in value:
+                names.add(str(value["name"]))
+            for item in value.values():
+                collect(item)
+    collect(payload)
+    if not names or len(names) > 200:
+        return {}
+    rows = frappe.db.sql(
+        """select m.conversation, m.direction, m.sender_type, m.body, m.content_type, m.media_url
+        from `tabChat Conversation` c
+        inner join `tabChat Message` m on m.name = (
+            select latest.name from `tabChat Message` latest
+            where latest.conversation = cast(c.name as char)
+            order by latest.creation desc, latest.name desc limit 1
+        )
+        where c.name in %(names)s""",
+        {"names": tuple(sorted(names))}, as_dict=True,
+    )
+    from wa_chat_hub.services import build_media_preview
+    result = {}
+    for row in rows:
+        if not is_customer_reply(row):
+            continue
+        content_type = row.get("content_type") or "Text"
+        body = row.get("body")
+        preview = (build_media_preview(content_type, body)
+                   if row.get("media_url") and content_type != "Text"
+                   else body or content_type or "")
+        result[str(row["conversation"])] = preview[:500]
+    return result
+
+
+def project(payload, customer_previews=None):
     """Copy before filtering, including cache hits and shared ORM dictionaries."""
     from privacy_shield.masking import mask_number
     from privacy_shield.display_text import mask_display
+    customer_previews = customer_previews or {}
     def clean(value, context=None):
         if isinstance(value, list):
             return [clean(item, context) for item in value]
@@ -63,6 +109,11 @@ def project(payload):
                 continue
             if key in PHONE_KEYS:
                 result[key] = item if isinstance(item, str) and re.fullmatch(r"\*{1,14}[0-9]{0,4}|\[masked\]", item) else mask_number(item)
+            elif key == "body" and isinstance(item, str) and is_customer_reply(value):
+                result[key] = item
+            elif (key == "last_message_preview" and isinstance(item, str)
+                  and customer_previews.get(str(value.get("name"))) == item):
+                result[key] = item
             elif key in TEXT_KEYS and isinstance(item, str):
                 result[key] = mask_display(item)
             else:
@@ -75,7 +126,13 @@ def browser_response(fn):
     @wraps(fn)
     def wrapped(*args, **kwargs):
         result = fn(*args, **kwargs)
-        return project(result) if restricted() else result
+        if not restricted():
+            return result
+        previews = customer_preview_values(result) if (
+            fn.__module__ == "wa_chat_hub.api.chat"
+            and fn.__name__ in {"get_conversations", "search_conversations", "get_sidebar_context"}
+        ) else None
+        return project(result, customer_previews=previews)
     return wrapped
 
 
