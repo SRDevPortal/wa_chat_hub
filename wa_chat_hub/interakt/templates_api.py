@@ -104,15 +104,18 @@ def fetch_approved_templates(channel_account: str, force_refresh: bool = False) 
 def resolve_approved_template(
     channel_account: str,
     template: Dict[str, Any],
+    approved_templates=None,
 ) -> Dict[str, Any]:
     template_name = (template.get("template_name") or "").strip()
     language_code = (template.get("language_code") or "en").strip() or "en"
     if not template_name:
         frappe.throw(_("Template name is required."))
 
-    approved_templates = fetch_approved_templates(channel_account, force_refresh=False)
+    chat_catalog = approved_templates is not None
+    if approved_templates is None:
+        approved_templates = fetch_approved_templates(channel_account, force_refresh=False)
     match = find_approved_template(approved_templates, template_name, language_code)
-    if not match:
+    if not match and not chat_catalog:
         approved_templates = fetch_approved_templates(channel_account, force_refresh=True)
         match = find_approved_template(approved_templates, template_name, language_code)
     if not match:

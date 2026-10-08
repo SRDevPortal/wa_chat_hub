@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from wa_chat_hub.interakt.template_selection import get_chat_templates, resolve_chat_template
+
 from wa_chat_hub.number_privacy import browser_response, resolve_template_values
 
 import mimetypes
@@ -364,16 +366,19 @@ def send_pending_reply_to_provider(
 @frappe.whitelist()
 def get_interakt_templates(conversation=None, channel_account=None, force_refresh=0):
     """Return approved Interakt templates for the conversation's channel account."""
-    if conversation and not channel_account:
+    if conversation:
         ensure_can_read_conversation(conversation)
         channel_account = resolve_channel_account_from_conversation(conversation)
     if not channel_account:
         frappe.throw(_("conversation or channel_account is required"))
 
-    templates = fetch_approved_templates(
+    templates = get_chat_templates(
         channel_account,
         force_refresh=bool(int(force_refresh or 0)),
     )
+    if conversation:
+        from wa_chat_hub.interakt.template_autofill import add_suggestions
+        templates = add_suggestions(templates, conversation)
     return {
         "success": True,
         "result": {
@@ -389,7 +394,7 @@ def get_interakt_template_header_media(conversation, template_name, language_cod
     """Proxy approved template media so browser CSP never blocks its preview."""
     ensure_can_read_conversation(conversation)
     channel_account = resolve_channel_account_from_conversation(conversation)
-    templates = fetch_approved_templates(channel_account, force_refresh=False)
+    templates = get_chat_templates(channel_account, force_refresh=False)
     template = find_approved_template(templates, template_name, language_code)
     if not template:
         frappe.throw(_("Approved Interakt template not found"))
@@ -455,7 +460,7 @@ def send_template_message():
     for field in ("header_values", "body_values"):
         template[field] = resolve_template_values(template[field], template_conversation)
     channel_account = resolve_channel_account_from_conversation(conversation)
-    template = resolve_approved_template(channel_account, template)
+    template = resolve_chat_template(channel_account, template)
 
     try:
         outbound = send_interakt_template_message(conversation, template)

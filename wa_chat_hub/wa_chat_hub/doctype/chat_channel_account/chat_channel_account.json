@@ -28,6 +28,11 @@
   "interakt_organization_id",
   "interakt_templates_api_url",
   "sb_interakt_templates",
+  "fetch_interakt_templates",
+  "select_interakt_templates",
+  "interakt_template_credential_hash",
+  "interakt_templates_synced_at",
+  "interakt_template_snapshot",
   "interakt_template_catalog",
   "sb_api_config",
   "provider_base_url",
@@ -178,7 +183,7 @@
   },
   {
    "depends_on": "eval:doc.channel_type == 'Interakt'",
-   "description": "Optional. Browser URL from app.interakt.ai often returns 404 with Developer API key — use Approved Templates table below instead.",
+   "description": "Optional Interakt organization identifier.",
    "fieldname": "interakt_organization_id",
    "fieldtype": "Data",
    "label": "Interakt Organization ID"
@@ -198,11 +203,13 @@
   },
   {
    "depends_on": "eval:doc.channel_type == 'Interakt'",
-   "description": "Copy approved template names from Interakt → Templates (Active). Template Name must match Interakt element name used when sending.",
+   "description": "Fetch approved templates, enable the ones agents can use, then save. Only enabled templates appear in WA Chat Hub and Vobiz.",
    "fieldname": "interakt_template_catalog",
    "fieldtype": "Table",
-   "label": "Approved Templates (manual catalog)",
-   "options": "WA Interakt Template Catalog"
+   "label": "Approved Templates",
+   "options": "WA Interakt Template Catalog",
+   "cannot_add_rows": 1,
+   "cannot_delete_rows": 1
   },
   {
    "depends_on": "eval:doc.channel_type == 'Official WhatsApp'",
@@ -234,6 +241,37 @@
    "fieldname": "x_user_id",
    "fieldtype": "Data",
    "label": "x_user_id"
+  },
+  {
+   "fieldname": "interakt_template_snapshot",
+   "fieldtype": "Long Text",
+   "hidden": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "interakt_templates_synced_at",
+   "fieldtype": "Datetime",
+   "label": "Templates Last Fetched",
+   "read_only": 1,
+   "depends_on": "eval:doc.channel_type == 'Interakt'"
+  },
+  {
+   "fieldname": "fetch_interakt_templates",
+   "fieldtype": "Button",
+   "label": "Fetch / Refresh Approved Templates",
+   "depends_on": "eval:doc.channel_type == 'Interakt'"
+  },
+  {
+   "fieldname": "select_interakt_templates",
+   "fieldtype": "Button",
+   "label": "Select Chat Templates",
+   "depends_on": "eval:doc.channel_type == 'Interakt'"
+  },
+  {
+   "fieldname": "interakt_template_credential_hash",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "read_only": 1
   }
  ],
  "links": [],

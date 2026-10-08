@@ -2195,7 +2195,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
                 {
                     fieldname: 'template_help',
                     fieldtype: 'HTML',
-                    options: `<p class="text-muted" style="margin:0">${__('Choose an approved template from your Interakt account. Templates are managed in Interakt, not here.')}</p>`,
+                    options: `<p class="text-muted" style="margin:0">${__('Known variables are autofilled from this conversation. Review and edit them before sending; fill any blank values.')}</p>`,
                 },
                 {
                     fieldname: 'template_key',
@@ -2349,6 +2349,10 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
             setVariableSectionHtml(dialog.fields_dict.body_variables_html, bodyHtml);
             setVariableSectionHtml(dialog.fields_dict.header_variables_html, headerHtml);
             setVariableSectionHtml(dialog.fields_dict.header_media_html, headerMediaHtml);
+            Object.entries(selected.autofill_values || {}).forEach(([key, value]) => {
+                dialog.$wrapper.find(`[data-wa-var-input="${key}"]`).val(value)
+                    .attr('title', __('Autofilled from this conversation. You can edit this value.'));
+            });
             bindTemplateVariableEvents(selected);
             applyTemplatePreviewWithVariables(dialog, selected);
         }
@@ -2393,8 +2397,8 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
 
             if (!approvedTemplates.length) {
                 frappe.msgprint({
-                    title: __('No approved templates'),
-                    message: __('No approved Interakt templates were returned for this channel account. Create and approve templates in Interakt first.'),
+                    title: __('No templates enabled'),
+                    message: __('No templates enabled for this account. Contact your administrator.'),
                     indicator: 'orange',
                 });
                 dialog.hide();
