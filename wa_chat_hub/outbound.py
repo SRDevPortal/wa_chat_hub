@@ -249,10 +249,12 @@ def send_interakt_message(account, outbound: Dict[str, Any]) -> Dict[str, Any]:
             f"Interakt API Error {response.status_code}: {detail}\nPayload: {frappe.as_json(outbound['payload'])}",
             "Interakt Message API Failure",
         )
-        raise PatientTemplateNotSentError(
+        error = PatientTemplateNotSentError(
             _extract_interakt_error_message(response.status_code, detail),
             retryable=response.status_code in {408, 429} or response.status_code >= 500,
         )
+        error.status_code = response.status_code
+        raise error
 
     try:
         result = response.json() if response.content else {}
