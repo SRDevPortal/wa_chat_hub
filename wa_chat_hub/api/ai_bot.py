@@ -11,7 +11,6 @@ import requests
 from frappe.utils import add_to_date, cint, get_datetime
 from frappe.utils.background_jobs import enqueue
 from frappe.utils.response import json_handler
-from frappe.utils.synchronization import filelock
 
 from wa_chat_hub.ai.ocr_summary import (
     GENERIC_MEDIA_BODIES,
@@ -78,6 +77,7 @@ MEDIA_CONTENT_TYPES = frozenset({"Image", "Video", "Audio", "Document", "Sticker
 DEFAULT_TEXT_AUTOPILOT_REPLY_DELAY_SECONDS = 3
 DEFAULT_MEDIA_AUTOPILOT_REPLY_DELAY_SECONDS = 15
 AUTOPILOT_BATCH_LOCK_TIMEOUT = 180
+AUTOPILOT_BATCH_LOCK_LEASE_SECONDS = 900
 AUTOPILOT_BATCH_LOOKBACK_MINUTES = 15
 AUTOPILOT_MEDIA_BURST_LOOKBACK_MINUTES = 10
 AUTOPILOT_MEDIA_BURST_GAP_SECONDS = 90
@@ -234,7 +234,17 @@ def process_conversation(conversation: str, trigger_message_id: str | None = Non
 
     _, total_wait = _wait_for_conversation_batch_window(conversation, settings)
 
-    with filelock(_autopilot_batch_lock_name(conversation), timeout=AUTOPILOT_BATCH_LOCK_TIMEOUT):
+    # Redis serializes workers on different hosts as well as local processes.
+    # Prefix explicitly: RedisWrapper.lock() does not call make_key().
+    cache = frappe.cache()
+    with cache.lock(
+        cache.make_key(_autopilot_batch_lock_name(conversation)),
+        timeout=AUTOPILOT_BATCH_LOCK_LEASE_SECONDS,
+        blocking_timeout=AUTOPILOT_BATCH_LOCK_TIMEOUT,
+    ):
+        # Waiting workers may still hold a snapshot from before another worker
+        # sent its reply. These batch-selection reads have no pending writes.
+        _refresh_autopilot_batch_snapshot()
         msg_doc = _latest_autopilot_inbound(conversation)
         if not msg_doc:
             _log_ai_timing(
@@ -1464,7 +1474,17 @@ def _wait_for_autopilot_batch_window(msg_doc, settings) -> tuple[bool, int]:
     return _newer_autopilot_message_exists(msg_doc), delay_seconds
 
 
+def _refresh_autopilot_batch_snapshot() -> None:
+    """End the read-only selection transaction so committed messages are visible.
+
+    Only call before reply processing: rolling back after workflow/tool writes
+    would discard those changes.
+    """
+    frappe.db.rollback()
+
+
 def _wait_for_conversation_batch_window(conversation: str, settings):
+    _refresh_autopilot_batch_snapshot()
     latest_doc = _latest_autopilot_inbound(conversation)
     if not latest_doc:
         return None, 0
@@ -1479,6 +1499,7 @@ def _wait_for_conversation_batch_window(conversation: str, settings):
             time.sleep(delay_seconds)
             total_wait += delay_seconds
 
+        _refresh_autopilot_batch_snapshot()
         refreshed_doc = _latest_autopilot_inbound(conversation)
         if not refreshed_doc:
             return latest_doc, total_wait
@@ -1490,6 +1511,7 @@ def _wait_for_conversation_batch_window(conversation: str, settings):
             ):
                 time.sleep(AUTOPILOT_MEDIA_SETTLE_SECONDS)
                 total_wait += AUTOPILOT_MEDIA_SETTLE_SECONDS
+                _refresh_autopilot_batch_snapshot()
                 settled_doc = _latest_autopilot_inbound(conversation)
                 if settled_doc and str(settled_doc.name) != str(refreshed_doc.name):
                     latest_doc = settled_doc
