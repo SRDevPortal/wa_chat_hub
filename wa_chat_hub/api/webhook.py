@@ -58,23 +58,23 @@ def receive():
     try:
         if frappe.request.method != "POST":
             return {"success": False, "message": "Only POST requests accepted"}
-            
+
         payload = json.loads(frappe.request.data)
-        
+
         # Determine sender (user) and recipient (our WABA)
         # Based on typical webhook schemas, "from" is the user, "to" is our WABA or Phone ID.
         user_phone = payload.get("from")
         body = payload.get("text", {}).get("body", "")
         message_id = payload.get("messageId")
         msg_type = payload.get("type", "text")
-        
+
         if not user_phone:
             return {"success": False, "message": "Missing 'from' parameter"}
-            
+
         if msg_type != "text" and not body:
             # Fallback for media if body is empty
             body = f"[{msg_type} message received]"
-            
+
         set_service_user_context("generic_webhook")
 
         channel_account = None
@@ -120,7 +120,7 @@ def receive():
             duration_sec=elapsed(started),
         )
         return {"success": True, "result": result}
-        
+
     except Exception as e:
         task_log(
             "webhook",
@@ -330,6 +330,8 @@ def _process_interakt_payload(payload: dict, raw_body: bytes | None = None):
 
     if webhook_type in INTERAKT_STATUS_TYPES:
         event = adapter.normalize_status(payload)
+        if _route_authentication_status(channel_account, event.channel_message_id, event.delivery_status, payload):
+            return {"success": True, "result": {"updated": True, "authentication": True}}
         set_ai_security_context(channel_account=channel_account)
         assert_ai_doctype_permission("Chat Message", "write")
         result = _update_message_status(event.channel_message_id, event.delivery_status, payload)
@@ -640,6 +642,10 @@ def _process_interakt_quick_reply(payload: dict, routing: dict) -> dict:
 
 def _create_interakt_outbound_from_webhook(payload, delivery_status):
     data = payload.get("data") or {}
+    message = data.get("message") or {}
+    if _route_authentication_status(payload.get("channel_account"), message.get("id") or payload.get("channel_message_id"), delivery_status, payload):
+        return {"updated": True, "authentication": True}
+    data = payload.get("data") or {}
     customer = data.get("customer") or {}
     message = data.get("message") or {}
     channel_message_id = message.get("id") or payload.get("channel_message_id")
@@ -771,3 +777,11 @@ def _update_message_status(channel_message_id, delivery_status, payload):
         after_commit=True,
     )
     return {"updated": True, "message": message_name, "delivery_status": delivery_status}
+
+
+def _route_authentication_status(channel_account, message_id, status, payload):
+    """Optional authentication apps consume verified delivery events before chat sync."""
+    for handler in frappe.get_hooks("whatsapp_authentication_status", []):
+        if frappe.get_attr(handler)(channel_account, message_id, status, payload):
+            return True
+    return False

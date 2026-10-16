@@ -43,7 +43,7 @@ def send_login_otp(account_name, phone, code, template, language, reference):
     payload = {
         "countryCode": f"+{parsed.country_code}",
         "phoneNumber": phonenumbers.national_significant_number(parsed),
-        "callbackData": "login_security:" + reference,
+        "callbackData": reference if re.fullmatch(r"wa2fa:[a-f0-9]{32}", reference) else "login_security:" + reference,
         "type": "Template",
         "template": {
             "name": template,
