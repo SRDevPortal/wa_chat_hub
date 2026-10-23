@@ -137,6 +137,7 @@ def resolve_approved_template(
 
     body_values = template.get("body_values") or []
     variable_count = int(match.get("body_variable_count") or len(match.get("body_variables") or []))
+    variable_count = len(_extract_variable_slots(match.get("body_preview") or "", variable_count))
     if variable_count != len(body_values):
         frappe.throw(
             _(
@@ -158,6 +159,7 @@ def resolve_approved_template(
     if header_format not in {"IMAGE", "VIDEO", "DOCUMENT"}:
         header_values = template.get("header_values") or []
         header_count = int(match.get("header_variable_count") or len(match.get("header_variables") or []))
+        header_count = len(_extract_variable_slots(match.get("header_preview") or "", header_count, "header"))
         if header_count != len(header_values):
             frappe.throw(_("WhatsApp template '{0}' expects {1} header variables, but {2} were provided.").format(
                 match.get("name") or template_name, header_count, len(header_values)
@@ -247,6 +249,8 @@ def _load_manual_catalog(account) -> List[Dict[str, Any]]:
         header_count = int(item.get("header_variable_count") or 0)
         item["body_variables"] = _extract_variable_slots(body_preview, body_count, "body")
         item["header_variables"] = _extract_variable_slots(header_preview, header_count, "header")
+        item["body_variable_count"] = len(item["body_variables"])
+        item["header_variable_count"] = len(item["header_variables"])
         if not item.get("has_variables"):
             item["has_variables"] = bool(item["body_variables"] or item["header_variables"])
     templates.sort(key=lambda item: (item.get("display_name") or item.get("name") or "").lower())
@@ -681,7 +685,7 @@ def _extract_variable_slots(
     if not indices and expected_count > 0:
         indices = list(range(1, expected_count + 1))
     slots: List[Dict[str, Any]] = []
-    for idx in indices:
+    for idx in sorted(indices):
         placeholder = f"{{{{{idx}}}}}"
         slots.append(
             {
@@ -745,6 +749,14 @@ def _count_variables(
         or row.get("header_variable")
         or 0
     )
+    # Numbered placeholders identify parameters, not occurrences. Resolve each
+    # section independently; metadata remains the fallback when text is absent.
+    body_slots = _extract_variable_slots(body_preview)
+    header_slots = _extract_variable_slots(header_preview, section="header")
+    if body_slots:
+        body_count = len(body_slots)
+    if header_slots:
+        header_count = len(header_slots)
     if body_count or header_count:
         return body_count, header_count
 

@@ -2030,7 +2030,8 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         const key = section === 'header' ? 'header_variables' : 'body_variables';
         const fromApi = row && Array.isArray(row[key]) ? row[key] : [];
         if (fromApi.length) {
-            return fromApi;
+            return [...new Map(fromApi.map((slot) => [Number(slot.index), slot])).values()]
+                .sort((a, b) => Number(a.index) - Number(b.index));
         }
         const text = section === 'header'
             ? (row && row.header_preview) || ''
@@ -2062,7 +2063,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
                 indices.push(i);
             }
         }
-        return indices.map((index) => {
+        return indices.sort((a, b) => a - b).map((index) => {
             const placeholder = `{{${index}}}`;
             return {
                 index,
