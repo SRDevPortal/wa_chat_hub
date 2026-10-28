@@ -76,7 +76,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     }
     wrapper.wa_chat_hub_initialized = true;
 
-    const cssVersion = '20260911-message-date-separators-v1';
+    const cssVersion = '20261028-mobile-layout-v1';
     const existingCss = document.querySelector('link[data-wa-chat-hub-css="1"]');
     if (existingCss && existingCss.getAttribute('data-wa-chat-hub-version') !== cssVersion) {
         existingCss.remove();
@@ -202,6 +202,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
             </aside>
             <main class="wa-center-pane is-empty" id="wa-center-pane">
                 <div class="wa-thread-header">
+                    <button class="wa-mobile-back btn btn-default" id="wa-mobile-back" type="button" aria-label="Back to conversations">&#8592;</button>
                     <button class="wa-thread-profile" id="wa-thread-profile" type="button" title="Open contact info">
                         <span class="wa-thread-avatar" id="wa-thread-avatar">?</span>
                         <span class="wa-thread-identity">
@@ -414,6 +415,12 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         frappe.set_route('List', 'Chat Conversation');
     });
 
+    $('#wa-mobile-back').on('click', function() {
+        $('#wa-chat-hub-layout').removeClass('is-mobile-thread');
+        closeContextDrawer();
+        $('#wa-search').trigger('focus');
+    });
+
     $('#wa-thread-profile').on('click', function() {
         if (!currentConversation) return;
         openContextDrawer();
@@ -471,6 +478,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         `).join('') : '<div class="wa-empty">No conversations found.</div>';
         $('#wa-conversation-list').html(html);
         $('.wa-conversation-item').on('click', function() {
+            $('#wa-chat-hub-layout').addClass('is-mobile-thread');
             loadConversation($(this).data('name'));
         });
     }
@@ -1512,6 +1520,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         currentConversation = name;
         $('#wa-center-pane').removeClass('is-empty');
         if (isConversationSwitch) {
+            $('#wa-chat-hub-layout').addClass('is-mobile-thread');
             closeContextDrawer();
         }
         $('.wa-conversation-item').removeClass('active');
@@ -1548,6 +1557,7 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
     }
 
     function closeCurrentConversation() {
+        $('#wa-chat-hub-layout').removeClass('is-mobile-thread');
         currentConversation = null;
         messagingWindowCache = null;
         applyMessagingWindowUI(null);
