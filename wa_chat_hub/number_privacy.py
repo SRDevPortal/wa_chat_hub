@@ -34,12 +34,17 @@ def is_safe_record_reference(field, value):
     """Keep recognized CRM/Patient identifiers; never exempt phone-based IDs."""
     if not isinstance(value, str):
         return False
+    lead = r"CRM-LEAD-[0-9]{4}-[0-9]{5,6}"
+    # SRIAAS uses year-based HLC IDs; Siya uses company-abbreviation sequences.
+    # Exact identifiers only. Plain phones and embedded prose never qualify.
+    patient = r"(?:HLC-PAT-[0-9]{4}-[0-9]{5}|[A-Za-z][A-Za-z0-9_-]{0,20}-PAT-[0-9]{1,9})"
+    reference = rf"(?:{lead}|{patient})"
     patterns = {
-        "linked_crm_lead": r"CRM-LEAD-[0-9]{4}-[0-9]{6}",
-        "linked_lead": r"CRM-LEAD-[0-9]{4}-[0-9]{6}",
-        "linked_patient": r"HLC-PAT-[0-9]{4}-[0-9]{5}",
-        "linked_reference_name": r"(?:CRM-LEAD-[0-9]{4}-[0-9]{6}|HLC-PAT-[0-9]{4}-[0-9]{5})",
-        "source_name": r"(?:CRM-LEAD-[0-9]{4}-[0-9]{6}|HLC-PAT-[0-9]{4}-[0-9]{5})",
+        "linked_crm_lead": lead,
+        "linked_lead": lead,
+        "linked_patient": patient,
+        "linked_reference_name": reference,
+        "source_name": reference,
     }
     return bool(field in patterns and re.fullmatch(patterns[field], value))
 

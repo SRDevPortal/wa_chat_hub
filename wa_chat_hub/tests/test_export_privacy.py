@@ -60,14 +60,14 @@ class ExportPrivacyTests(unittest.TestCase):
         privacy.validate_fields("Chat Conversation", ["`tabChat Conversation`.`contact`"])
 
     def test_existing_export_denial_propagates(self):
-        from sriaas_clinic.api.crm_lead import privacy_outputs
+        from privacy_shield import outputs as privacy_outputs
         with patch.object(privacy, "restricted", return_value=True), \
              patch.object(privacy_outputs, "export_data", side_effect=frappe.PermissionError):
             with self.assertRaises(frappe.PermissionError):
                 privacy.export_data("Chat Contact", select_columns={"Chat Contact": ["name"]})
 
     def test_full_visibility_and_other_doctypes_delegate(self):
-        from sriaas_clinic.api.crm_lead import privacy_outputs
+        from privacy_shield import outputs as privacy_outputs
         for dt, restricted in (("Chat Contact", False), ("Customer", True)):
             with patch.object(privacy, "restricted", return_value=restricted), \
                  patch.object(privacy_outputs, "export_data", return_value="unchanged"):
@@ -92,7 +92,7 @@ class ExportPrivacyTests(unittest.TestCase):
 
     def test_legacy_aliases_resolve_to_same_masking_boundary(self):
         from wa_chat_hub import hooks
-        for module in ("privacy_shield.outputs", "sriaas_clinic.api.crm_lead.privacy_outputs"):
+        for module in ("privacy_shield.outputs", "sriaas_clinic.api.crm_lead.privacy_outputs", "siya_clinic.api.crm_lead.privacy_outputs"):
             for action in ("export_data", "export_query"):
                 path = module + "." + action
                 target = hooks.override_whitelisted_methods[path]
@@ -155,3 +155,11 @@ class ExportPrivacyTests(unittest.TestCase):
                 text = str(list(wb.active.values)); wb.close()
             self.assertIn(row.linked_reference_name, text)
             self.assertNotIn(row.contact, text)
+
+    def test_both_clinic_record_series_are_preserved_but_phone_ids_are_not(self):
+        from wa_chat_hub.number_privacy import is_safe_record_reference
+        for value in ["CRM-LEAD-2026-00014", "CRM-LEAD-2026-687089", "EEPL-PAT-42", "EEPL-PAT-1234567", "HLC-PAT-2026-38721"]:
+            self.assertTrue(is_safe_record_reference("linked_reference_name", value), value)
+            self.assertEqual(privacy.mask_cell(value), value)
+        for value in ["919876501234", "Call EEPL-PAT-42 on 919876501234", "CRM-LEAD-2026-9876543210", "EEPL-PAT-9876543210"]:
+            self.assertFalse(is_safe_record_reference("linked_reference_name", value), value)

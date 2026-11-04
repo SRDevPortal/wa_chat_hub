@@ -105,7 +105,7 @@ override_whitelisted_methods.update({
 })
 
 # Legacy whitelisted export aliases must use the same reviewed boundaries.
-for _export_module in ("privacy_shield.outputs", "sriaas_clinic.api.crm_lead.privacy_outputs"):
+for _export_module in ("privacy_shield.outputs", "sriaas_clinic.api.crm_lead.privacy_outputs", "siya_clinic.api.crm_lead.privacy_outputs"):
     override_whitelisted_methods.update({
         _export_module + ".export_data": "wa_chat_hub.export_privacy.export_data",
         _export_module + ".export_query": "wa_chat_hub.export_privacy.export_query",
@@ -127,3 +127,15 @@ override_whitelisted_methods.update({
     "sriaas_clinic.api.crm_lead.privacy.reportview_get": "wa_chat_hub.desk_privacy.reportview_get",
     "sriaas_clinic.api.crm_lead.privacy.reportview_get_list": "wa_chat_hub.desk_privacy.reportview_get_list",
 })
+
+# Clinic-owned read aliases use the same chat projection regardless of clinic.
+for _clinic in ("sriaas_clinic", "siya_clinic"):
+    for _source, _target in {
+        "desk_getdoc": "wa_chat_hub.desk_privacy.getdoc",
+        "client_get": "wa_chat_hub.client_privacy.get",
+        "client_get_list": "wa_chat_hub.client_privacy.get_list",
+        "client_get_value": "wa_chat_hub.client_privacy.get_value",
+        "reportview_get": "wa_chat_hub.desk_privacy.reportview_get",
+        "reportview_get_list": "wa_chat_hub.desk_privacy.reportview_get_list",
+    }.items():
+        override_whitelisted_methods[_clinic + ".api.crm_lead.privacy." + _source] = _target

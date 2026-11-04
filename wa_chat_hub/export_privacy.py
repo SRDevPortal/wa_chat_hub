@@ -87,7 +87,7 @@ def protected_export(original, file_type, *args, **kwargs):
 def export_data(doctype=None, parent_doctype=None, all_doctypes=True, with_data=False,
                 select_columns=None, file_type="CSV", template=False, filters=None,
                 export_without_column_meta=False):
-    from sriaas_clinic.api.crm_lead.privacy_outputs import export_data as original
+    from privacy_shield.outputs import export_data as original
     target = doctype[0] if isinstance(doctype, list) and doctype else doctype
     target = target or parent_doctype
     args = (doctype, parent_doctype, all_doctypes, with_data, select_columns, file_type,
@@ -105,7 +105,7 @@ def export_data(doctype=None, parent_doctype=None, all_doctypes=True, with_data=
 
 @frappe.whitelist()
 def export_query():
-    from sriaas_clinic.api.crm_lead.privacy_outputs import export_query as original
+    from privacy_shield.outputs import export_query as original
     target = frappe.form_dict.get("doctype")
     if target not in FIELDS or not restricted():
         return original()

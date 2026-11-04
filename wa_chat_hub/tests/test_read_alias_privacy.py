@@ -9,7 +9,7 @@ from privacy_shield import desk, listing
 class ReadAliasPrivacyTests(unittest.TestCase):
     def aliases(self):
         return [(source, target) for source, target in hooks.override_whitelisted_methods.items()
-                if source.startswith(("privacy_shield.", "sriaas_clinic.api.crm_lead.privacy."))
+                if source.startswith(("privacy_shield.", "sriaas_clinic.api.crm_lead.privacy.", "siya_clinic.api.crm_lead.privacy."))
                 and target.startswith(("wa_chat_hub.client_privacy.", "wa_chat_hub.desk_privacy."))]
 
     def invoke(self, target, doctype, raw, denied=False):
@@ -32,9 +32,9 @@ class ReadAliasPrivacyTests(unittest.TestCase):
             self.assertEqual(original.call_args.args[:len(args)], args)
         return frappe.response.docs if action == "getdoc" else value
 
-    def test_twelve_aliases_mask_without_mutating_source(self):
+    def test_all_clinic_aliases_mask_without_mutating_source(self):
         aliases = self.aliases()
-        self.assertEqual(len(aliases), 12)
+        self.assertEqual(len(aliases), 18)
         for source, target in aliases:
             raw = {"doctype": "Chat Conversation", "name": "1042", "contact": "9876501234"}
             with self.subTest(alias=source), \
