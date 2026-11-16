@@ -11,6 +11,7 @@ import requests
 from frappe.utils import add_to_date, cint, get_datetime
 from frappe.utils.background_jobs import enqueue
 from frappe.utils.response import json_handler
+from wa_chat_hub.job_queues import ai_queue
 
 from wa_chat_hub.ai.ocr_summary import (
     GENERIC_MEDIA_BODIES,
@@ -161,7 +162,7 @@ def schedule_autopilot_for_message(message_name: str) -> None:
         if _autopilot_batching_enabled(settings):
             enqueue(
                 "wa_chat_hub.api.ai_bot.process_conversation",
-                queue="short",
+                queue=ai_queue(),
                 conversation=doc.conversation,
                 trigger_message_id=message_name,
                 enqueue_after_commit=True,
@@ -178,14 +179,14 @@ def schedule_autopilot_for_message(message_name: str) -> None:
                 message=message_name,
                 conversation=getattr(doc, "conversation", None),
                 content_type=getattr(doc, "content_type", None) or "Text",
-                queue="short",
+                queue=ai_queue(),
                 mode="conversation_batch",
             )
             return
 
         enqueue(
             "wa_chat_hub.api.ai_bot.process_message",
-            queue="short",
+            queue=ai_queue(),
             message_id=message_name,
             enqueue_after_commit=True,
             now=False,
@@ -197,7 +198,7 @@ def schedule_autopilot_for_message(message_name: str) -> None:
             message=message_name,
             conversation=getattr(doc, "conversation", None),
             content_type=getattr(doc, "content_type", None) or "Text",
-            queue="short",
+            queue=ai_queue(),
         )
     except Exception:
         frappe.log_error(frappe.get_traceback(), "WA AI Autopilot Enqueue Failed")
@@ -1483,6 +1484,18 @@ def _refresh_autopilot_batch_snapshot() -> None:
     frappe.db.rollback()
 
 
+def _remaining_batch_delay(doc, seconds):
+    """Queue time already contributes to the batch window; don't wait twice."""
+    creation = _doc_value(doc, "creation", None)
+    if not creation:
+        return seconds
+    try:
+        age = frappe.utils.time_diff_in_seconds(frappe.utils.now_datetime(), creation)
+        return min(seconds, max(0, seconds - age))
+    except (TypeError, ValueError):
+        return seconds
+
+
 def _wait_for_conversation_batch_window(conversation: str, settings):
     _refresh_autopilot_batch_snapshot()
     latest_doc = _latest_autopilot_inbound(conversation)
@@ -1494,7 +1507,7 @@ def _wait_for_conversation_batch_window(conversation: str, settings):
 
     total_wait = 0
     for _ in range(4):
-        delay_seconds = _autopilot_reply_delay_seconds(latest_doc, settings)
+        delay_seconds = _remaining_batch_delay(latest_doc, _autopilot_reply_delay_seconds(latest_doc, settings))
         if delay_seconds and not getattr(frappe.flags, "in_test", False):
             time.sleep(delay_seconds)
             total_wait += delay_seconds
@@ -1509,8 +1522,12 @@ def _wait_for_conversation_batch_window(conversation: str, settings):
                 and AUTOPILOT_MEDIA_SETTLE_SECONDS
                 and not getattr(frappe.flags, "in_test", False)
             ):
-                time.sleep(AUTOPILOT_MEDIA_SETTLE_SECONDS)
-                total_wait += AUTOPILOT_MEDIA_SETTLE_SECONDS
+                settle = min(AUTOPILOT_MEDIA_SETTLE_SECONDS, _remaining_batch_delay(
+                    refreshed_doc, _autopilot_reply_delay_seconds(refreshed_doc, settings)
+                    + AUTOPILOT_MEDIA_SETTLE_SECONDS))
+                if settle:
+                    time.sleep(settle)
+                    total_wait += settle
                 _refresh_autopilot_batch_snapshot()
                 settled_doc = _latest_autopilot_inbound(conversation)
                 if settled_doc and str(settled_doc.name) != str(refreshed_doc.name):
@@ -1532,7 +1549,7 @@ def _latest_autopilot_inbound(conversation: str):
             "conversation": conversation,
             "direction": "Inbound",
         },
-        fields=["name", "body", "content_type", "media_url", "sender_type"],
+        fields=["name", "body", "content_type", "media_url", "sender_type", "creation"],
         order_by="creation desc, name desc",
         limit=30,
     )
