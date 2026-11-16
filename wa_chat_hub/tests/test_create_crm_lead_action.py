@@ -10,6 +10,11 @@ from wa_chat_hub.api.actions import create_crm_lead_from_conversation
 
 
 class TestCreateCRMLeadAction(TestCase):
+    def setUp(self):
+        privacy = patch("wa_chat_hub.number_privacy.restricted", return_value=False)
+        privacy.start()
+        self.addCleanup(privacy.stop)
+
     def test_reuses_phone_match_and_links_current_conversation(self):
         convo = frappe._dict(
             name="CONV-001",
@@ -38,12 +43,12 @@ class TestCreateCRMLeadAction(TestCase):
             patch("wa_chat_hub.api.actions._create_lead_for_inbound") as create_lead,
             patch("wa_chat_hub.api.actions.set_conversation_crm_lead") as set_lead,
             patch("wa_chat_hub.api.actions._finalize_crm_lead_after_inbound"),
-            patch("wa_chat_hub.api.actions.score_and_sync_conversation"),
-            patch("wa_chat_hub.api.actions.sync_to_linked_lead"),
+            patch("wa_chat_hub.api.actions._enqueue_lead_scoring") as schedule_score,
             patch("wa_chat_hub.api.actions.frappe", frappe_mock),
         ):
             result = create_crm_lead_from_conversation.__wrapped__()
 
+        schedule_score.assert_called_once_with("CONV-001")
         self.assertFalse(result["result"]["created"])
         self.assertEqual(result["result"]["name"], "CRM-001")
         create_lead.assert_not_called()
@@ -75,12 +80,12 @@ class TestCreateCRMLeadAction(TestCase):
             patch("wa_chat_hub.api.actions._create_lead_for_inbound", return_value="CRM-NEW") as create_lead,
             patch("wa_chat_hub.api.actions.set_conversation_crm_lead"),
             patch("wa_chat_hub.api.actions._finalize_crm_lead_after_inbound"),
-            patch("wa_chat_hub.api.actions.score_and_sync_conversation"),
-            patch("wa_chat_hub.api.actions.sync_to_linked_lead"),
+            patch("wa_chat_hub.api.actions._enqueue_lead_scoring") as schedule_score,
             patch("wa_chat_hub.api.actions.frappe", frappe_mock),
         ):
             result = create_crm_lead_from_conversation.__wrapped__()
 
+        schedule_score.assert_called_once_with("CONV-001")
         self.assertTrue(result["result"]["created"])
         create_lead.assert_called_once_with(
             doctype="CRM Lead",

@@ -337,19 +337,9 @@ def _get_patient_display_name(patient) -> str:
 
 
 def _split_interakt_phone(phone: str, default_country_code: str) -> tuple[str, str]:
-    country_code = str(default_country_code or "+91").strip()
-    if not country_code.startswith("+"):
-        country_code = f"+{country_code}"
+    from wa_chat_hub.connector.interakt.adapter import split_interakt_phone
 
-    phone_digits = normalize_phone(phone)
-    country_digits = normalize_phone(country_code)
-    if country_digits and phone_digits.startswith(country_digits) and len(phone_digits) > len(country_digits):
-        phone_digits = phone_digits[len(country_digits):]
-
-    if phone_digits.startswith("0"):
-        phone_digits = phone_digits.lstrip("0")
-
-    return country_code, phone_digits
+    return split_interakt_phone(phone, default_country_code)
 
 
 def _build_interakt_traits(contact_doc, reference_doc) -> dict[str, Any]:

@@ -14,6 +14,8 @@ from typing import Dict, Optional
 import frappe
 import requests
 
+from wa_chat_hub.ai.lead_notes import append_lead_note
+
 from wa_chat_hub.ai.providers import (
     CHAT_CAPABILITY,
     VISION_CAPABILITY,
@@ -29,7 +31,6 @@ from wa_chat_hub.security import (
     safe_ai_get_doc,
     safe_ai_get_value,
     safe_ai_insert,
-    safe_ai_save,
 )
 
 # Max length for sr_lead_notes (Small Text); keep headroom for separators.
@@ -307,27 +308,7 @@ def _resolve_notes_fieldname(doctype: str) -> Optional[str]:
 
 def _append_to_lead_notes(doctype: str, name: str, note_block: str) -> None:
     try:
-        notes_field = _resolve_notes_fieldname(doctype)
-        lead_doc = None
-        for attempt in range(3):
-            lead_doc = safe_ai_get_doc(doctype, name)
-            if notes_field:
-                existing = str(getattr(lead_doc, notes_field, "") or "").strip()
-                merged = f"{existing}\n\n{note_block}".strip() if existing else note_block
-                if len(merged) > SR_LEAD_NOTES_MAX_LEN:
-                    merged = _trim_notes_to_limit(existing, note_block, SR_LEAD_NOTES_MAX_LEN)
-                setattr(lead_doc, notes_field, merged)
-            try:
-                if notes_field:
-                    safe_ai_save(lead_doc)
-                break
-            except frappe.TimestampMismatchError:
-                if attempt == 2:
-                    raise
-                time.sleep(0.05 * (attempt + 1))
-                continue
-        assert_ai_doctype_permission("Comment", "write")
-        lead_doc.add_comment("Comment", note_block)
+        append_lead_note(doctype, name, note_block, _resolve_notes_fieldname(doctype))
     except WAChatHubSecurityError:
         return
 

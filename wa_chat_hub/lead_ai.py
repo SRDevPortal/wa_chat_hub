@@ -12,7 +12,7 @@ def _schedule(conversation: str) -> bool:
     if not conversation:
         return False
     frappe.enqueue(
-        "wa_chat_hub.ai.lead_scoring.score_and_sync_conversation",
+        "wa_chat_hub.ai.lead_scoring.score_and_sync_conversation_job",
         queue="short",
         conversation=conversation,
         enqueue_after_commit=True,

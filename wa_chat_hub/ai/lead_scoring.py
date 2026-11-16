@@ -6,7 +6,6 @@ from typing import Dict, List
 import frappe
 
 from wa_chat_hub.ai.language import resolve_language_from_history
-from wa_chat_hub.db_retry import with_db_lock_retry
 from wa_chat_hub.prompts import get_conversation_crm_lead
 from wa_chat_hub.policy import get_conversation_policy
 from wa_chat_hub.security import (
@@ -14,7 +13,6 @@ from wa_chat_hub.security import (
     safe_ai_exists,
     safe_ai_get_all,
     safe_ai_get_doc,
-    safe_ai_set_value,
 )
 
 
@@ -24,6 +22,19 @@ class ScoreResult:
     lead_temperature: str
     lead_lan: str
     source: str
+
+
+def score_and_sync_conversation_job(conversation: str) -> Dict[str, str]:
+    """Retry the complete scoring transaction, never just a failed statement."""
+    old_timeout = frappe.db.sql("SELECT @@SESSION.innodb_lock_wait_timeout")[0][0]
+    try:
+        frappe.db.sql("SET SESSION innodb_lock_wait_timeout=5")
+        return score_and_sync_conversation(conversation)
+    except (frappe.QueryDeadlockError, frappe.QueryTimeoutError) as exc:
+        # Frappe's job runner rolls back and retries with bounded backoff.
+        raise frappe.RetryBackgroundJobError() from exc
+    finally:
+        frappe.db.sql("SET SESSION innodb_lock_wait_timeout=%s", (old_timeout,))
 
 
 def score_and_sync_conversation(conversation: str) -> Dict[str, str]:
@@ -62,33 +73,29 @@ def recompute_conversation_metrics(conversation: str) -> ScoreResult:
 def sync_to_conversation(conversation: str, result: ScoreResult) -> None:
     """Persist scoring only when at least one derived value changed."""
     assert_ai_doctype_permission("Chat Conversation", "write")
-    with_db_lock_retry(
-        "conversation_lead_score_update",
-        lambda: frappe.db.sql(
-            """
-            UPDATE `tabChat Conversation`
-            SET lead_score = %s,
-                lead_temperature = %s,
-                lead_lan = %s
-            WHERE name = %s
-              AND (
-                  NOT (lead_score <=> %s)
-                  OR NOT (lead_temperature <=> %s)
-                  OR NOT (lead_lan <=> %s)
-              )
-            """,
-            (
-                result.lead_score,
-                result.lead_temperature,
-                result.lead_lan,
-                conversation,
-                result.lead_score,
-                result.lead_temperature,
-                result.lead_lan,
-            ),
+    frappe.db.sql(
+        """
+        UPDATE `tabChat Conversation`
+        SET lead_score = %s,
+            lead_temperature = %s,
+            lead_lan = %s
+        WHERE name = %s
+          AND (
+              NOT (lead_score <=> %s)
+              OR NOT (lead_temperature <=> %s)
+              OR NOT (lead_lan <=> %s)
+          )
+        """,
+        (
+            result.lead_score,
+            result.lead_temperature,
+            result.lead_lan,
+            conversation,
+            result.lead_score,
+            result.lead_temperature,
+            result.lead_lan,
         ),
     )
-
 
 def sync_to_linked_lead(conversation: str, result: ScoreResult | None = None) -> None:
     convo = safe_ai_get_doc("Chat Conversation", conversation)
@@ -120,11 +127,14 @@ def sync_to_linked_lead(conversation: str, result: ScoreResult | None = None) ->
     if not updates:
         return
 
-    safe_ai_set_value(
-        target_dt,
-        crm_lead,
-        updates,
-        update_modified=False,
+    assert_ai_doctype_permission(target_dt, "write")
+    # Field names come only from the fixed derived-field allowlist above.
+    assignments = ", ".join(f"`{field}`=%s" for field in updates)
+    changed = " OR ".join(f"NOT (`{field}` <=> %s)" for field in updates)
+    values = tuple(updates.values())
+    frappe.db.sql(
+        f"UPDATE `tabCRM Lead` SET {assignments} WHERE name=%s AND ({changed})",
+        (*values, crm_lead, *values),
     )
 
 

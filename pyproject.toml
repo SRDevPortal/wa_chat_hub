@@ -9,6 +9,7 @@ authors = [
 ]
 dependencies = [
     "requests",
+    "phonenumbers>=8.13,<10",
     "imageio-ffmpeg",
 ]
 

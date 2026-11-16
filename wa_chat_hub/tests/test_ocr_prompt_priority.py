@@ -85,21 +85,8 @@ class TestOCRPromptPriority(TestCase):
         self.assertEqual(payload["status"], "Applied")
         self.assertIn("Hb 10.9", payload["raw_text"])
 
-    @patch("wa_chat_hub.ai.ocr_summary.assert_ai_doctype_permission")
     @patch("wa_chat_hub.ai.ocr_summary._resolve_notes_fieldname", return_value="sr_lead_notes")
-    @patch("wa_chat_hub.ai.ocr_summary.safe_ai_save")
-    @patch("wa_chat_hub.ai.ocr_summary.safe_ai_get_doc")
-    def test_lead_update_reloads_and_retries_timestamp_conflict(
-        self, get_doc, save, _resolve_notes, _assert_permission
-    ):
-        stale = MagicMock(sr_lead_notes="old")
-        fresh = MagicMock(sr_lead_notes="newer")
-        get_doc.side_effect = [stale, fresh]
-        save.side_effect = [frappe.TimestampMismatchError, None]
-
+    @patch("wa_chat_hub.ai.ocr_summary.append_lead_note")
+    def test_ocr_uses_atomic_notes_append(self, append, _resolve):
         _append_to_lead_notes("CRM Lead", "LEAD-1", "OCR block")
-
-        self.assertEqual(get_doc.call_count, 2)
-        self.assertEqual(save.call_count, 2)
-        self.assertEqual(fresh.sr_lead_notes, "newer\n\nOCR block")
-        fresh.add_comment.assert_called_once_with("Comment", "OCR block")
+        append.assert_called_once_with("CRM Lead", "LEAD-1", "OCR block", "sr_lead_notes")

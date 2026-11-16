@@ -88,23 +88,34 @@ def extract_interakt_customer_phone(customer: Any, payload: Dict[str, Any] | Non
 
 def split_interakt_phone(phone_number: str, default_country_code: str = "+91") -> Tuple[str, str]:
     """Return Interakt's separate countryCode and phoneNumber values."""
-    digits = re.sub(r"\D", "", str(phone_number or ""))
-    country_code = default_country_code if str(default_country_code or "").startswith("+") else f"+{default_country_code}"
+    import phonenumbers
 
-    if not digits:
+    raw = str(phone_number or "").strip()
+    country_code = "+" + re.sub(r"\D", "", str(default_country_code or "+91"))
+    if not raw:
         return country_code, ""
-
-    country_digits = re.sub(r"\D", "", country_code)
-    if country_digits and digits.startswith(country_digits):
-        return country_code, digits[len(country_digits):]
-
-    if len(digits) > 10:
-        inferred_country = digits[:-10]
-        if country_digits == "91" and inferred_country in {"0", "9"}:
-            return country_code, digits[-10:]
-        return f"+{digits[:-10]}", digits[-10:]
-
-    return country_code, digits
+    if not re.fullmatch(r"\+?[0-9 ().-]+", raw):
+        raise ValueError("Invalid WhatsApp phone number")
+    digits = re.sub(r"\D", "", raw)
+    try:
+        if raw.startswith("+") or raw.startswith("00"):
+            parsed = phonenumbers.parse("+" + (digits[2:] if raw.startswith("00") else digits), None)
+        else:
+            region = phonenumbers.region_code_for_country_code(int(country_code[1:]))
+            if region == "ZZ":
+                raise ValueError("Invalid default calling code")
+            parsed = phonenumbers.parse(digits, region)
+            # Stored WhatsApp identities may contain an E.164 number without '+'.
+            # A merely possible national length may include non-mobile ranges
+            # (India allows some 12-digit services). Prefer a valid national
+            # number; otherwise resolve a stored international identity.
+            if not phonenumbers.is_valid_number(parsed) and len(digits) > 10:
+                parsed = phonenumbers.parse("+" + digits, None)
+        if not phonenumbers.is_possible_number(parsed):
+            raise ValueError("Invalid phone number length")
+    except (phonenumbers.NumberParseException, ValueError) as exc:
+        raise ValueError("Invalid WhatsApp phone number or country code") from exc
+    return f"+{parsed.country_code}", phonenumbers.national_significant_number(parsed)
 
 
 class InteraktAdapter(ConnectorAdapter):

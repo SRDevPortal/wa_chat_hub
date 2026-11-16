@@ -3,12 +3,12 @@ from __future__ import annotations
 import frappe
 from frappe import _
 
-from wa_chat_hub.ai.lead_scoring import score_and_sync_conversation, sync_to_linked_lead
 from wa_chat_hub.number_privacy import browser_response
 from wa_chat_hub.permissions import ensure_can_read_conversation
 from wa_chat_hub.prompts import get_conversation_crm_lead, set_conversation_crm_lead
 from wa_chat_hub.security import safe_ai_exists
 from wa_chat_hub.services import (
+    _enqueue_lead_scoring,
     _create_lead_for_inbound,
     _finalize_crm_lead_after_inbound,
     _find_primary_crm_lead_by_phone,
@@ -50,8 +50,7 @@ def create_lead_from_conversation():
     convo.linked_reference_name = doc.name
     convo.save(ignore_permissions=True)
     try:
-        score_and_sync_conversation(conversation)
-        sync_to_linked_lead(conversation)
+        _enqueue_lead_scoring(conversation)
     except Exception:
         frappe.log_error(frappe.get_traceback(), "Lead Sync Failed After Lead Creation")
     return {"success": True, "result": {"doctype": "Lead", "name": doc.name}}
@@ -117,8 +116,7 @@ def create_crm_lead_from_conversation():
 
         _finalize_crm_lead_after_inbound(conversation, lead_name, convo=convo)
         try:
-            score_and_sync_conversation(conversation)
-            sync_to_linked_lead(conversation)
+            _enqueue_lead_scoring(conversation)
         except Exception:
             frappe.log_error(frappe.get_traceback(), "CRM Lead Sync Failed After Chat Link")
 
