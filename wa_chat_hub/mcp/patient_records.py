@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import frappe
+from wa_chat_hub.patient_matching import patient_context_allowed
 from frappe import _
 from frappe.utils import cint
 
@@ -380,7 +381,7 @@ def _verified_patient(*, patient: str, conversation: str) -> str:
     patient = str(patient or "").strip()
     conversation = str(conversation or "").strip()
     if not patient or not conversation:
-        frappe.throw(_("Verified patient context is required."), frappe.PermissionError)
+        frappe.throw(_("A linked patient context is required."), frappe.PermissionError)
 
     convo = safe_ai_get_doc("Chat Conversation", conversation)
     linked_patient = (
@@ -391,9 +392,9 @@ def _verified_patient(*, patient: str, conversation: str) -> str:
             else None
         )
     )
-    if getattr(convo, "identity_status", None) != "Verified" or linked_patient != patient:
+    if not patient_context_allowed(linked_patient, getattr(convo, "identity_status", None)) or linked_patient != patient:
         frappe.throw(
-            _("Patient identity is not verified for this conversation."),
+            _("The patient is not matched to this conversation."),
             frappe.PermissionError,
         )
     return patient

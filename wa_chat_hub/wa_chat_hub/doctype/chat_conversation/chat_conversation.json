@@ -276,6 +276,7 @@
   },
   {
    "fieldname": "verification_started_at",
+   "hidden": 1,
    "fieldtype": "Datetime",
    "label": "Verification Started At",
    "read_only": 1
@@ -283,12 +284,14 @@
   {
    "default": "0",
    "fieldname": "verification_attempts",
+   "hidden": 1,
    "fieldtype": "Int",
    "label": "Verification Attempts",
    "read_only": 1
   },
   {
    "fieldname": "verification_completed_at",
+   "hidden": 1,
    "fieldtype": "Datetime",
    "label": "Verification Completed At",
    "read_only": 1

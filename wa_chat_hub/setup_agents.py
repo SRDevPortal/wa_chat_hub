@@ -5,9 +5,8 @@ import json
 import frappe
 
 
-PATIENT_AGENT_PROMPT = """You are the clinic's Patient Care WhatsApp agent. Help verified patients with operational questions and approved care instructions using only the supplied records and knowledge. Never invent patient facts, diagnose a new condition, or change medication or dosage. If information is unavailable or clinical judgment is required, hand the conversation to the configured care team."""
+PATIENT_AGENT_PROMPT = """You are the clinic's Patient Care WhatsApp agent. Help automatically matched patients with operational questions and approved care instructions using only the supplied records and knowledge. Never invent patient facts, diagnose a new condition, or change medication or dosage. If information is unavailable or clinical judgment is required, hand the conversation to the configured care team."""
 
-VERIFICATION_AGENT_PROMPT = """You are the clinic's Patient Verification WhatsApp agent. Never verify a customer merely because their WhatsApp number matches a Patient record. Ask the customer to either provide their registered phone number or explicitly confirm ownership of the current chat number by saying words such as 'This is my number' or 'Yahi mera number hai'. Call verify_patient_identity without arguments only after the latest customer message contains one of those forms of evidence. The server validates the latest inbound message, current Chat Contact number, and linked Patient number. Confirm verification only when the tool returns verified=true. If evidence is missing, ask one concise verification question. If verification fails, disclose no patient information and escalate safely. Never reveal, confirm, or infer any patient record, appointment, prescription, encounter, payment, or order information before successful verification."""
 
 PATIENT_GUARDRAILS = """Never expose one patient's information to another contact. Do not provide diagnosis, medicine changes, dosage changes, or emergency assessment. Urgent symptoms, self-harm language, severe deterioration, adverse medicine reactions, and post-procedure complications require the approved safety response and immediate human escalation."""
 
@@ -20,28 +19,11 @@ PATIENT_CARE_TOOL_NAMES = (
     "get_verified_patient_shipping_history",
 )
 
-PATIENT_VERIFICATION_TOOL = {
-    "tool_name": "verify_patient_identity",
-    "description": (
-        "Verify only when the latest customer message either supplies the matching "
-        "registered phone number or explicitly claims the current WhatsApp chat number "
-        "as theirs, for example 'This is my number' or 'Yahi mera number hai'."
-    ),
-    "endpoint_url": "wa_chat_hub.identity.verify_patient_identity_by_agent",
-    "http_method": "POST",
-    "access_mode": "Write",
-    "parameters_schema": {
-        "type": "object",
-        "properties": {},
-        "additionalProperties": False,
-    },
-}
-
 PATIENT_SHIPPING_HISTORY_TOOL = {
     "tool_name": "get_verified_patient_shipping_history",
     "description": (
         "Read shipment, tracking, AWB, courier, delivery, and linked encounter shipping "
-        "history for the verified patient in the current chat."
+        "history for the patient automatically linked to the current chat."
     ),
     "endpoint_url": "wa_chat_hub.mcp.patient_records.get_verified_patient_shipping_history",
     "http_method": "POST",
@@ -97,21 +79,12 @@ def ensure_default_agent_profiles() -> int:
             "agent_type": "Patient",
             "system_prompt": PATIENT_AGENT_PROMPT,
             "medical_guardrail_policy": PATIENT_GUARDRAILS,
-            "escalation_policy": "Escalate when identity, record meaning, medical safety, or the requested action is uncertain.",
+            "escalation_policy": "Escalate when no unique Patient is linked, record meaning or medical safety is uncertain, or the requested action needs human support.",
             "auto_reply_mode": "Draft + Approval",
             "max_tool_calls": 2,
-            "require_verified_identity": 1,
-        },
-        {
-            "agent_name": "Patient Verification Agent",
-            "agent_type": "Patient Verification",
-            "system_prompt": VERIFICATION_AGENT_PROMPT,
-            "medical_guardrail_policy": PATIENT_GUARDRAILS,
-            "escalation_policy": "Escalate identity ambiguity and shared-number cases to a human without disclosing records.",
-            "auto_reply_mode": "Suggest Only",
-            "max_tool_calls": 1,
             "require_verified_identity": 0,
         },
+
     )
     created = 0
     for spec in specs:
@@ -131,50 +104,8 @@ def ensure_default_agent_profiles() -> int:
 
 
 def ensure_verification_agent_tool(commit: bool = True) -> dict:
-    """Insert the verification MCP once; never overwrite administrator edits."""
-    required_doctypes = ("WA AI Agent Profile", "WA AI Agent Tool", "WA MCP Tool Endpoint")
-    if not all(frappe.db.exists("DocType", doctype) for doctype in required_doctypes):
-        return {"updated": False, "reason": "required_doctype_missing"}
-
-    tool_name = PATIENT_VERIFICATION_TOOL["tool_name"]
-    created = False
-    if not frappe.db.exists("WA MCP Tool Endpoint", tool_name):
-        values = {
-            key: value
-            for key, value in PATIENT_VERIFICATION_TOOL.items()
-            if key != "parameters_schema"
-        }
-        values["parameters_schema"] = json.dumps(
-            PATIENT_VERIFICATION_TOOL["parameters_schema"],
-            indent=2,
-        )
-        frappe.get_doc(
-            {"doctype": "WA MCP Tool Endpoint", "is_active": 1, **values}
-        ).insert(ignore_permissions=True)
-        created = True
-
-    profile_name = frappe.db.get_value(
-        "WA AI Agent Profile",
-        {"agent_type": "Patient Verification", "is_default": 1, "is_active": 1},
-        "name",
-    )
-    profile_changed = False
-    # Only a newly inserted endpoint is bootstrapped onto the profile. Existing
-    # profiles/endpoints, including disabled child rows, remain administrator-owned.
-    if created and profile_name:
-        profile = frappe.get_doc("WA AI Agent Profile", profile_name)
-        if not any(row.mcp_tool == tool_name for row in (profile.allowed_tools or [])):
-            profile.append("allowed_tools", {"mcp_tool": tool_name, "is_active": 1})
-            profile.save(ignore_permissions=True)
-            profile_changed = True
-
-    if commit:
-        frappe.db.commit()
-    return {
-        "updated": bool(created or profile_changed),
-        "tool": tool_name,
-        "agent_profile": profile_name,
-    }
+    """Compatibility shim for older setup patches; verification was retired."""
+    return {"updated": False, "reason": "automatic_patient_matching"}
 
 
 def ensure_patient_care_agent_tools(commit: bool = True) -> dict:
@@ -636,8 +567,8 @@ def create_test_department_profile() -> dict:
                     "A: Collect only the preferred date and callback number, then create a draft "
                     "or hand off to the appointment team. Do not claim an appointment is confirmed.\n\n"
                     "Q: Can I get my medical report on WhatsApp?\n"
-                    "A: Explain that identity verification is required. Do not disclose report details "
-                    "in an unverified conversation.\n\n"
+                    "A: Use approved records only for the Patient linked to this conversation. "
+                    "Do not ask the patient to verify their number.\n\n"
                     "Q: Can the bot change my medicine or dose?\n"
                     "A: No. Escalate medicine and dosage questions to the clinical team.\n\n"
                     "Q: What happens for urgent symptoms?\n"

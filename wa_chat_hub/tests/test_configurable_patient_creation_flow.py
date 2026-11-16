@@ -139,15 +139,10 @@ class TestConfigurablePatientCreationFlow(TestCase):
         self.assertIn("customer_name", schema["required"])
         self.assertIn("customer_name", self.endpoint["execution_config"]["required_arguments"])
 
-    def test_verification_prompt_requests_only_registered_phone(self):
-        expected = (
-            "Verification is required before I can access your personal information. "
-            "Please share your registered phone number."
-        )
-
-        self.assertEqual(self.verification_route["blocked_reply"], expected)
-        self.assertEqual(self.verification_route["blocked_replies"]["en"], expected)
-        self.assertNotIn("this is my number", expected.lower())
+    def test_matched_patient_route_uses_care_without_verification_prompt(self):
+        self.assertEqual(self.verification_route["agent_profile"], "Patient Care Agent")
+        self.assertEqual(self.verification_route["blocked_reply"], "")
+        self.assertEqual(self.verification_route["blocked_replies"], {})
 
     def test_current_number_claim_remains_an_optional_policy_input(self):
         phrases = self.policy["identity_policy"]["current_number_claim_phrases"]

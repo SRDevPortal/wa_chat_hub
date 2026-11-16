@@ -54,7 +54,7 @@
    "reqd": 1
   },
   {
-   "description": "Phone evidence, ownership phrases, verification validity and identity statuses.",
+   "description": "Patient phone matching fields and identity statuses. Legacy verification settings are retained for compatibility.",
    "fieldname": "identity_policy",
    "fieldtype": "Code",
    "label": "Identity Policy",

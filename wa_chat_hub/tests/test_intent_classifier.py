@@ -200,14 +200,14 @@ class TestPatientVerificationGate(TestCase):
         )
         self.assertFalse(needs_patient_verification_question(route, "Hi"))
 
-    def test_protected_matched_request_asks_for_verification(self):
+    def test_protected_matched_request_skips_verification(self):
         route = SimpleNamespace(
             party_type="Patient",
             identity_status="Matched",
             requires_patient_data=True,
             policy_bundle=TEST_POLICY,
         )
-        self.assertTrue(needs_patient_verification_question(route, "meri prescription bhejo"))
+        self.assertFalse(needs_patient_verification_question(route, "meri prescription bhejo"))
 
     def test_current_number_claim_reaches_identity_verification_flow(self):
         route = SimpleNamespace(
@@ -217,28 +217,28 @@ class TestPatientVerificationGate(TestCase):
             policy_bundle=TEST_POLICY,
         )
         self.assertFalse(needs_patient_verification_question(route, "Yahi mera number hai"))
-    def test_registered_number_independently_attempts_verification(self):
+    def test_registered_number_does_not_trigger_verification(self):
         route = SimpleNamespace(
             party_type="Patient",
             identity_status="Matched",
             requires_patient_data=True,
             policy_bundle=TEST_POLICY,
         )
-        self.assertTrue(
+        self.assertFalse(
             should_attempt_patient_verification(route, "9000000001")
         )
         self.assertFalse(
             needs_patient_verification_question(route, "9000000001")
         )
 
-    def test_current_number_claim_independently_attempts_verification(self):
+    def test_current_number_claim_does_not_trigger_verification(self):
         route = SimpleNamespace(
             party_type="Patient",
             policy_bundle=TEST_POLICY,
             identity_status="Matched",
             requires_patient_data=True,
         )
-        self.assertTrue(
+        self.assertFalse(
             should_attempt_patient_verification(route, "This is my number")
         )
         self.assertFalse(
@@ -255,6 +255,6 @@ class TestPatientVerificationGate(TestCase):
         self.assertFalse(
             should_attempt_patient_verification(route, "send my encounter")
         )
-        self.assertTrue(
+        self.assertFalse(
             needs_patient_verification_question(route, "send my encounter")
         )

@@ -234,17 +234,7 @@ def get_or_create_contact(phone_number: str, display_name: Optional[str] = None)
             "name", order_by="creation asc, name asc",
         )
     if existing:
-        if display_name and safe_ai_get_value("Chat Contact", existing, "display_name") != display_name:
-            with_db_lock_retry(
-                "contact_display_name_update",
-                lambda: safe_ai_set_value(
-                    "Chat Contact",
-                    existing,
-                    "display_name",
-                    display_name,
-                    update_modified=False,
-                ),
-            )
+        _update_inbound_contact_display_name(existing, display_name)
         return existing
 
     doc = frappe.get_doc({
@@ -260,19 +250,25 @@ def get_or_create_contact(phone_number: str, display_name: Optional[str] = None)
         existing = _wait_for_duplicate_contact(normalized)
         if not existing:
             raise
-        if display_name and safe_ai_exists("Chat Contact", existing):
-            with_db_lock_retry(
-                "contact_display_name_update",
-                lambda: safe_ai_set_value(
-                    "Chat Contact",
-                    existing,
-                    "display_name",
-                    display_name,
-                    update_modified=False,
-                ),
-            )
+        _update_inbound_contact_display_name(existing, display_name)
         return existing
     return doc.name
+
+
+def _update_inbound_contact_display_name(contact: str, display_name: Optional[str]) -> None:
+    if not display_name:
+        return
+    current = safe_ai_get_value(
+        "Chat Contact", contact, ["display_name", "linked_patient"], as_dict=True
+    ) or {}
+    # Patient linking supplies the registered name. Avoid overwriting it with
+    # the transport nickname and then writing it back on every inbound event.
+    if current.get("linked_patient") or current.get("display_name") == display_name:
+        return
+    with_db_lock_retry(
+        "contact_display_name_update",
+        lambda: safe_ai_set_value("Chat Contact", contact, "display_name", display_name, update_modified=False),
+    )
 
 
 def _wait_for_duplicate_contact(phone_number: str) -> Optional[str]:
@@ -1194,40 +1190,42 @@ def _link_or_create_master_record(
     _sanitize_contact_links(contact)
     _sanitize_conversation_links(convo)
     _normalize_existing_lead_link(convo)
-    try:
-        from wa_chat_hub.identity import reconcile_conversation_identity
-
-        reconcile_conversation_identity(conversation, source="inbound")
-        convo.reload()
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "WA Chat Hub Identity Reconciliation Failed")
-
     policy = get_channel_policy(getattr(convo, "channel_account", None))
     routing_policy = policy.section("party_routing_policy") if policy else {}
     identity_policy = policy.section("identity_policy") if policy else {}
     priority = [str(value) for value in routing_policy.get("phone_match_priority") or []]
     configured_phone_fields = routing_policy.get("phone_fields") or {}
 
+    # Resolve once before preserving an older Lead/Customer link. Cached misses
+    # are invalidated when a Patient is created, so conversion needs no polling.
+    patient_fields = [str(value) for value in
+        ((identity_policy.get("phone_fields") or {}).get("Patient") or [])
+        if str(value).strip()]
+    from wa_chat_hub.patient_matching import find_patient_matches
+
+    patient_matches = find_patient_matches(phone_number, patient_fields) if "Patient" in priority else set()
+    if len(patient_matches) == 1:
+        _link_patient_to_conversation(
+            conversation=conversation, convo=convo, contact=contact,
+            patient_name=next(iter(patient_matches)), phone_number=phone_number,
+            display_name=display_name,
+        )
+        return
+    if "Patient" in priority:
+        _clear_stale_patient_link(convo, contact)
+        if len(patient_matches) > 1:
+            _mark_conversation_patient_ambiguous(convo)
+            return
+
     ref_dt, ref_name = get_conversation_linked_reference(convo)
     if ref_dt and ref_name and routing_policy.get("preserve_existing_reference"):
-        if ref_dt == "Patient":
-            _apply_vobiz_patient_routing(conversation, ref_name, getattr(convo, "channel_account", None))
+        if ref_dt in {"CRM Lead", "Lead"}:
+            _set_conversation_fields(convo, {
+                "party_type": (routing_policy.get("party_type_by_reference_doctype") or {}).get(ref_dt) or "Lead",
+                "identity_status": (identity_policy.get("statuses") or {}).get("matched") or "Matched",
+            })
         return
-
     candidates: dict[str, str] = {}
-    patient_matches: set[str] = set()
-    if "Patient" in priority:
-        patient_fields = [
-            str(fieldname)
-            for fieldname in ((identity_policy.get("phone_fields") or {}).get("Patient") or [])
-            if str(fieldname).strip()
-        ]
-        patient_matches = _find_indexed_phone_match_names(
-            "Patient", patient_fields, phone_number, limit=2
-        )
-        if len(patient_matches) == 1:
-            candidates["Patient"] = next(iter(patient_matches))
-
     if "Customer" in priority:
         customer_fields = [
             str(fieldname)
@@ -1246,19 +1244,6 @@ def _link_or_create_master_record(
         candidates[indexed_lead[0]] = indexed_lead[1]
 
     selected_type = next((doctype for doctype in priority if doctype in candidates), "")
-    if selected_type == "Patient":
-        _link_patient_to_conversation(
-            conversation=conversation,
-            convo=convo,
-            contact=contact,
-            patient_name=candidates[selected_type],
-            phone_number=phone_number,
-            display_name=display_name,
-        )
-        return
-    if selected_type == "Patient" or (patient_matches and len(patient_matches) > 1 and priority and priority[0] == "Patient"):
-        _mark_conversation_patient_ambiguous(convo)
-        return
     if selected_type == "Customer":
         customer_name = candidates[selected_type]
         contact_updates = {"source_doctype": selected_type, "source_name": customer_name}
@@ -1314,6 +1299,8 @@ def _link_or_create_master_record(
     conversation_updates = {
         "linked_reference_doctype": convo.linked_reference_doctype,
         "linked_reference_name": convo.linked_reference_name,
+        "party_type": (routing_policy.get("party_type_by_reference_doctype") or {}).get(lead_doctype) or "Lead",
+        "identity_status": (identity_policy.get("statuses") or {}).get("matched") or "Matched",
     }
     assert_ai_doctype_permission("Chat Conversation", "read")
     if frappe.get_meta("Chat Conversation").has_field("linked_crm_lead"):
@@ -1339,7 +1326,8 @@ def _link_or_create_master_record(
 
 
 def _set_contact_fields(contact, updates: Dict[str, Any]) -> None:
-    updates = dict(updates or {})
+    updates = {key: value for key, value in (updates or {}).items()
+               if getattr(contact, key, None) != value}
     if not updates:
         return
     with_db_lock_retry(
@@ -1365,25 +1353,49 @@ def _link_patient_to_conversation(
     display_name: Optional[str] = None,
 ) -> None:
     """Make a unique Patient authoritative while preserving CRM Lead history."""
+    already_linked = (
+        getattr(convo, "linked_patient", None) == patient_name
+        and getattr(convo, "identity_status", None) in {"Matched", "Verified"}
+        and getattr(convo, "linked_reference_doctype", None) == "Patient"
+        and getattr(convo, "linked_reference_name", None) == patient_name
+        and int(getattr(convo, "routing_version", 0) or 0) >= 3
+    )
     contact_updates = {
         "linked_patient": patient_name,
         "source_doctype": "Patient",
         "source_name": patient_name,
     }
-    if display_name and not contact.display_name:
+    from wa_chat_hub.patient_names import get_patient_display_name
+
+    registered_name = get_patient_display_name(patient_name)
+    if registered_name:
+        contact_updates["display_name"] = registered_name
+    elif display_name and not getattr(contact, "display_name", None):
         contact_updates["display_name"] = display_name
     _set_contact_fields(contact, contact_updates)
+
+    if already_linked:
+        _apply_vobiz_patient_routing(conversation, patient_name, getattr(convo, "channel_account", None))
+        return
 
     try:
         from wa_chat_hub.identity import reconcile_conversation_identity
 
-        reconcile_conversation_identity(
-            conversation,
+        identity = reconcile_conversation_identity(
+            convo,
             patient=patient_name,
             crm_lead=getattr(convo, "linked_crm_lead", None),
             source="inbound_phone_match",
         )
-        convo.reload()
+        if identity.get("patient") != patient_name:
+            _clear_stale_patient_link(convo, contact)
+            return
+        from wa_chat_hub.agent_router import persist_agent_route, resolve_agent_route
+
+        route = resolve_agent_route(convo)
+        if route.patient_access_allowed:
+            route.routing_reason = "patient_identity:automatic_patient_care"
+        persist_agent_route(conversation, route)
     except Exception:
         frappe.log_error(
             frappe.get_traceback(),
@@ -1404,6 +1416,34 @@ def _link_patient_to_conversation(
         frappe.log_error(frappe.get_traceback(), "Interakt Contact Push Enqueue Failed")
 
 
+def _clear_stale_patient_link(convo, contact) -> None:
+    """Remove stale record access when the sender no longer matches a Patient."""
+    updates = {}
+    if getattr(convo, "linked_patient", None) or getattr(convo, "linked_reference_doctype", None) == "Patient":
+        lead = getattr(convo, "linked_crm_lead", None)
+        updates = {
+            "linked_patient": None,
+            "linked_reference_doctype": "CRM Lead" if lead else None,
+            "linked_reference_name": lead,
+            "identity_status": "Matched" if lead else "Unverified",
+            "party_type": "Lead" if lead else "Unknown",
+            "agent_profile": None,
+            "routing_reason": "patient_identity:phone_link_removed",
+        }
+        if getattr(convo, "department_source", None) == "patient.sr_medical_department":
+            updates.update(medical_department=None, department_source=None, department_confidence=0)
+        _set_conversation_fields(convo, updates)
+    contact_updates = {}
+    if getattr(contact, "linked_patient", None):
+        contact_updates["linked_patient"] = None
+    if getattr(contact, "source_doctype", None) == "Patient":
+        contact_updates.update(source_doctype=None, source_name=None)
+    if contact_updates:
+        # A name copied from a Patient must not survive removal of that link.
+        contact_updates["display_name"] = getattr(contact, "phone_number", None) or contact.name
+    _set_contact_fields(contact, contact_updates)
+
+
 def _mark_conversation_patient_ambiguous(convo) -> None:
     """A shared phone is Patient traffic, but no record may be selected automatically."""
     meta = frappe.get_meta("Chat Conversation")
@@ -1420,7 +1460,8 @@ def _mark_conversation_patient_ambiguous(convo) -> None:
 
 
 def _set_conversation_fields(convo, updates: Dict[str, Any]) -> None:
-    updates = {key: value for key, value in (updates or {}).items()}
+    updates = {key: value for key, value in (updates or {}).items()
+               if getattr(convo, key, None) != value}
     if not updates:
         return
     with_db_lock_retry(

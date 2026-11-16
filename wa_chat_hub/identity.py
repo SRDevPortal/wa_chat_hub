@@ -79,17 +79,22 @@ def expire_conversation_verification(
 
 
 def reconcile_conversation_identity(
-    conversation: str,
+    conversation: str | Any,
     *,
     patient: str | None = None,
     crm_lead: str | None = None,
     source: str = "runtime",
     verified: bool = False,
 ) -> dict[str, Any]:
-    if not conversation or not frappe.db.exists("Chat Conversation", conversation):
+    if not conversation:
         return {"changed": False, "reason": "conversation_not_found"}
-
-    convo = frappe.get_doc("Chat Conversation", conversation)
+    if isinstance(conversation, str):
+        if not frappe.db.exists("Chat Conversation", conversation):
+            return {"changed": False, "reason": "conversation_not_found"}
+        convo = frappe.get_doc("Chat Conversation", conversation)
+    else:
+        convo = conversation
+        conversation = convo.name
     policy = get_conversation_policy(convo)
     if not policy:
         return {"changed": False, "reason": "identity_policy_missing"}
@@ -112,12 +117,16 @@ def reconcile_conversation_identity(
         return {"changed": False, "reason": "identity_policy_incomplete"}
     meta = frappe.get_meta("Chat Conversation")
     patient, patient_source = _trusted_patient(convo, patient, crm_lead)
-    values: dict[str, Any] = {"last_identity_sync_at": now_datetime()}
+    values: dict[str, Any] = {}
 
-    if patient and frappe.db.exists("Patient", patient):
+    if patient:
+        same_patient = patient == (getattr(convo, "linked_patient", None) or (
+            getattr(convo, "linked_reference_name", None)
+            if getattr(convo, "linked_reference_doctype", None) == "Patient" else None
+        ))
         identity_status = (
             verified_status
-            if verified or getattr(convo, "identity_status", None) == verified_status
+            if verified or (same_patient and getattr(convo, "identity_status", None) == verified_status)
             else matched_status
         )
         values.update(
@@ -127,11 +136,12 @@ def reconcile_conversation_identity(
                 "identity_status": identity_status,
                 "linked_reference_doctype": "Patient",
                 "linked_reference_name": patient,
-                "routing_reason": f"patient_identity:{patient_source or source}",
             }
         )
         if verified and meta.has_field("verification_completed_at"):
             values["verification_completed_at"] = now_datetime()
+        elif not same_patient:
+            values.update(verification_completed_at=None, verification_started_at=None, verification_attempts=0)
         if crm_lead and not getattr(convo, "linked_crm_lead", None):
             values["linked_crm_lead"] = crm_lead
         patient_meta = frappe.get_meta("Patient")
@@ -155,12 +165,26 @@ def reconcile_conversation_identity(
     values = {key: value for key, value in values.items() if meta.has_field(key)}
     changed = any(str(getattr(convo, key, None) or "") != str(value or "") for key, value in values.items())
     if changed:
+        if meta.has_field("last_identity_sync_at"):
+            values["last_identity_sync_at"] = now_datetime()
+        if meta.has_field("routing_reason"):
+            values["routing_reason"] = f"patient_identity:{patient_source or source}"
         frappe.db.set_value("Chat Conversation", conversation, values, update_modified=False)
+        for key, value in values.items():
+            setattr(convo, key, value)
     return {"changed": changed, "patient": patient, "values": values, "source": patient_source or source}
 
 
 def reconcile_patient_conversations(doc, method=None) -> None:
     if not doc or not getattr(doc, "name", None):
+        return
+    previous = doc.get_doc_before_save()
+    from wa_chat_hub.services import PHONE_INDEX_FIELD_BY_SOURCE
+
+    if previous and method != "on_trash" and all(
+        doc.get(field) == previous.get(field)
+        for field in (*PHONE_INDEX_FIELD_BY_SOURCE, "sr_medical_department")
+    ):
         return
     conversations = set(
         frappe.get_all("Chat Conversation", filters={"linked_reference_doctype": "Patient", "linked_reference_name": doc.name}, pluck="name")
@@ -168,7 +192,33 @@ def reconcile_patient_conversations(doc, method=None) -> None:
     if frappe.get_meta("Chat Conversation").has_field("linked_patient"):
         conversations.update(frappe.get_all("Chat Conversation", filters={"linked_patient": doc.name}, pluck="name"))
     for conversation in conversations:
-        reconcile_conversation_identity(conversation, patient=doc.name, source="patient_hook")
+        convo = frappe.get_doc("Chat Conversation", conversation)
+        policy = get_conversation_policy(convo)
+        identity_policy = policy.section("identity_policy") if policy else {}
+        phone = frappe.db.get_value("Chat Contact", convo.contact, "phone_number")
+        normalized = _normalized_phone(phone, identity_policy)
+        phone_fields = (identity_policy.get("phone_fields") or {}).get("Patient") or []
+        matches = normalized and any(
+            _normalized_phone(doc.get(field), identity_policy) == normalized for field in phone_fields
+        )
+        if method == "on_trash" or not matches:
+            from wa_chat_hub.services import _clear_stale_patient_link
+
+            contact = frappe.get_doc("Chat Contact", convo.contact)
+            _clear_stale_patient_link(convo, contact)
+        else:
+            reconcile_conversation_identity(convo, patient=doc.name, source="patient_hook")
+
+
+def refresh_changed_contact_phone(doc, method=None) -> None:
+    """Drop old record access immediately; the next inbound resolves the new phone."""
+    previous = doc.get_doc_before_save()
+    if not previous or previous.get("phone_number") == doc.get("phone_number"):
+        return
+    from wa_chat_hub.services import _clear_stale_patient_link
+
+    for name in frappe.get_all("Chat Conversation", filters={"contact": doc.name}, pluck="name"):
+        _clear_stale_patient_link(frappe.get_doc("Chat Conversation", name), doc)
 
 
 def reconcile_patient_encounter(doc, method=None) -> None:
@@ -186,8 +236,18 @@ def reconcile_patient_encounter(doc, method=None) -> None:
     for row_filters in filters:
         conversations.update(frappe.get_all("Chat Conversation", filters=row_filters, pluck="name"))
     for conversation in conversations:
+        convo = frappe.get_doc("Chat Conversation", conversation)
+        policy = get_conversation_policy(convo)
+        if not policy:
+            continue
+        from wa_chat_hub.patient_matching import find_patient_matches
+
+        phone = frappe.db.get_value("Chat Contact", convo.contact, "phone_number")
+        fields = (policy.section("identity_policy").get("phone_fields") or {}).get("Patient") or []
+        if find_patient_matches(phone, fields) != {patient}:
+            continue
         reconcile_conversation_identity(
-            conversation,
+            convo,
             patient=patient,
             crm_lead=lead,
             source="patient_encounter",
@@ -372,8 +432,8 @@ def _matching_patient_phone_field(
 
 
 def _trusted_patient(convo, patient: str | None, crm_lead: str | None) -> tuple[str | None, str | None]:
-    if patient and frappe.db.exists("Patient", patient):
-        return patient, "explicit"
+    if patient:
+        return (patient, "explicit") if frappe.db.exists("Patient", patient) else (None, None)
     linked_patient = getattr(convo, "linked_patient", None)
     if linked_patient and frappe.db.exists("Patient", linked_patient):
         return linked_patient, "conversation"

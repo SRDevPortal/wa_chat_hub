@@ -28,8 +28,6 @@ from wa_chat_hub.ai.configuration import active_workflow_action_tools
 from wa_chat_hub.ai.intent_classifier import (
     classify_customer_intent,
     intent_clarification_prompt,
-    needs_patient_verification_question,
-    should_attempt_patient_verification,
 )
 from wa_chat_hub.ai.workflow_engine import (
     clear_active_workflow,
@@ -58,7 +56,7 @@ from wa_chat_hub.prompts import (
     is_account_mcp_tools_enabled,
 )
 from wa_chat_hub.services import append_message, conversation_update_lock
-from wa_chat_hub.identity import expire_conversation_verification
+from wa_chat_hub.patient_matching import patient_context_allowed
 from wa_chat_hub.ai.language import append_multilingual_instructions, resolve_language_from_history
 from wa_chat_hub.policy import policy_reply, policy_section, provider_endpoint, provider_timeout
 from wa_chat_hub.security import (
@@ -357,18 +355,6 @@ def process_message(message_id, skip_batch_wait: bool = False):
             )
             return
 
-    expiry_result = expire_conversation_verification(conversation)
-    if expiry_result.get("expired"):
-        frappe.db.commit()
-        task_log(
-            "identity",
-            "verification_expired",
-            conversation=conversation,
-            message=message_id,
-            patient=expiry_result.get("patient"),
-            expired_at=expiry_result.get("expired_at"),
-        )
-
     original_body_text = str(msg_doc.body or "").strip()
     body_text = original_body_text
     content_type = str(msg_doc.content_type or "Text").title()
@@ -431,63 +417,6 @@ def process_message(message_id, skip_batch_wait: bool = False):
             account_mcp_tools,
             get_account_max_tool_calls(prompt_config),
         )
-    verification_result = _attempt_explicit_patient_verification(
-        route,
-        conversation=conversation,
-        message_id=str(message_id),
-        body_text=body_text,
-    )
-    if verification_result is not None:
-        # Release verification/MCP writes before any later provider or outbound call.
-        frappe.db.commit()
-        if not verification_result.get("verified"):
-            response_text = (
-                localized_blocked_reply(route, body_text, history)
-                or intent_clarification_prompt(intent_decision.intent)
-                or _policy_reply_for_route(route, "ai_safe_fallback", body_text, history)
-            )
-            mode = (
-                _deliver_or_draft_ai_reply(
-                    conversation,
-                    response_text,
-                    settings,
-                    message_id,
-                )
-                or "duplicate_skip"
-            )
-            task_log(
-                "identity",
-                "verification_failed",
-                conversation=conversation,
-                message=message_id,
-                intent=intent_decision.intent,
-                reason=verification_result.get("reason"),
-                mode=mode,
-            )
-            return
-
-        route = resolve_agent_route(conversation)
-        route = apply_intent_route(route, intent_decision)
-        if is_account_mcp_tools_enabled(prompt_config):
-            _apply_account_mcp_tool_override(
-                route,
-                account_mcp_tools,
-                get_account_max_tool_calls(prompt_config),
-            )
-        persist_agent_route(conversation, route)
-        if route.auto_reply_mode:
-            settings.autopilot_mode = route.auto_reply_mode
-        frappe.db.commit()
-        task_log(
-            "identity",
-            "verification_completed",
-            conversation=conversation,
-            message=message_id,
-            patient=verification_result.get("patient"),
-            reason=verification_result.get("reason"),
-            evidence="supplied_phone_or_current_number_claim",
-        )
-
     _apply_configured_intent_tool_narrowing(route)
 
     if _handle_configured_workflow(
@@ -506,7 +435,7 @@ def process_message(message_id, skip_batch_wait: bool = False):
 
     _gate_configured_workflow_tools_for_model(route)
 
-    if needs_patient_verification_question(route, body_text):
+    if route.requires_patient_data and not route.patient_access_allowed:
         response_text = (
             localized_blocked_reply(route, body_text, history)
             or intent_clarification_prompt(intent_decision.intent)
@@ -515,7 +444,7 @@ def process_message(message_id, skip_batch_wait: bool = False):
         mode = _deliver_or_draft_ai_reply(conversation, response_text, settings, message_id) or "duplicate_skip"
         task_log(
             "identity",
-            "verification_requested",
+            "patient_link_missing",
             conversation=conversation,
             message=message_id,
             intent=intent_decision.intent,
@@ -593,13 +522,20 @@ def process_message(message_id, skip_batch_wait: bool = False):
         "If intent is unclear, ask exactly one concise clarification question. "
         "Never claim that a write action completed unless the server returned success."
     )
+    from wa_chat_hub.patient_names import build_patient_name_context
+
+    # Basic identity is available even for greetings/name questions. Detailed
+    # context and record tools remain conditional on the customer's request.
+    patient_name_context = build_patient_name_context(route)
+    if patient_name_context:
+        system_prompt = f"{system_prompt}\n\n{patient_name_context}"
     known_context = ""
     configured_patient_party_type = _route_reference_party_type(route, "Patient")
     is_patient_route = bool(
         configured_patient_party_type and route.party_type == configured_patient_party_type
     )
     if not is_patient_route or (
-        route.identity_status == _route_identity_status(route, "verified") and route.requires_patient_data
+        route.patient_access_allowed and route.requires_patient_data
     ):
         known_context = _build_known_conversation_context(conversation)
     if known_context:
@@ -811,57 +747,35 @@ def _apply_account_mcp_tool_override(
     account_mcp_tools,
     account_max_tool_calls: int,
 ) -> None:
-    """Apply account tools without stripping record tools from verified Patients."""
+    """Keep matched-patient tools while applying the account allowlist."""
     bundle = getattr(route, "policy_bundle", None)
     if not bundle:
         route.allowed_tool_names = set()
         route.max_tool_calls = 0
         return
     runtime_policy = bundle.section("runtime_policy")
-    identity_policy = bundle.section("identity_policy")
     routing_policy = bundle.section("party_routing_policy")
     party_map = routing_policy.get("party_type_by_reference_doctype") or {}
     patient_party_type = str(party_map.get("Patient") or "").strip()
     maximum_tool_calls = max(0, int(runtime_policy.get("maximum_tool_calls") or 0))
-    verified_status = str((identity_policy.get("statuses") or {}).get("verified") or "")
-    verification_tool = str(identity_policy.get("verification_tool_name") or "").strip()
     account_tools = {
-        str(tool_name).strip()
-        for tool_name in (account_mcp_tools or set())
-        if str(tool_name).strip()
+        str(tool_name).strip() for tool_name in (account_mcp_tools or set())
+        if str(tool_name).strip() and str(tool_name).strip() != "verify_patient_identity"
     }
     account_limit = max(0, min(maximum_tool_calls, int(account_max_tool_calls or 0)))
-
-    if (
-        patient_party_type and route.party_type == patient_party_type
-        and route.identity_status != verified_status
-        and getattr(route, "requires_patient_data", False)
-    ):
-        # A protected request may expose only the identity-verification tool.
-        route.allowed_tool_names = {
-            tool_name
-            for tool_name in route.allowed_tool_names
-            if verification_tool and tool_name == verification_tool
-        }
-        route.max_tool_calls = 1 if route.allowed_tool_names else 0
+    is_patient = patient_party_type and route.party_type == patient_party_type
+    allowed = patient_context_allowed(route.patient, route.identity_status, bundle)
+    if is_patient and not allowed and getattr(route, "requires_patient_data", False):
+        route.allowed_tool_names = set()
+        route.max_tool_calls = 0
         return
-
-    if patient_party_type and route.party_type == patient_party_type and route.identity_status != verified_status:
-        # Public requests use the Channel Account configured default tools.
-        route.allowed_tool_names = account_tools
-        route.max_tool_calls = account_limit
-        return
-
-    if patient_party_type and route.party_type == patient_party_type and route.identity_status == verified_status:
+    if is_patient and allowed:
         route.allowed_tool_names |= account_tools
+        route.allowed_tool_names.discard("verify_patient_identity")
         route.max_tool_calls = max(int(route.max_tool_calls or 0), account_limit)
         return
-
-    # Preserve the established account-level replacement behavior for every
-    # other route (Lead, General, Unknown, Matched, Ambiguous, and Unverified).
     route.allowed_tool_names = account_tools
     route.max_tool_calls = account_limit
-
 
 
 def _attempt_explicit_patient_verification(
@@ -871,45 +785,8 @@ def _attempt_explicit_patient_verification(
     message_id: str,
     body_text: str,
 ) -> dict | None:
-    """Execute verification when either accepted evidence option is present."""
-    if not should_attempt_patient_verification(route, body_text):
-        return None
-
-    bundle = getattr(route, "policy_bundle", None)
-    identity_policy = bundle.section("identity_policy") if bundle else {}
-    tool_name = str(identity_policy.get("verification_tool_name") or "").strip()
-    if tool_name not in route.allowed_tool_names:
-        return {
-            "verified": False,
-            "reason": "verification_tool_unavailable",
-        }
-
-    tool_result = execute_mcp_tool(
-        tool_name,
-        {},
-        allowed_tool_names=route.allowed_tool_names,
-        tool_context={
-            "conversation": conversation,
-            "patient": route.patient,
-            "agent_profile": route.agent_profile,
-            "department": route.department,
-            "identity_status": route.identity_status,
-            "message": message_id,
-        },
-    )
-    try:
-        parsed = frappe.parse_json(tool_result)
-    except Exception:
-        return {
-            "verified": False,
-            "reason": "verification_tool_error",
-        }
-    if not isinstance(parsed, dict):
-        return {
-            "verified": False,
-            "reason": "verification_tool_invalid_response",
-        }
-    return parsed
+    """Compatibility shim: explicit patient verification is no longer used."""
+    return None
 
 
 def _apply_configured_intent_tool_narrowing(route) -> None:

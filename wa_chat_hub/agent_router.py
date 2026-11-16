@@ -5,9 +5,10 @@ from typing import Any
 
 import frappe
 from wa_chat_hub.policy import PolicyBundle, get_channel_policy
+from wa_chat_hub.patient_matching import patient_context_allowed
 
 
-ROUTING_VERSION = 2
+ROUTING_VERSION = 3
 
 
 @dataclass
@@ -39,6 +40,11 @@ class AgentRoute:
     preferred_mcp_tool: str | None = None
     blocked_reply: str = ""
     blocked_replies: dict[str, str] = field(default_factory=dict)
+    stored_values: dict[str, Any] | None = None
+
+    @property
+    def patient_access_allowed(self) -> bool:
+        return patient_context_allowed(self.patient, self.identity_status, self.policy_bundle)
 
     @property
     def tools_allowed(self) -> bool:
@@ -57,6 +63,8 @@ def resolve_agent_route(conversation: str | Any) -> AgentRoute:
     department_confidence = float(getattr(convo, "department_confidence", None) or (1.0 if department else 0.0))
 
     requested_type = _agent_type_for_party(party_type, identity_status, policy)
+    if patient_context_allowed(patient, identity_status, policy):
+        requested_type = "Patient"
     agent = _default_agent(requested_type) if policy and requested_type else None
 
     route = AgentRoute(
@@ -71,6 +79,10 @@ def resolve_agent_route(conversation: str | Any) -> AgentRoute:
         department_source=department_source,
         department_confidence=department_confidence,
         routing_reason=_routing_reason(party_type, identity_status, bool(agent)),
+        stored_values={key: getattr(convo, key, None) for key in (
+            "party_type", "agent_profile", "department_source", "department_confidence",
+            "routing_reason", "routing_version",
+        )},
     )
     if not agent:
         return route
@@ -95,8 +107,9 @@ def resolve_agent_route(conversation: str | Any) -> AgentRoute:
             department_profile.get("knowledge_bases"), "knowledge_base"
         )
 
-    if agent.get("require_verified_identity") and identity_status != _configured_status(policy, "verified"):
+    if (agent.get("require_verified_identity") or agent.agent_type == "Patient") and not route.patient_access_allowed:
         route.allowed_tool_names.clear()
+    route.allowed_tool_names.discard("verify_patient_identity")
 
     return route
 
@@ -124,6 +137,9 @@ def apply_intent_route(route: AgentRoute, decision: Any) -> AgentRoute:
             channel_account=route.channel_account,
             party_type=route.party_type,
             identity_status=route.identity_status,
+            equivalent_identity_status=(
+                _configured_status(route.policy_bundle, "verified") if route.patient_access_allowed else None
+            ),
         )
         if definition
         else None
@@ -137,6 +153,23 @@ def apply_intent_route(route: AgentRoute, decision: Any) -> AgentRoute:
         else (definition.clarification_prompt if definition and route.requires_patient_data else "")
     )
     route.blocked_replies = dict(configured.blocked_replies) if configured else {}
+
+    # A public/default intent must not send an existing patient back to the
+    # general agent. Keep configured workflows and tool narrowing above.
+    if route.patient_access_allowed:
+        if (configured and configured.target_type == "Agent Profile" and configured.agent_profile
+                and configured.agent_profile != route.agent_profile):
+            configured_agent = frappe.get_doc("WA AI Agent Profile", configured.agent_profile)
+            if configured_agent.get("is_active") and configured_agent.agent_type == "Patient":
+                _apply_agent_profile(route, configured_agent)
+        if route.agent_type != "Patient":
+            agent = _default_agent("Patient")
+            if agent:
+                _apply_agent_profile(route, agent)
+        route.blocked_reply = ""
+        route.blocked_replies = {}
+        route.routing_reason = "patient_identity:automatic_patient_care"
+        return route
 
     if configured and configured.target_type == "Agent Profile" and configured.agent_profile:
         agent = frappe.get_doc("WA AI Agent Profile", configured.agent_profile)
@@ -192,20 +225,19 @@ def build_agent_prompt(route: AgentRoute) -> str:
         route.medical_guardrail_policy,
         route.escalation_policy,
         route.prompt_overlay,
-        _identity_verification_prompt(route),
+        _patient_context_prompt(route),
     ]
     return "\n\n".join(part for part in parts if part)
 
 
-def _identity_verification_prompt(route: AgentRoute) -> str:
+def _patient_context_prompt(route: AgentRoute) -> str:
     patient_party = _configured_party_type(route.policy_bundle, "Patient")
-    verified_status = _configured_status(route.policy_bundle, "verified")
     if not patient_party or route.party_type != patient_party:
         return ""
-    if route.identity_status != verified_status and route.requires_patient_data:
-        return _route_policy_reply(route, "system_identity_verification")
-    if verified_status and route.identity_status == verified_status:
+    if route.patient_access_allowed:
         return _route_policy_reply(route, "system_identity_verified")
+    if route.requires_patient_data:
+        return _route_policy_reply(route, "system_identity_verification")
     return _route_policy_reply(route, "system_public_patient_conversation")
 
 
@@ -220,8 +252,12 @@ def persist_agent_route(conversation: str, route: AgentRoute) -> None:
         "routing_version": ROUTING_VERSION,
     }
     values = {key: value for key, value in values.items() if meta.has_field(key)}
+    if route.stored_values is not None:
+        values = {key: value for key, value in values.items() if route.stored_values.get(key) != value}
     if values:
         frappe.db.set_value("Chat Conversation", conversation, values, update_modified=False)
+        if route.stored_values is not None:
+            route.stored_values.update(values)
 
 
 def _resolve_party(convo, policy: PolicyBundle | None) -> tuple[str, str | None]:
@@ -301,8 +337,9 @@ def _apply_agent_profile(route: AgentRoute, agent: Any) -> None:
             department_profile.get("knowledge_bases"), "knowledge_base"
         )
 
-    if agent.get("require_verified_identity") and route.identity_status != _configured_status(route.policy_bundle, "verified"):
+    if (agent.get("require_verified_identity") or agent.agent_type == "Patient") and not route.patient_access_allowed:
         route.allowed_tool_names.clear()
+    route.allowed_tool_names.discard("verify_patient_identity")
 
 
 def _apply_channel_default(route: AgentRoute) -> None:

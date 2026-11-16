@@ -148,6 +148,7 @@ def resolve_intent_route(
     channel_account: str | None,
     party_type: str | None,
     identity_status: str | None,
+    equivalent_identity_status: str | None = None,
 ) -> IntentRouteDefinition | None:
     if not _doctype_available("WA AI Intent Route"):
         return None
@@ -187,7 +188,11 @@ def resolve_intent_route(
             "party_type": str(row.get("party_type") or ""),
             "identity_status": str(row.get("identity_status") or ""),
         }
-        if any(value and value != actual[key] for key, value in scope_values.items()):
+        if any(
+            value and value != actual[key]
+            and not (key == "identity_status" and value == equivalent_identity_status)
+            for key, value in scope_values.items()
+        ):
             continue
         candidates.append(
             IntentRouteDefinition(

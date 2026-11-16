@@ -23,7 +23,7 @@
   {"fieldname":"runtime_section","fieldtype":"Section Break","label":"Runtime"},
   {"fieldname":"llm_provider","fieldtype":"Link","label":"LLM Provider","options":"WA LLM Provider"},
   {"default":"2","fieldname":"max_tool_calls","fieldtype":"Int","label":"Maximum Tool Calls"},
-  {"default":"0","description":"Required before any tools assigned to this profile are exposed.","fieldname":"require_verified_identity","fieldtype":"Check","label":"Require Verified Identity For Tools"},
+  {"default":"0","description":"Require an automatically matched or previously verified Patient linked to the conversation before exposing tools.","fieldname":"require_verified_identity","fieldtype":"Check","label":"Require Linked Patient For Tools"},
   {"fieldname":"allowed_tools","fieldtype":"Table","label":"Allowed MCP Tools","options":"WA AI Agent Tool"}
  ],
  "links": [],

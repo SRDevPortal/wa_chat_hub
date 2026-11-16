@@ -15,7 +15,6 @@ from wa_chat_hub.ai.configuration import (
     match_configured_intent,
 )
 from wa_chat_hub.policy import provider_endpoint, provider_timeout
-from wa_chat_hub.identity import _claims_current_chat_number, _phones_from_text
 
 
 @dataclass(frozen=True)
@@ -139,35 +138,12 @@ def _patient_party_type_for_route(route: Any) -> str:
 
 
 def needs_patient_verification_question(route: Any, body_text: str | None) -> bool:
-    """Enforce privacy using the Channel Account's configured identity rules."""
-    policy = _identity_policy_for_route(route)
-    verified_status = str((policy.get("statuses") or {}).get("verified") or "")
-    patient_party_type = _patient_party_type_for_route(route)
-    return bool(
-        policy and patient_party_type
-        and getattr(route, "party_type", None) == patient_party_type
-        and getattr(route, "identity_status", None) != verified_status
-        and getattr(route, "requires_patient_data", False)
-        and not _phones_from_text(body_text, policy)
-        and not _claims_current_chat_number(body_text, policy)
-    )
+    """Compatibility shim; matched patients no longer need a challenge."""
+    return False
 
 
 def should_attempt_patient_verification(route: Any, body_text: str | None) -> bool:
-    """Treat configured supplied-number and current-number evidence as alternatives."""
-    policy = _identity_policy_for_route(route)
-    verified_status = str((policy.get("statuses") or {}).get("verified") or "")
-    patient_party_type = _patient_party_type_for_route(route)
-    return bool(
-        policy and patient_party_type
-        and getattr(route, "party_type", None) == patient_party_type
-        and getattr(route, "identity_status", None) != verified_status
-        and getattr(route, "requires_patient_data", False)
-        and (
-            _phones_from_text(body_text, policy)
-            or _claims_current_chat_number(body_text, policy)
-        )
-    )
+    return False
 
 
 

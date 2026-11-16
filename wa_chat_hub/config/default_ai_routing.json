@@ -110,17 +110,23 @@
     {
       "intent_name": "identity_verification",
       "intent_label": "Identity Verification",
-      "is_active": 1,
+      "is_active": 0,
       "priority": 70,
-      "description": "The customer provides their registered phone number, claims the current chat number, or asks to verify identity for access to patient information.",
+      "description": "Retired identity challenge. Existing patients are automatically matched by the system from the WhatsApp sender number.",
       "classifier_examples": "yahi mera number hai\nthis is my number\nmera registered number 9000000001 hai",
       "fallback_match": {
-        "contains_any": ["this is my number", "this is the same number", "yahi mera number", "yehi mera number", "registered number"]
+        "contains_any": [
+          "this is my number",
+          "this is the same number",
+          "yahi mera number",
+          "yehi mera number",
+          "registered number"
+        ]
       },
       "confidence_threshold": 0.6,
       "requires_patient_data": 1,
       "is_default_fallback": 0,
-      "clarification_prompt": "Please share your registered phone number or explicitly confirm that this WhatsApp number is yours."
+      "clarification_prompt": "How can I help you?"
     },
     {
       "intent_name": "greeting_or_general_chat",
@@ -165,7 +171,7 @@
       "confidence_threshold": 0.6,
       "requires_patient_data": 1,
       "is_default_fallback": 0,
-      "clarification_prompt": "Please verify the patient identity before I access an existing appointment."
+      "clarification_prompt": "Which existing appointment would you like help with?"
     },
     {
       "intent_name": "appointment_request",
@@ -410,15 +416,9 @@
       "party_type": "Patient",
       "identity_status": "Matched",
       "target_type": "Agent Profile",
-      "agent_profile": "Patient Verification Agent",
-      "blocked_reply": "Verification is required before I can access your personal information. Please share your registered phone number.",
-      "blocked_replies": {
-        "default": "Verification is required before I can access your personal information. Please share your registered phone number.",
-        "en": "Verification is required before I can access your personal information. Please share your registered phone number.",
-        "hi-latn": "Aapki personal information access karne se pehle verification zaroori hai. Kripya apna registered phone number share karein.",
-        "hi": "आपकी व्यक्तिगत जानकारी देखने से पहले सत्यापन आवश्यक है। कृपया अपना पंजीकृत फोन नंबर साझा करें।",
-        "ta": "உங்கள் தனிப்பட்ட தகவலை அணுகுவதற்கு முன் சரிபார்ப்பு அவசியம். தயவுசெய்து உங்கள் பதிவு செய்யப்பட்ட தொலைபேசி எண்ணைப் பகிரவும்."
-      }
+      "agent_profile": "Patient Care Agent",
+      "blocked_reply": "",
+      "blocked_replies": {}
     },
     {
       "route_name": "Protected Unverified Patient",
@@ -428,16 +428,9 @@
       "data_scope": "Protected",
       "party_type": "Patient",
       "identity_status": "Unverified",
-      "target_type": "Agent Profile",
-      "agent_profile": "Patient Verification Agent",
-      "blocked_reply": "Verification is required before I can access your personal information. Please share your registered phone number.",
-      "blocked_replies": {
-        "default": "Verification is required before I can access your personal information. Please share your registered phone number.",
-        "en": "Verification is required before I can access your personal information. Please share your registered phone number.",
-        "hi-latn": "Aapki personal information access karne se pehle verification zaroori hai. Kripya apna registered phone number share karein.",
-        "hi": "आपकी व्यक्तिगत जानकारी देखने से पहले सत्यापन आवश्यक है। कृपया अपना पंजीकृत फोन नंबर साझा करें।",
-        "ta": "உங்கள் தனிப்பட்ட தகவலை அணுகுவதற்கு முன் சரிபார்ப்பு அவசியம். தயவுசெய்து உங்கள் பதிவு செய்யப்பட்ட தொலைபேசி எண்ணைப் பகிரவும்."
-      }
+      "target_type": "Channel Account Default",
+      "blocked_reply": "No unique patient record is linked to this chat. Please contact the care team for help.",
+      "blocked_replies": {}
     },
     {
       "route_name": "Protected Ambiguous Patient",
@@ -446,9 +439,9 @@
       "data_scope": "Protected",
       "party_type": "Patient",
       "identity_status": "Ambiguous",
-      "target_type": "Agent Profile",
-      "agent_profile": "Patient Verification Agent",
-      "blocked_reply": "This phone number has an ambiguous patient match. Please share your registered phone number so the care team can verify it safely."
+      "target_type": "Channel Account Default",
+      "blocked_reply": "No unique patient record is linked to this chat. Please contact the care team for help.",
+      "blocked_replies": {}
     },
     {
       "route_name": "Public Channel Default",
@@ -463,7 +456,16 @@
       "priority": 10,
       "data_scope": "Protected",
       "target_type": "Channel Account Default",
-      "blocked_reply": "I need to verify the relevant patient identity before accessing stored patient information."
+      "blocked_reply": "No unique patient record is linked to this chat. Please contact the care team for help."
+    },
+    {
+      "route_name": "Matched Patient Care",
+      "is_active": 1,
+      "priority": 50,
+      "party_type": "Patient",
+      "identity_status": "Matched",
+      "target_type": "Agent Profile",
+      "agent_profile": "Patient Care Agent"
     }
   ]
 }

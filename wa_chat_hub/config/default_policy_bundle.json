@@ -11,14 +11,14 @@
         },
         "phone_candidate_min_digits": 10,
         "phone_match_last_digits": 10,
-        "allow_supplied_registered_number": true,
-        "allow_current_chat_number_claim": true,
-        "verification_tool_name": "verify_patient_identity",
+        "allow_supplied_registered_number": false,
+        "allow_current_chat_number_claim": false,
+        "verification_tool_name": "",
         "current_number_claim_phrases": {
           "en": ["this is my number", "this is my no", "this number is mine", "current number is mine", "whatsapp number is mine"],
           "hi-latn": ["yahi mera number hai", "yehi mera number hai", "ye mera number hai", "ye mera number h", "ye mera no hai", "ye mera no h", "isi number par baat ho rahi hai", "haan ye mera number hai"]
         },
-        "validity_hours": 24,
+        "validity_hours": 0,
         "statuses": {
           "verified": "Verified",
           "matched": "Matched",
@@ -43,7 +43,8 @@
         "agent_type_by_party_status": {
           "Patient": {
             "Verified": "Patient",
-            "default": "Patient Verification"
+            "Matched": "Patient",
+            "default": "General"
           },
           "Lead": {"default": "General"},
           "Customer": {"default": "General"},
@@ -96,10 +97,10 @@
           "default": "The attachment was received, but its contents could not be processed automatically. Please add a short description."
         },
         "system_identity_verification": {
-          "default": "Identity verification is mandatory before protected records can be accessed. Accept either a registered phone number supplied by the customer or an explicit current-number ownership statement allowed by the Identity Policy. Execute the configured verification tool only after evidence is present in the latest inbound message. Disclose no protected facts before server-confirmed success."
+          "default": "Use approved records only for the uniquely linked Patient. Do not ask for phone-number verification. If no unique patient is linked, do not access patient records."
         },
         "system_identity_verified": {
-          "default": "Identity is verified for this conversation. Do not ask for identity again. Continue the most recent unresolved request and use only configured, authorized tools."
+          "default": "This conversation is linked to an existing Patient. Do not ask for phone-number verification. Continue the most recent unresolved request and use only configured, authorized tools."
         },
         "system_public_patient_conversation": {
           "default": "The current request is public and does not require stored patient data. Use normal conversation behavior, do not request verification, and do not disclose or infer protected records."

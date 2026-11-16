@@ -134,9 +134,9 @@ class TestAgentRouter(TestCase):
     @patch("wa_chat_hub.agent_router._default_agent")
     def test_unverified_patient_receives_no_record_tools(self, default_agent, _department):
         default_agent.return_value = _agent(agent_type="Patient Verification")
-        route = resolve_agent_route(_conversation())
+        route = resolve_agent_route(_conversation(identity_status="Unverified"))
         self.assertEqual(route.party_type, "Patient")
-        self.assertEqual(route.identity_status, "Matched")
+        self.assertEqual(route.identity_status, "Unverified")
         self.assertEqual(route.allowed_tool_names, set())
 
     def test_localized_verification_reply_uses_latest_customer_language(self):
@@ -197,26 +197,26 @@ class TestAgentRouter(TestCase):
 
     @patch("wa_chat_hub.agent_router._department_profile", return_value=None)
     @patch("wa_chat_hub.agent_router._default_agent")
-    def test_verification_prompt_requires_customer_number_evidence(self, default_agent, _department):
+    def test_matched_patient_prompt_uses_saved_policy(self, default_agent, _department):
         default_agent.return_value = _agent(agent_type="Patient Verification")
         route = resolve_agent_route(_conversation())
         route.requires_patient_data = True
         prompt = build_agent_prompt(route)
-        self.assertIn("Do not automatically verify", prompt)
-        self.assertIn("This is my number", prompt)
-        self.assertIn("verify_patient_identity without arguments", prompt)
+        self.assertIn(TEST_POLICY.section("reply_templates")["system_identity_verified"]["default"], prompt)
+        self.assertNotIn("verify_patient_identity without arguments", prompt)
 
-    def test_matched_patient_public_question_uses_channel_default(self):
+    def test_matched_patient_public_question_keeps_care_agent(self):
         definition = _intent("general_treatment_information", protected=False)
         configured = IntentRouteDefinition(name="Public Channel Default")
         route = AgentRoute(
-            agent_profile="Patient Verification Agent",
+            patient="PAT-1",
+            agent_profile="Patient Care Agent",
             policy_bundle=TEST_POLICY,
-            agent_type="Patient Verification",
+            agent_type="Patient",
             party_type="Patient",
             identity_status="Matched",
-            system_prompt="verification",
-            allowed_tool_names={"verify_patient_identity"},
+            system_prompt="patient care",
+            allowed_tool_names={"patient_overview"},
         )
         with (
             patch("wa_chat_hub.ai.configuration.load_active_intents", return_value={definition.name: definition}),
@@ -224,9 +224,9 @@ class TestAgentRouter(TestCase):
         ):
             result = apply_intent_route(route, SimpleNamespace(intent=definition.name, requires_patient_data=True))
         self.assertFalse(result.requires_patient_data)
-        self.assertIsNone(result.agent_profile)
-        self.assertEqual(result.allowed_tool_names, set())
-        self.assertIn("do not ask for verification", build_agent_prompt(result))
+        self.assertEqual(result.agent_profile, "Patient Care Agent")
+        self.assertEqual(result.allowed_tool_names, {"patient_overview"})
+        self.assertIn(TEST_POLICY.section("reply_templates")["system_identity_verified"]["default"], build_agent_prompt(result))
 
     @patch("wa_chat_hub.agent_router._department_profile", return_value=None)
     def test_model_cannot_downgrade_configured_protected_intent(self, _department):
@@ -257,11 +257,10 @@ class TestAgentRouter(TestCase):
 
     @patch("wa_chat_hub.agent_router._department_profile", return_value=None)
     @patch("wa_chat_hub.agent_router._default_agent")
-    def test_verified_prompt_resumes_pending_request_immediately(self, default_agent, _department):
+    def test_legacy_verified_status_uses_saved_patient_policy(self, default_agent, _department):
         default_agent.return_value = _agent()
         prompt = build_agent_prompt(resolve_agent_route(_conversation(identity_status="Verified")))
-        self.assertIn("briefly confirm success", prompt)
-        self.assertIn("continue the most recent unresolved request", prompt)
+        self.assertIn(TEST_POLICY.section("reply_templates")["system_identity_verified"]["default"], prompt)
 
     @patch("wa_chat_hub.agent_router._department_profile")
     @patch("wa_chat_hub.agent_router._default_agent")

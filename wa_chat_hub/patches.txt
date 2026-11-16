@@ -25,3 +25,4 @@ wa_chat_hub.patches.v1_1.enqueue_messaging_window_backfill
 wa_chat_hub.patches.v1_1.add_notification_event_index
 
 wa_chat_hub.patches.v1_1.add_attachment_lookup_index
+wa_chat_hub.patches.v1_1.automatic_patient_care
