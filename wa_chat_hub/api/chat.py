@@ -15,6 +15,7 @@ from frappe.utils import cint, now_datetime
 
 from wa_chat_hub.audit import record_conversation_change
 from wa_chat_hub.messaging.attribution import get_conversation_attribution
+from wa_chat_hub.messaging.crm_lead_meta import CONVERSATION_TO_LEAD
 from wa_chat_hub.messaging.windows import get_messaging_window_state
 from wa_chat_hub.permissions import can_read_crm_lead
 from wa_chat_hub.permissions import conversation_access_sql_condition
@@ -967,6 +968,40 @@ def add_external_outbound_message(conversation, body, delivery_status="Sent", ch
     return {"success": True, "result": result}
 
 
+def _get_sidebar_attribution(convo, messaging_window):
+    """Fill display-only attribution without changing stored window eligibility."""
+    field_map = CONVERSATION_TO_LEAD
+    data = {
+        key: getattr(convo, key, None) or messaging_window.get(key) or None
+        for key in (*field_map, "source")
+    }
+    if all(data.values()):
+        return data
+
+    lead_name = getattr(convo, "linked_crm_lead", None)
+    if not lead_name and getattr(convo, "linked_reference_doctype", None) == "CRM Lead":
+        lead_name = getattr(convo, "linked_reference_name", None)
+    if lead_name and can_read_crm_lead(lead_name):
+        lead_meta = frappe.get_meta("CRM Lead")
+        missing = {
+            key: field for key, field in field_map.items()
+            if not data[key] and lead_meta.has_field(field)
+        }
+        if missing:
+            lead_values = frappe.db.get_value(
+                "CRM Lead", lead_name, list(missing.values()), as_dict=True,
+            ) or {}
+            for key, field in missing.items():
+                data[key] = lead_values.get(field) or None
+
+    if not all(data.values()):
+        legacy = get_conversation_attribution(convo.name)
+        for key in data:
+            if not data[key]:
+                data[key] = legacy.get(key) or None
+    return data
+
+
 @frappe.whitelist()
 @browser_response
 def get_sidebar_context(conversation):
@@ -981,14 +1016,7 @@ def get_sidebar_context(conversation):
     contact = frappe.get_doc("Chat Contact", convo.contact)
     actions = build_erp_actions()
     messaging_window = get_messaging_window_state(conversation, convo=convo)
-    attribution = get_conversation_attribution(conversation)
-    persisted_attribution = tuple(
-        getattr(convo, key, None) for key in ("source_id", "source_url", "source", "ctwa_clid")
-    )
-    if not any(persisted_attribution):
-        for key in ("source_id", "source_url", "source", "ctwa_clid"):
-            if messaging_window.get(key):
-                attribution[key] = messaging_window[key]
+    attribution = _get_sidebar_attribution(convo, messaging_window)
 
     result = {
         "success": True,

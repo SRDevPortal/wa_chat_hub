@@ -489,20 +489,12 @@ def process_message(message_id, skip_batch_wait: bool = False):
 
     last_user_query = _meaningful_body(body_text, content_type) or media_context[:500]
 
-    agent_prompt = build_agent_prompt(route)
-    if route.agent_profile and agent_prompt:
-        agent_prompt_config = SimpleNamespace(
-            system_prompt=agent_prompt,
-            medical_guardrail_policy="",
-            escalation_policy="",
-        )
-        system_prompt = build_system_prompt_from_config(agent_prompt_config)
-    else:
-        system_prompt = build_system_prompt_from_config(prompt_config)
+    system_prompt = _build_reply_system_prompt(route, prompt_config)
     if not system_prompt.strip():
         frappe.log_error(
-            "Autopilot skipped: System Prompt is empty in WA Chat Hub Settings "
-            f"(channel account: {channel_account or 'global'}).",
+            "Autopilot skipped: No usable prompt for the selected reply route "
+            f"(agent: {route.agent_profile or 'unconfigured'}, "
+            f"channel account: {channel_account or 'global'}).",
             "WA AI Autopilot Config",
         )
         _deliver_or_draft_ai_reply(
@@ -736,6 +728,22 @@ def process_message(message_id, skip_batch_wait: bool = False):
         fallback_mode=fallback_mode,
         total_sec=elapsed(total_started),
     )
+
+
+def _build_reply_system_prompt(route, prompt_config) -> str:
+    """Choose one instruction source without reloading any database records."""
+    if route.agent_profile:
+        if not (route.system_prompt or "").strip():
+            return ""
+        # The saved profile owns conversation behaviour as well as its role.
+        # Do not append the legacy channel memory/continuation instructions.
+        return build_agent_prompt(route)
+    if route.patient:
+        # An incomplete patient configuration must not silently use lead intake.
+        return ""
+    if not (getattr(prompt_config, "system_prompt", None) or "").strip():
+        return ""
+    return build_system_prompt_from_config(prompt_config)
 
 
 def _should_auto_send(settings) -> bool:
@@ -1808,11 +1816,22 @@ def call_provider(
     tool_context=None,
 ):
     messages = [{"role": "system", "content": system_prompt}]
+    reference_history = bool((tool_context or {}).get("agent_profile"))
     for h in history:
         role = "user" if h.direction == "Inbound" else "assistant"
         line = _format_history_line(h)
         if line:
-            messages.append({"role": role, "content": line})
+            if reference_history:
+                # Preserve chronology and speaker attribution as reference data,
+                # rather than replaying a previous agent as the current assistant.
+                messages.append({
+                    "role": "user",
+                    "content": json.dumps({"conversation_history": {
+                        "speaker": role, "content": line,
+                    }}, ensure_ascii=False),
+                })
+            else:
+                messages.append({"role": role, "content": line})
 
     if current_inbound and current_inbound.get("media_url"):
         vision_text = (current_inbound.get("prompt") or "").strip()
@@ -2139,6 +2158,12 @@ def call_openai_format(
         tools=1 if api_tools else 0,
         token_limit_key=token_limit_key,
         timeout_sec=request_timeout,
+        agent_profile=(tool_context or {}).get("agent_profile"),
+        conversation=(tool_context or {}).get("conversation"),
+        prompt_source="agent_profile" if (tool_context or {}).get("agent_profile") else "channel_account",
+        prompt_fingerprint=hashlib.sha256(
+            str(messages[0].get("content") or "").encode("utf-8")
+        ).hexdigest()[:16],
     )
     resp = requests.post(url, headers=headers, json=payload, timeout=request_timeout)
     _log_ai_timing(

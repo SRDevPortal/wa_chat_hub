@@ -18,14 +18,18 @@ def get_conversation_attribution(conversation: str) -> Dict[str, Optional[str]]:
         order_by="creation desc",
         limit_page_length=20,
     )
+    attribution = {}
     for row in rows:
         payload = json_loads_payload(row.raw_payload)
         if not payload:
             continue
         data = extract_attribution(payload)
-        if any(data.values()):
-            return data
-    return {}
+        for key, value in data.items():
+            if value and not attribution.get(key):
+                attribution[key] = value
+        if all(attribution.get(key) for key in ("source_id", "source_url", "source", "ctwa_clid")):
+            break
+    return attribution
 
 
 def extract_attribution(payload: Dict[str, Any]) -> Dict[str, Optional[str]]:
@@ -101,7 +105,7 @@ def find_first_dict(value: Any, preferred_keys: set) -> Dict[str, Any]:
 
 def find_first_value(payload: Dict[str, Any], keys: list, preferred: Optional[Dict[str, Any]] = None) -> Optional[str]:
     for source in (preferred or {}, payload):
-        value = find_value_recursive(source, set(keys))
+        value = find_value_recursive(source, {normalize_key(key) for key in keys})
         if value not in (None, ""):
             return str(value)
     return None

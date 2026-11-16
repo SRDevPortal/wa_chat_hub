@@ -1454,12 +1454,12 @@ frappe.pages['wa-chat-hub'].on_page_load = function(wrapper) {
         const sourceUrl = attribution.source_url || '';
         return `
             <div class="wa-more-wrap">
-                <button class="wa-show-more" id="wa-source-toggle" type="button">
-                    <span>Show More</span>
+                <button class="wa-show-more open" id="wa-source-toggle" type="button">
+                    <span>Show Less</span>
                     <i class="fa fa-chevron-down"></i>
                 </button>
             </div>
-            <div class="wa-attribution-card" id="wa-source-card">
+            <div class="wa-attribution-card show" id="wa-source-card">
                 <div class="wa-card-title">Ad Source</div>
                 <div class="wa-source-row"><span>Source ID</span><strong>${formatSourceValue(attribution.source_id)}</strong></div>
                 <div class="wa-source-row"><span>Source URL</span><strong>${
