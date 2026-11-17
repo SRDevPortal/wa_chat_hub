@@ -214,6 +214,48 @@ def conversation_access_sql_condition(conversation_alias: str = "c", user: str |
     return f"(({linked_crm_lead}) OR ({linked_reference}))"
 
 
+
+def conversation_access_sql_join() -> str:
+    """Build authorized candidates from lead links for the conversation list.
+
+    UNION materializes distinct conversation names so the optimizer can start
+    with the agent's leads instead of testing two correlated EXISTS clauses
+    against every conversation. The caller retains its original permission
+    predicate and per-document checks as well.
+    """
+    user = _user()
+    if has_unrestricted_chat_access(user):
+        return ""
+    lead_condition = crm_lead_permission_condition(user, alias="wa_lead")
+    if not lead_condition or lead_condition == "1=0":
+        return ""
+    branches = []
+    if frappe.db.has_column("Chat Conversation", "linked_crm_lead"):
+        branches.append(f"""
+            SELECT wa_link.name FROM `tabCRM Lead` wa_lead
+            INNER JOIN `tabChat Conversation` wa_link
+                ON wa_link.linked_crm_lead = wa_lead.name
+            WHERE wa_link.linked_crm_lead != '' AND ({lead_condition})
+        """)
+    if frappe.db.has_column("Chat Conversation", "linked_reference_doctype") and frappe.db.has_column(
+        "Chat Conversation", "linked_reference_name"
+    ):
+        branches.append(f"""
+            SELECT wa_link.name FROM `tabCRM Lead` wa_lead
+            INNER JOIN `tabChat Conversation` wa_link
+                ON wa_link.linked_reference_name = wa_lead.name
+            WHERE wa_link.linked_reference_doctype IN ('CRM Lead', 'Lead')
+                AND wa_link.linked_reference_name != '' AND ({lead_condition})
+        """)
+    if not branches:
+        return ""
+    # DISTINCT also on one-branch schemas prevents derived-table merging.
+    candidates = " UNION ".join(branches)
+    if len(branches) == 1:
+        candidates = candidates.replace("SELECT wa_link.name", "SELECT DISTINCT wa_link.name", 1)
+    return f"INNER JOIN ({candidates}) wa_access ON wa_access.name = c.name"
+
+
 def chat_conversation_pqc(user: str | None = None) -> str:
     return conversation_access_sql_condition("tabChat Conversation", user=user)
 

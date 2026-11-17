@@ -88,6 +88,9 @@ def reconcile_conversation_identity(
 ) -> dict[str, Any]:
     if not conversation:
         return {"changed": False, "reason": "conversation_not_found"}
+    # Autoincrement names can arrive as integers from SQL/provider jobs.
+    if isinstance(conversation, int) and not isinstance(conversation, bool):
+        conversation = str(conversation)
     if isinstance(conversation, str):
         if not frappe.db.exists("Chat Conversation", conversation):
             return {"changed": False, "reason": "conversation_not_found"}

@@ -18,7 +18,7 @@ from wa_chat_hub.messaging.attribution import get_conversation_attribution
 from wa_chat_hub.messaging.crm_lead_meta import CONVERSATION_TO_LEAD
 from wa_chat_hub.messaging.windows import get_messaging_window_state
 from wa_chat_hub.permissions import can_read_crm_lead
-from wa_chat_hub.permissions import conversation_access_sql_condition
+from wa_chat_hub.permissions import conversation_access_sql_condition, conversation_access_sql_join
 from wa_chat_hub.permissions import ensure_can_read_conversation
 from wa_chat_hub.permissions import filter_accessible_conversation_rows
 from wa_chat_hub.permissions import filter_accessible_reference_names
@@ -259,6 +259,7 @@ def _conversation_sql_rows(filters: dict, limit) -> list:
         f"""
         select {fields}
         from `tabChat Conversation` c
+        {conversation_access_sql_join()}
         where {" and ".join(f"({condition})" for condition in conditions)}
         order by {order_expression} desc
         limit %(limit)s
