@@ -68,24 +68,9 @@ def after_migrate() -> None:
     ensure_app_update_setting()
 
 
-def backfill_indexed_phone_keys() -> None:
-    try:
-        settings = frappe.get_cached_doc("WA Chat Hub Settings")
-        if settings.meta.has_field("enable_indexed_phone_lookup") and settings.enable_indexed_phone_lookup:
-            return
-        if not _background_queue_available("long"):
-            return
-        frappe.enqueue(
-            "wa_chat_hub.maintenance.phone_backfill.run_indexed_phone_backfill",
-            queue="long",
-            timeout=1800,
-            enqueue_after_commit=True,
-            job_id="wa_chat_hub_indexed_phone_backfill_0",
-            deduplicate=True,
-            doctype_index=0,
-        )
-    except Exception:
-        _safe_log_error("Indexed Phone Backfill Enqueue Failed")
+def backfill_indexed_phone_keys() -> dict:
+    """Historical normalization is explicitly operated through Bench, never migration."""
+    return {"status": "manual_backfill_required"}
 
 
 def backfill_messaging_windows() -> None:

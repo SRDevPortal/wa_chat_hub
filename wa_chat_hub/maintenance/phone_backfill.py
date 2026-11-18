@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import Any
+from contextlib import contextmanager
+import hashlib
 
 import frappe
 from frappe.utils import cint
@@ -72,153 +74,166 @@ def sync_phone_keys(doc, method=None) -> None:
             doc.set(fieldname, value)
 
 
-@frappe.whitelist()
-def backfill_phone_keys(
-    doctype: str = "CRM Lead",
-    batch_size: int = 2000,
-    max_batches: int = 10,
-    dry_run: bool = False,
-) -> dict[str, Any]:
-    """Backfill normalized phone keys in bounded, resumable batches."""
-    frappe.only_for("System Manager")
-    return _backfill_phone_keys(
-        doctype=doctype,
-        batch_size=batch_size,
-        max_batches=max_batches,
-        dry_run=dry_run,
-    )
+@contextmanager
+def _run_lock(doctype):
+    # Connection-scoped advisory lock survives batch commits and has no expiring lease.
+    scope = str(frappe.local.site) + ":phone-backfill:" + doctype
+    key = "phone:" + hashlib.sha256(scope.encode()).hexdigest()[:56]
+    acquired = frappe.db.sql("SELECT GET_LOCK(%s, 0)", (key,))[0][0] == 1
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            frappe.db.sql("SELECT RELEASE_LOCK(%s)", (key,))
 
 
-def _backfill_phone_keys(
-    *,
-    doctype: str,
-    batch_size: int,
-    max_batches: int,
-    dry_run: bool = False,
-) -> dict[str, Any]:
+def _schema(doctype):
     if doctype not in SUPPORTED_DOCTYPES:
-        frappe.throw(f"Unsupported phone backfill doctype: {doctype}")
+        raise ValueError("Unsupported phone backfill doctype")
     if not frappe.db.exists("DocType", doctype):
-        return {"doctype": doctype, "done": True, "reason": "doctype_missing"}
-
-    batch_size = max(100, min(cint(batch_size) or 2000, 5000))
-    max_batches = max(1, min(cint(max_batches) or 10, 100))
-    dry_run = bool(cint(dry_run))
-    source_fields = _existing_fields(doctype, SOURCE_FIELDS)
-    target_fields = _existing_fields(doctype, TARGET_FIELDS)
-    if not source_fields or not target_fields:
-        return {
-            "doctype": doctype,
-            "done": True,
-            "reason": "phone_source_or_target_fields_missing",
-            "source_fields": source_fields,
-            "target_fields": target_fields,
-        }
-
-    progress_key = _progress_key(doctype)
-    last_name = str(frappe.db.get_global(progress_key) or "")
-    processed = updated = 0
-    done = False
-
-    for _batch in range(max_batches):
-        filters = {"name": [">", last_name]} if last_name else None
-        rows = frappe.get_all(
-            doctype,
-            filters=filters,
-            fields=["name", *source_fields, *target_fields],
-            order_by="name asc",
-            limit_page_length=batch_size,
-        )
-        if not rows:
-            done = True
-            break
-
-        updates = {}
-        for row in rows:
-            processed += 1
-            values = normalized_values(row, target_fields)
-            changed = {
-                fieldname: value
-                for fieldname, value in values.items()
-                if str(row.get(fieldname) or "") != value
-            }
-            if changed:
-                updates[row.name] = changed
-
-        updated += len(updates)
-        last_name = rows[-1].name
-        if not dry_run:
-            if updates:
-                frappe.db.bulk_update(
-                    doctype,
-                    updates,
-                    chunk_size=min(200, batch_size),
-                    update_modified=False,
-                )
-            frappe.db.set_global(progress_key, last_name)
-            frappe.db.commit()
-
-        if len(rows) < batch_size:
-            done = True
-            break
-        if dry_run:
-            break
-
-    return {
-        "doctype": doctype,
-        "dry_run": dry_run,
-        "processed": processed,
-        "updated": updated,
-        "last_name": last_name,
-        "done": done,
-        "source_fields": source_fields,
-        "target_fields": target_fields,
-    }
+        raise ValueError("Required DocType is absent: " + doctype)
+    sources = _existing_fields(doctype, SOURCE_FIELDS)
+    targets = _existing_fields(doctype, TARGET_FIELDS)
+    if not sources or not targets:
+        raise ValueError("Required phone source or target fields are absent")
+    return sources, targets
 
 
-def run_indexed_phone_backfill(doctype_index: int = 0) -> dict[str, Any]:
-    """Background-safe, throttled backfill; enable exact lookup only after completion."""
-    doctype_index = max(0, cint(doctype_index))
-    if doctype_index >= len(BACKGROUND_BACKFILL_DOCTYPES):
-        frappe.db.set_single_value(
-            "WA Chat Hub Settings",
-            "enable_indexed_phone_lookup",
-            1,
-        )
-        frappe.db.commit()
-        return {"done": True, "indexed_lookup_enabled": True}
-
-    doctype = BACKGROUND_BACKFILL_DOCTYPES[doctype_index]
-    result = _backfill_phone_keys(
-        doctype=doctype,
-        batch_size=1000,
-        max_batches=1,
-    )
-    next_index = doctype_index + 1 if result.get("done") else doctype_index
-    frappe.enqueue(
-        "wa_chat_hub.maintenance.phone_backfill.run_indexed_phone_backfill",
-        queue="long",
-        timeout=1800,
-        enqueue_after_commit=True,
-        job_id=f"{BACKGROUND_BACKFILL_JOB_ID}_{next_index}",
-        deduplicate=True,
-        doctype_index=next_index,
-    )
-    return {
-        **result,
-        "done": False,
-        "next_doctype_index": next_index,
-    }
-
-
-@frappe.whitelist()
-def reset_phone_backfill(doctype: str = "CRM Lead") -> dict[str, Any]:
+def phone_backfill_status(doctype="CRM Lead"):
     frappe.only_for("System Manager")
-    if doctype not in SUPPORTED_DOCTYPES:
-        frappe.throw(f"Unsupported phone backfill doctype: {doctype}")
-    frappe.db.set_global(_progress_key(doctype), "")
-    frappe.db.commit()
-    return {"doctype": doctype, "reset": True}
+    sources, targets = _schema(doctype)
+    return dict(doctype=doctype, last_name=str(frappe.db.get_global(_progress_key(doctype)) or ""),
+                source_fields=sources, target_fields=targets, activation="manual")
+
+
+def backfill_phone_keys(doctype="CRM Lead", batch_size=200, max_batches=1, dry_run=False):
+    """Explicit Bench command. Do not call within an application transaction.
+
+    A blocked batch is rolled back with its checkpoint unchanged; retry the same command.
+    No lookup flag is enabled and raw source phone fields are never modified.
+    """
+    frappe.only_for("System Manager")
+    return _backfill_phone_keys(doctype=doctype, batch_size=batch_size,
+                               max_batches=max_batches, dry_run=dry_run)
+
+
+def _backfill_phone_keys(*, doctype, batch_size, max_batches, dry_run=False):
+    sources, targets = _schema(doctype)
+    batch_size = max(1, min(cint(batch_size) or 200, 500))
+    max_batches = max(1, min(cint(max_batches) or 1, 10))
+    dry_run = bool(cint(dry_run))
+    with _run_lock(doctype) as acquired:
+        if not acquired:
+            return dict(doctype=doctype, status="busy", done=False)
+        cursor = str(frappe.db.get_global(_progress_key(doctype)) or "")
+        old_timeout = frappe.db.sql("SELECT @@SESSION.innodb_lock_wait_timeout")[0][0]
+        processed = updated = 0
+        done = False
+        fields = ["name", *sources, *targets]
+        column_sql = ", ".join("`" + field + "`" for field in fields)
+        try:
+            if not dry_run:
+                frappe.db.sql("SET SESSION innodb_lock_wait_timeout=3")
+            for _ in range(max_batches):
+                rows = frappe.get_all(doctype, filters={"name": [">", cursor]} if cursor else None,
+                                      fields=fields, order_by="name asc", limit_page_length=batch_size)
+                if not rows:
+                    done = True
+                    break
+                batch_updated = 0
+                blocked_name = None
+                try:
+                    for original in rows:
+                        blocked_name = original.name
+                        if dry_run:
+                            row = original
+                        else:
+                            # Current locking read: never write keys calculated from a stale source snapshot.
+                            latest = frappe.db.sql(
+                                f"SELECT {column_sql} FROM `tab{doctype}` WHERE name=%s FOR UPDATE",
+                                (original.name,), as_dict=True)
+                            if not latest:
+                                continue  # Concurrent deletion needs no repair.
+                            row = latest[0]
+                        changed = {key: value for key, value in normalized_values(row, targets).items()
+                                   if str(row.get(key) or "") != value}
+                        if changed:
+                            if not dry_run:
+                                frappe.db.set_value(doctype, row.name, changed, update_modified=False)
+                            batch_updated += 1
+                    next_cursor = rows[-1].name
+                    if not dry_run:
+                        frappe.db.set_global(_progress_key(doctype), next_cursor)
+                        frappe.db.commit()
+                except (frappe.QueryTimeoutError, frappe.QueryDeadlockError):
+                    frappe.db.rollback()
+                    return dict(doctype=doctype, status="retry", done=False, last_name=cursor,
+                                blocked_name=blocked_name, processed=processed, updated=updated,
+                                reason="Batch rolled back; retry without resetting progress")
+                except Exception:
+                    if not dry_run:
+                        frappe.db.rollback()
+                    raise
+                cursor = next_cursor
+                processed += len(rows)
+                updated += batch_updated
+                done = len(rows) < batch_size
+                if done or dry_run:
+                    break
+            return dict(doctype=doctype, status="complete" if done else "progress", dry_run=dry_run,
+                        processed=processed, updated=updated, last_name=cursor, done=done,
+                        source_fields=sources, target_fields=targets, activation="manual")
+        finally:
+            if not dry_run:
+                frappe.db.sql("SET SESSION innodb_lock_wait_timeout=%s", (old_timeout,))
+
+
+def run_indexed_phone_backfill(doctype_index=0):
+    """Compatibility entry point for already queued jobs: no writes or re-enqueue."""
+    return dict(done=False, status="manual_backfill_required", indexed_lookup_enabled=False)
+
+
+def reset_phone_backfill(doctype="CRM Lead"):
+    frappe.only_for("System Manager")
+    _schema(doctype)
+    with _run_lock(doctype) as acquired:
+        if not acquired:
+            raise RuntimeError("Backfill is running; checkpoint was not reset")
+        previous = str(frappe.db.get_global(_progress_key(doctype)) or "")
+        frappe.db.set_global(_progress_key(doctype), "")
+        frappe.db.commit()
+    return dict(doctype=doctype, reset=True, previous_last_name=previous)
+
+
+def verify_phone_keys(doctype="CRM Lead", after_name="", batch_size=200):
+    """Read-only page verification. Sum counters over pages; not a consistent global snapshot."""
+    frappe.only_for("System Manager")
+    sources, targets = _schema(doctype)
+    batch_size = max(1, min(cint(batch_size) or 200, 500))
+    rows = frappe.get_all(doctype, filters={"name": [">", after_name]} if after_name else None,
+                          fields=["name", *sources, *targets], order_by="name asc",
+                          limit_page_length=batch_size)
+    counts = {field: dict(missing=0, mismatched=0, invalid_source=0, not_applicable=0)
+              for field in targets}
+    for row in rows:
+        expected = normalized_values(row, targets)
+        for field in targets:
+            raw = _first_value(row, tuple(s for s in TARGET_SOURCE_FIELDS[field] if s in sources))
+            actual = str(row.get(field) or "")
+            if not raw:
+                counts[field]["not_applicable"] += 1
+                if actual:
+                    counts[field]["mismatched"] += 1
+            elif len(last10(raw)) != 10:
+                counts[field]["invalid_source"] += 1
+            elif not actual and expected[field]:
+                counts[field]["missing"] += 1
+            elif actual != expected[field]:
+                counts[field]["mismatched"] += 1
+    return dict(doctype=doctype, processed=len(rows), counts=counts,
+                last_name=rows[-1].name if rows else after_name, done=len(rows) < batch_size,
+                source_fields=sources, target_fields=targets,
+                validation="Existing normalization rules; international semantics require separate review")
 
 
 @frappe.whitelist()
