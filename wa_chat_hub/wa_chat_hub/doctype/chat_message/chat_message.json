@@ -5,6 +5,7 @@
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
+  "scoring_media_text",
   "conversation",
   "direction",
   "sender_type",
@@ -23,6 +24,7 @@
   "raw_transport_payload"
  ],
  "fields": [
+  {"fieldname": "scoring_media_text", "fieldtype": "Long Text", "label": "Lead Scoring Media Evidence", "read_only": 1, "no_copy": 1, "hidden": 1},
   {
    "fieldname": "conversation",
    "fieldtype": "Link",

@@ -46,7 +46,9 @@ has_permission = {
 }
 
 doc_events = {
+    "Chat Conversation": {"on_update": "wa_chat_hub.lead_ai.on_conversation_update"},
     "Chat Message": {
+        "on_update": "wa_chat_hub.lead_ai.on_message_update",
         "after_insert": [
             "wa_chat_hub.api.ai_bot.on_message_received",
             "wa_chat_hub.lead_ai.on_chat_message_after_insert",

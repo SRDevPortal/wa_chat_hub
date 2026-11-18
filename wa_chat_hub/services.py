@@ -778,25 +778,8 @@ def _enqueue_lead_scoring(conversation: str) -> None:
     if not conversation:
         return
 
-    enqueue_options = conversation_job_enqueue_options(
-        f"wa_lead_score_{conversation}"
-    )
-    frappe.enqueue(
-        "wa_chat_hub.ai.lead_scoring.score_and_sync_conversation_job",
-        queue="short",
-        conversation=conversation,
-        timeout=90,
-        enqueue_after_commit=True,
-        now=frappe.flags.in_test,
-        **enqueue_options,
-    )
-    task_log(
-        "lead_score",
-        "enqueue",
-        conversation=conversation,
-        queue="short",
-        deduplicated=bool(enqueue_options),
-    )
+    from wa_chat_hub.lead_ai import _schedule
+    _schedule(conversation)
 
 
 def _enqueue_inbound_media_lead_summary(
@@ -1460,8 +1443,15 @@ def _mark_conversation_patient_ambiguous(convo) -> None:
 
 
 def _set_conversation_fields(convo, updates: Dict[str, Any]) -> None:
+    from wa_chat_hub.lead_ai import SCORING_INPUT_FIELDS
+    link_fields = {"linked_crm_lead", "linked_reference_doctype", "linked_reference_name"}
+    # Link helpers can already have changed the in-memory document. Compare
+    # those fields against persisted values so linking is not silently skipped.
+    stored = {}
+    if link_fields.intersection(updates or {}):
+        stored = safe_ai_get_value("Chat Conversation", convo.name, sorted(link_fields), as_dict=True) or {}
     updates = {key: value for key, value in (updates or {}).items()
-               if getattr(convo, key, None) != value}
+               if (stored.get(key) if key in link_fields else getattr(convo, key, None)) != value}
     if not updates:
         return
     with_db_lock_retry(
@@ -1475,6 +1465,9 @@ def _set_conversation_fields(convo, updates: Dict[str, Any]) -> None:
     )
     for key, value in updates.items():
         setattr(convo, key, value)
+
+    if SCORING_INPUT_FIELDS.intersection(updates):
+        _enqueue_lead_scoring(convo.name)
 
 
 def _finalize_crm_lead_after_inbound(

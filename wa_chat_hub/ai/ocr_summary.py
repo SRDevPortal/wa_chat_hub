@@ -144,7 +144,8 @@ def process_attachment_for_lead_summary(
 ) -> None:
     convo = safe_ai_get_doc("Chat Conversation", conversation)
     crm_lead = get_conversation_crm_lead(convo)
-    if not crm_lead:
+    from wa_chat_hub.ai.lead_scoring import needs_media_scoring_text
+    if not crm_lead and not needs_media_scoring_text(convo):
         return
 
     media_url = payload.get("media_url")
@@ -159,6 +160,10 @@ def process_attachment_for_lead_summary(
 
     body_hint = str(payload.get("body") or "").strip()
     extracted = _extract_text_from_media(media_url, content_type, channel_account=convo.channel_account)
+    from wa_chat_hub.ai.lead_scoring import record_media_scoring_text
+    record_media_scoring_text(message_name, extracted)
+    if not crm_lead:
+        return
     summary = _summarize_report_text(extracted, body_hint, content_type, channel_account=convo.channel_account)
     _persist_ocr_result(
         convo=convo,

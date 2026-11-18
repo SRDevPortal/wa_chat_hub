@@ -15,6 +15,7 @@
   "lead_score",
   "lead_lan",
   "lead_temperature",
+  "lead_score_details",
   "conversation_stopped",
   "last_message_preview",
   "last_message_time",
@@ -56,6 +57,7 @@
   "ctwa_clid"
  ],
  "fields": [
+  {"fieldname": "lead_score_details", "fieldtype": "Code", "label": "Lead Score Calculation", "read_only": 1, "no_copy": 1, "hidden": 0, "options": "JSON"},
   {
    "fieldname": "channel_account",
    "fieldtype": "Link",

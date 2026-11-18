@@ -18,6 +18,14 @@ class WAAIPolicyBundle(Document):
         serialized_size = 0
         for fieldname in POLICY_SECTION_FIELDS:
             value = parse_policy_object(self.get(fieldname), fieldname=fieldname)
+            if fieldname == "lead_scoring_policy":
+                from wa_chat_hub.ai.scoring_policy import validate_scoring_policy
+                try:
+                    warnings = validate_scoring_policy(value)
+                except ValueError as exc:
+                    frappe.throw(str(exc))
+                for warning in warnings:
+                    frappe.msgprint(warning, title="Lead Scoring Policy", indicator="orange")
             encoded = json.dumps(value, ensure_ascii=False, indent=2)
             serialized_size += len(encoded.encode("utf-8"))
             self.set(fieldname, encoded)

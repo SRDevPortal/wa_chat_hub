@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import hashlib
+import json
 from typing import Dict, List
 
 import frappe
 
 from wa_chat_hub.ai.language import resolve_language_from_history
+from wa_chat_hub.ai.scoring_policy import evaluate, temperature, validate_scoring_policy
 from wa_chat_hub.prompts import get_conversation_crm_lead
 from wa_chat_hub.policy import get_conversation_policy
 from wa_chat_hub.security import (
@@ -22,6 +25,7 @@ class ScoreResult:
     lead_temperature: str
     lead_lan: str
     source: str
+    details: dict = field(default_factory=dict)
 
 
 def score_and_sync_conversation_job(conversation: str) -> Dict[str, str]:
@@ -38,9 +42,19 @@ def score_and_sync_conversation_job(conversation: str) -> Dict[str, str]:
 
 
 def score_and_sync_conversation(conversation: str) -> Dict[str, str]:
+    # A locking read serializes scoring/link changes for this conversation.
+    assert_ai_doctype_permission("Chat Conversation", "write")
+    frappe.db.sql("SELECT name FROM `tabChat Conversation` WHERE name=%s FOR UPDATE", (conversation,))
     result = recompute_conversation_metrics(conversation)
+    if result.source == "policy_disabled":
+        return {"source": result.source}
     sync_to_linked_lead(conversation, result)
     sync_to_conversation(conversation, result)
+    assert_ai_doctype_permission("Chat Conversation", "write")
+    frappe.db.set_value("Chat Conversation", conversation, "lead_score_details",
+                        json.dumps({**result.details, "scored_at": str(frappe.utils.now_datetime()),
+                                    "score": result.lead_score, "temperature": result.lead_temperature},
+                                   ensure_ascii=False, sort_keys=True), update_modified=False)
     return {
         "lead_score": f"{result.lead_score:.2f}",
         "lead_temperature": result.lead_temperature,
@@ -51,23 +65,28 @@ def score_and_sync_conversation(conversation: str) -> Dict[str, str]:
 
 def recompute_conversation_metrics(conversation: str) -> ScoreResult:
     convo = safe_ai_get_doc("Chat Conversation", conversation)
-    if getattr(convo, "conversation_stopped", 0):
-        return ScoreResult(
-            lead_score=0,
-            lead_temperature="Cold",
-            lead_lan=convo.lead_lan or "English",
-            source="conversation_stopped",
-        )
-
-    history = safe_ai_get_all(
-        "Chat Message",
-        filters={"conversation": conversation},
-        fields=["direction", "body", "creation"],
-        order_by="creation asc",
-        limit_page_length=40,
-    )
-    score_result = _policy_score(convo, history)
-    return score_result
+    bundle = get_conversation_policy(convo)
+    policy = bundle.section("lead_scoring_policy") if bundle else {}
+    validate_scoring_policy(policy)
+    history = []
+    if policy.get("enabled"):
+        limit = policy.get("history_limit", 0)
+        # Read all messages by default; a configured limit selects the most recent.
+        offset = 0
+        while True:
+            size = min(500, limit - offset) if limit else 500
+            rows = safe_ai_get_all(
+                "Chat Message", filters={"conversation": conversation},
+                fields=["name", "direction", "body", "creation", "content_type", "media_url",
+                        "attachment_file", "scoring_media_text"],
+                order_by="creation desc, name desc", limit_start=offset, limit_page_length=size,
+            )
+            history.extend(rows)
+            offset += len(rows)
+            if len(rows) < size or (limit and offset >= limit):
+                break
+        history.reverse()
+    return _policy_score(convo, history, bundle=bundle)
 
 
 def sync_to_conversation(conversation: str, result: ScoreResult) -> None:
@@ -138,59 +157,79 @@ def sync_to_linked_lead(conversation: str, result: ScoreResult | None = None) ->
     )
 
 
-def _policy_score(convo, history: List[Dict]) -> ScoreResult:
-    bundle = get_conversation_policy(convo)
-    scoring_policy = bundle.section("lead_scoring_policy") if bundle else {}
-    if not scoring_policy.get("enabled"):
+def _policy_score(convo, history: List[Dict], *, bundle=None) -> ScoreResult:
+    bundle = bundle or get_conversation_policy(convo)
+    policy = bundle.section("lead_scoring_policy") if bundle else {}
+    validate_scoring_policy(policy)
+    if not policy.get("enabled"):
         return ScoreResult(
             lead_score=float(getattr(convo, "lead_score", 0) or 0),
             lead_temperature=str(getattr(convo, "lead_temperature", "") or ""),
-            lead_lan=str(getattr(convo, "lead_lan", "") or ""),
-            source="policy_disabled",
+            lead_lan=str(getattr(convo, "lead_lan", "") or ""), source="policy_disabled",
         )
     inbound = [h for h in history if h.get("direction") == "Inbound" and str(h.get("body") or "").strip()]
     latest_text = inbound[-1]["body"] if inbound else ""
     lang = resolve_language_from_history(
         str(latest_text or ""), history, channel_account=getattr(convo, "channel_account", None)
     )
-    lead_lan = str(lang.get("label") or "").strip()
-
-    return _policy_rule_score(convo, history, lead_lan, scoring_policy)
+    result = _policy_rule_score(convo, history, str(lang.get("label") or "").strip(), policy)
+    result.details.update({"policy": bundle.name, "policy_version": bundle.version,
+        "policy_fingerprint": hashlib.sha256(json.dumps(policy, sort_keys=True).encode()).hexdigest()})
+    return result
 
 
 def _policy_rule_score(convo, history: List[Dict], lead_lan: str, policy: Dict) -> ScoreResult:
-    score = float(policy.get("base_score") or 0)
-    inbound_count = len([h for h in history if h.get("direction") == "Inbound" and str(h.get("body") or "").strip()])
-    score += min(float(policy.get("inbound_message_cap") or 0), inbound_count * float(policy.get("inbound_message_weight") or 0))
-    score += min(float(policy.get("unread_cap") or 0), int(convo.unread_count or 0) * float(policy.get("unread_weight") or 0))
-    score += float((policy.get("priority_weights") or {}).get(convo.priority) or 0)
-
-    joined = " ".join([str(h.get("body") or "") for h in history]).lower()
-    hot_terms = [str(term).lower() for term in policy.get("hot_terms") or []]
-    warm_terms = [str(term).lower() for term in policy.get("warm_terms") or []]
-    score += sum(float(policy.get("hot_term_weight") or 0) for term in hot_terms if term in joined)
-    score += sum(float(policy.get("warm_term_weight") or 0) for term in warm_terms if term in joined)
-
-    score = _clamp(score, 0, 100)
-    return ScoreResult(
-        lead_score=score,
-        lead_temperature=_score_to_temperature(score, policy),
-        lead_lan=lead_lan,
-        source="policy",
-    )
+    score, label, details = evaluate(policy, history, unread_count=convo.unread_count,
+        priority=convo.priority, stopped=bool(getattr(convo, "conversation_stopped", 0)))
+    return ScoreResult(score, label, lead_lan, "policy", details)
 
 
 def _score_to_temperature(score: float, policy: Dict) -> str:
-    bands = sorted(
-        (band for band in policy.get("temperature_bands") or [] if isinstance(band, dict)),
-        key=lambda band: float(band.get("minimum") or 0),
-        reverse=True,
-    )
-    for band in bands:
-        if score >= float(band.get("minimum") or 0):
-            return str(band.get("label") or "")
-    return ""
+    return temperature(score, policy)
 
 
-def _clamp(value: float, low: float, high: float) -> float:
-    return max(low, min(high, float(value)))
+def preview_conversation_score(conversation):
+    """Read-only preview for bench/admin scripts; never sends messages or writes scores."""
+    convo = safe_ai_get_doc("Chat Conversation", conversation)
+    result = recompute_conversation_metrics(conversation)
+    return {"conversation": str(conversation), "previous_score": convo.lead_score,
+            "previous_temperature": convo.lead_temperature, "score": result.lead_score,
+            "temperature": result.lead_temperature, "source": result.source, "details": result.details}
+
+
+def rescore_batch(conversations, dry_run=True):
+    """Explicit, bounded backfill. Preview is the default; no automatic bulk rollout."""
+    if not isinstance(conversations, list) or not 1 <= len(conversations) <= 100:
+        raise ValueError("Supply a list of 1 to 100 conversation IDs")
+    if not isinstance(dry_run, bool):
+        raise ValueError("dry_run must be a boolean")
+    if dry_run:
+        return [preview_conversation_score(str(name)) for name in conversations]
+    from wa_chat_hub.lead_ai import _schedule
+    for name in conversations:
+        assert_ai_doctype_permission("Chat Conversation", "write")
+        safe_ai_get_doc("Chat Conversation", str(name))
+        _schedule(str(name))
+    return {"scheduled": len(conversations)}
+
+
+def record_media_scoring_text(message_name, text):
+    """Store derived evidence, never a model-selected score or temperature."""
+    text = str(text or "").strip()
+    if not text:
+        return
+    assert_ai_doctype_permission("Chat Message", "write")
+    doc = safe_ai_get_doc("Chat Message", message_name)
+    if getattr(doc, "scoring_media_text", None) == text[:16000]:
+        return
+    frappe.db.set_value("Chat Message", message_name, "scoring_media_text", text[:16000], update_modified=False)
+    from wa_chat_hub.lead_ai import _schedule
+    _schedule(doc.conversation)
+
+
+def needs_media_scoring_text(convo):
+    """Only add analysis for unlinked chats when the policy requires its evidence."""
+    bundle = get_conversation_policy(convo)
+    policy = bundle.section("lead_scoring_policy") if bundle else {}
+    media = policy.get("disease_media_scoring") or {}
+    return bool(policy.get("enabled") and media.get("enabled") and media.get("require_disease_related_media"))
