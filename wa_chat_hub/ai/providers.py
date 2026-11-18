@@ -15,50 +15,31 @@ TRANSCRIPTION_CAPABILITY = "use_for_transcription"
 OPENAI_COMPATIBLE_PROVIDER_TYPES = {"OpenAI", "Gemini", "Custom"}
 
 
-def get_active_llm_provider_rows(capability: str | None = None, limit: int | None = None) -> list[Any]:
-    """Return active LLM provider rows for a task-specific capability.
+MEDIA_PROVIDER_FIELDS = ("transcription_mode", "transcription_model", "audio_input_format", "analyse_video_frames")
 
-    If capability fields are present and at least one active row is explicitly checked for
-    that capability, the checked rows are authoritative. Otherwise, preserve backward
-    compatibility with model/provider-name heuristics.
-    """
+
+def get_active_llm_provider_rows(capability: str | None = None, limit: int | None = None,
+                                 channel_account: str | None = None, *, optional_capability: bool = False) -> list[Any]:
+    """Channel choice is exclusive; otherwise use active providers in priority order."""
+    selected = None
+    if channel_account and frappe.get_meta("Chat Channel Account").has_field("llm_provider"):
+        selected = safe_ai_get_doc("Chat Channel Account", channel_account).get("llm_provider")
     meta = frappe.get_meta("WA LLM Provider")
     fields = ["name", "provider_type", "model_name", "base_url"]
-    for fieldname in (CHAT_CAPABILITY, VISION_CAPABILITY, TRANSCRIPTION_CAPABILITY):
-        if meta.has_field(fieldname):
-            fields.append(fieldname)
-
-    query_limit = None if capability else limit
-    rows = safe_ai_get_all(
-        "WA LLM Provider",
-        filters={"is_active": 1},
-        fields=fields,
-        order_by="priority asc, modified desc",
-        limit=query_limit,
-    )
+    fields += [f for f in (CHAT_CAPABILITY, VISION_CAPABILITY, TRANSCRIPTION_CAPABILITY, *MEDIA_PROVIDER_FIELDS) if meta.has_field(f)]
+    filters = {"is_active": 1}
+    if selected:
+        filters["name"] = selected
+    rows = safe_ai_get_all("WA LLM Provider", filters=filters, fields=fields,
+                           order_by="priority asc, modified desc", limit=0)
     rows = [row for row in rows if row.provider_type in OPENAI_COMPATIBLE_PROVIDER_TYPES]
-    if not capability:
-        return rows
-
-    if meta.has_field(capability):
-        explicit = [row for row in rows if cint(row.get(capability))]
-        if explicit:
-            return explicit[:limit] if limit else explicit
-
-    if capability == CHAT_CAPABILITY:
-        matches = [row for row in rows if not looks_like_transcription_model(row.model_name, row.base_url)]
-        return matches[:limit] if limit else matches
-    if capability == VISION_CAPABILITY:
-        matches = [row for row in rows if looks_like_vision_model(row.provider_type, row.model_name)]
-        return matches[:limit] if limit else matches
-    if capability == TRANSCRIPTION_CAPABILITY:
-        matches = [
-            row
-            for row in rows
-            if looks_like_transcription_provider(row.provider_type, row.model_name, row.base_url)
-        ]
-        return matches[:limit] if limit else matches
-    return rows
+    if selected and not rows:
+        frappe.throw(f"Channel {channel_account}: selected LLM Provider {selected} must be active and OpenAI-compatible.")
+    if capability:
+        rows = [row for row in rows if cint(row.get(capability))]
+        if selected and not rows and not optional_capability:
+            frappe.throw(f"Channel {channel_account}: selected LLM Provider {selected} does not enable {capability}.")
+    return rows[:limit] if limit else rows
 
 
 def get_provider_secret(row: Any) -> dict[str, Any] | None:
@@ -72,6 +53,7 @@ def get_provider_secret(row: Any) -> dict[str, Any] | None:
         "model_name": row.model_name,
         "base_url": row.base_url,
         "api_key": api_key or "",
+        **{field: doc.get(field) for field in MEDIA_PROVIDER_FIELDS},
     }
 
 

@@ -18,7 +18,13 @@
   "use_for_chat",
   "use_for_vision",
   "use_for_transcription",
-  "is_embedding_provider"
+  "is_embedding_provider",
+  "transcription_settings",
+  "transcription_mode",
+  "transcription_model",
+  "audio_input_format",
+  "analyse_video_frames",
+  "media_settings_version"
  ],
  "fields": [
   {
@@ -91,7 +97,7 @@
   },
   {
    "default": "0",
-   "description": "Use this provider for audio/video speech transcription. The API must support /audio/transcriptions.",
+   "description": "Use this provider for speech transcription with the selected Transcription Mode.",
    "fieldname": "use_for_transcription",
    "fieldtype": "Check",
    "label": "Use for Audio / Video Transcription"
@@ -102,6 +108,48 @@
    "fieldname": "is_embedding_provider",
    "fieldtype": "Check",
    "label": "Is Embedding Provider"
+  },
+  {
+   "fieldname": "transcription_settings",
+   "fieldtype": "Section Break",
+   "label": "Transcription Settings"
+  },
+  {
+   "fieldname": "transcription_mode",
+   "fieldtype": "Select",
+   "label": "Transcription Mode",
+   "options": "Transcription API\nMultimodal Chat",
+   "default": "Transcription API",
+   "depends_on": "eval:doc.use_for_transcription"
+  },
+  {
+   "fieldname": "transcription_model",
+   "fieldtype": "Data",
+   "label": "Transcription Model",
+   "description": "Required for Transcription API. In Multimodal Chat, leave blank to use Model Name.",
+   "depends_on": "eval:doc.use_for_transcription"
+  },
+  {
+   "fieldname": "audio_input_format",
+   "fieldtype": "Select",
+   "label": "Audio Input Format",
+   "options": "audio_url\ninput_audio",
+   "default": "audio_url",
+   "depends_on": "eval:doc.use_for_transcription && doc.transcription_mode == \"Multimodal Chat\""
+  },
+  {
+   "fieldname": "analyse_video_frames",
+   "fieldtype": "Check",
+   "label": "Analyse Video Frames",
+   "default": "0",
+   "description": "Send sampled video frames to this provider. Requires Use for Vision / OCR; supports silent videos."
+  },
+  {
+   "fieldname": "media_settings_version",
+   "fieldtype": "Int",
+   "default": "0",
+   "hidden": 1,
+   "label": "Media Settings Version"
   }
  ],
  "grid_page_length": 50,

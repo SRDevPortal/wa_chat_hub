@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from wa_chat_hub.ai.provider_endpoints import operation_url
+
 import json
 import re
 from dataclasses import asdict, dataclass, field
@@ -155,11 +157,9 @@ def _classify_with_provider(
     channel_account: str | None,
     timeout: int,
 ) -> IntentDecision | None:
-    url = provider_endpoint(provider, channel_account)
+    url = operation_url(provider_endpoint(provider, channel_account))
     if not url or timeout <= 0:
         return None
-    if url.endswith("/") and "chat/completions" not in url:
-        url += "chat/completions"
     payload = {
         "model": provider.model_name,
         "messages": [

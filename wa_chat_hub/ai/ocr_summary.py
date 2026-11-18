@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from wa_chat_hub.ai.provider_endpoints import operation_url
+
 import base64
 from datetime import datetime
 from io import BytesIO
@@ -89,9 +91,9 @@ def build_media_context_for_chat(
         lines.append(f"Caption: {caption}")
 
     if content_type in ("Image", "Document"):
-        extracted = _extract_text_from_media(media_url, content_type)
+        extracted = _extract_text_from_media(media_url, content_type, channel_account=channel_account)
         if not extracted and content_type == "Document":
-            extracted = _extract_with_openai_vision(media_url)
+            extracted = _extract_with_openai_vision(media_url, channel_account=channel_account)
         if extracted:
             lines.append(f"Attachment OCR / visual classification (reference data):\n{extracted[:3500]}")
         else:
@@ -156,8 +158,8 @@ def process_attachment_for_lead_summary(
         return
 
     body_hint = str(payload.get("body") or "").strip()
-    extracted = _extract_text_from_media(media_url, content_type)
-    summary = _summarize_report_text(extracted, body_hint, content_type)
+    extracted = _extract_text_from_media(media_url, content_type, channel_account=convo.channel_account)
+    summary = _summarize_report_text(extracted, body_hint, content_type, channel_account=convo.channel_account)
     _persist_ocr_result(
         convo=convo,
         crm_lead=crm_lead,
@@ -328,7 +330,7 @@ def _trim_notes_to_limit(existing: str, new_block: str, max_len: int) -> str:
     return f"… [older notes truncated]\n\n{trimmed_existing}\n\n{new_block}".strip()
 
 
-def _extract_text_from_media(media_url: str, content_type: str) -> str:
+def _extract_text_from_media(media_url: str, content_type: str, channel_account: str | None = None) -> str:
     media = _download_media(media_url)
     if media and _is_pdf_media(media_url, media.get("mime_type")):
         text = _extract_text_from_pdf(media.get("content") or b"")
@@ -340,12 +342,13 @@ def _extract_text_from_media(media_url: str, content_type: str) -> str:
             media_url,
             media_bytes=media.get("content"),
             mime_type=media.get("mime_type"),
+            channel_account=channel_account,
         )
         if text:
             return text
 
     if content_type in ("Image", "Document") and not media:
-        text = _extract_with_openai_vision(media_url)
+        text = _extract_with_openai_vision(media_url, channel_account=channel_account)
         if text:
             return text
 
@@ -413,8 +416,9 @@ def _extract_with_openai_vision(
     media_url: str,
     media_bytes: bytes | None = None,
     mime_type: str | None = None,
+    channel_account: str | None = None,
 ) -> str:
-    providers = _get_openai_compatible_providers(require_vision=True)
+    providers = _get_openai_compatible_providers(require_vision=True, channel_account=channel_account)
     if not providers:
         return ""
 
@@ -423,11 +427,9 @@ def _extract_with_openai_vision(
         return ""
 
     for provider in providers:
-        base_url = str(provider.get("base_url") or "").strip()
+        base_url = operation_url(provider.get("base_url"))
         if not base_url:
             continue
-        if base_url.endswith("/") and "chat/completions" not in base_url:
-            base_url = f"{base_url}chat/completions"
 
         payload = {
             "model": provider["model_name"],
@@ -502,10 +504,10 @@ def _looks_like_image_url(media_url: str) -> bool:
     return path.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif"))
 
 
-def _summarize_report_text(extracted: str, body_hint: str, content_type: str) -> str:
+def _summarize_report_text(extracted: str, body_hint: str, content_type: str, channel_account: str | None = None) -> str:
     extracted = (extracted or "").strip()
     if extracted:
-        for provider in _get_openai_compatible_providers():
+        for provider in _get_openai_compatible_providers(channel_account=channel_account):
             summary = _summarize_with_model(provider, extracted)
             if summary:
                 return summary
@@ -539,11 +541,9 @@ def _find_nearby_number(text: str, label: str) -> float | None:
 
 
 def _summarize_with_model(provider: Dict, extracted_text: str) -> str:
-    base_url = str(provider.get("base_url") or "").strip()
+    base_url = operation_url(provider.get("base_url"))
     if not base_url:
         return ""
-    if base_url.endswith("/") and "chat/completions" not in base_url:
-        base_url = f"{base_url}chat/completions"
     prompt = (
         "Summarize this medical report for CRM lead notes. "
         "Return ONLY plain text using exactly these section headers and bullet lines:\n"
@@ -578,8 +578,8 @@ def _summarize_with_model(provider: Dict, extracted_text: str) -> str:
         return ""
 
 
-def _get_openai_compatible_providers(require_vision: bool = False) -> list[Dict]:
-    candidates = get_active_llm_provider_rows(VISION_CAPABILITY if require_vision else CHAT_CAPABILITY, limit=5)
+def _get_openai_compatible_providers(require_vision: bool = False, channel_account: str | None = None) -> list[Dict]:
+    candidates = get_active_llm_provider_rows(VISION_CAPABILITY if require_vision else CHAT_CAPABILITY, limit=5, channel_account=channel_account)
 
     if require_vision and not candidates:
         frappe.log_error(

@@ -17,6 +17,7 @@
   "default_team",
   "is_active",
   "ai_policy_bundle",
+  "llm_provider",
   "interakt_config",
   "outbound_pipelines",
   "interakt_api_key",
@@ -272,6 +273,13 @@
    "fieldtype": "Data",
    "hidden": 1,
    "read_only": 1
+  },
+  {
+   "fieldname": "llm_provider",
+   "fieldtype": "Link",
+   "options": "WA LLM Provider",
+   "label": "LLM Provider",
+   "description": "Optional: use this provider for this channel. Blank uses active providers by priority. An explicit selection never falls back to another provider."
   }
  ],
  "links": [],

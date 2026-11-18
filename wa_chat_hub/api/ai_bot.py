@@ -18,7 +18,8 @@ from wa_chat_hub.ai.ocr_summary import (
     apply_prompt_priority_to_media_context,
     build_media_context_for_chat,
 )
-from wa_chat_hub.ai.providers import CHAT_CAPABILITY, get_active_llm_provider_rows
+from wa_chat_hub.ai.providers import CHAT_CAPABILITY, VISION_CAPABILITY, get_active_llm_provider_rows
+from wa_chat_hub.ai.provider_endpoints import operation_url
 from wa_chat_hub.ai.media_transcription import (
     TRANSCRIPT_CONTENT_TYPES,
     build_transcript_context_for_chat,
@@ -361,13 +362,13 @@ def process_message(message_id, skip_batch_wait: bool = False):
     media_url = str(msg_doc.media_url or "").strip()
     spoken_transcript = ""
     if media_url and content_type in TRANSCRIPT_CONTENT_TYPES:
-        spoken_transcript = transcribe_media(media_url, content_type).strip()
+        spoken_transcript = transcribe_media(media_url, content_type, channel_account=safe_ai_get_value("Chat Conversation", conversation, "channel_account")).strip()
         if spoken_transcript:
             # From this point onward, routing, verification, workflows, search,
             # and reply generation must treat speech as the actual user turn.
             body_text = spoken_transcript
     route = resolve_agent_route(conversation)
-    classifier_providers = _load_providers(route.llm_provider)
+    classifier_providers = _load_providers(channel_account=route.channel_account)
     pending_action = load_active_workflow_state(conversation)
     intent_decision = classify_customer_intent(
         classifier_providers[0] if classifier_providers else None,
@@ -592,7 +593,7 @@ def process_message(message_id, skip_batch_wait: bool = False):
         vision=1 if use_vision_for_image else 0,
     )
 
-    providers = _load_providers(route.llm_provider)
+    providers = _load_providers(channel_account=channel_account, capability=VISION_CAPABILITY if use_vision_for_image else CHAT_CAPABILITY)
     if not providers:
         _log_ai_timing(
             "skip",
@@ -1648,10 +1649,8 @@ def _already_replied_to_inbound(conversation: str, inbound_message_id: str) -> b
     return False
 
 
-def _load_providers(preferred_provider: str | None = None):
-    rows = get_active_llm_provider_rows(CHAT_CAPABILITY)
-    if preferred_provider:
-        rows = sorted(rows, key=lambda row: 0 if row.name == preferred_provider else 1)
+def _load_providers(preferred_provider: str | None = None, *, channel_account=None, capability=CHAT_CAPABILITY):
+    rows = get_active_llm_provider_rows(capability, channel_account=channel_account)
     providers = []
     for row in rows:
         doc = safe_ai_get_doc("WA LLM Provider", row.name)
@@ -2112,7 +2111,7 @@ def call_openai_format(
     tool_context=None,
 ):
     request_started = time.monotonic()
-    url = provider_endpoint(provider, (tool_context or {}).get("channel_account"))
+    url = operation_url(provider_endpoint(provider, (tool_context or {}).get("channel_account")))
     if not url:
         raise Exception("Provider endpoint is not configured for this Channel Account.")
     headers = {
@@ -2120,8 +2119,6 @@ def call_openai_format(
         "Content-Type": "application/json",
     }
 
-    if url.endswith("/") and "chat/completions" not in url:
-        url += "chat/completions"
     messages = _fit_messages_for_provider(provider, messages)
 
     tools = fetch_mcp_tools(allowed_tool_names)
