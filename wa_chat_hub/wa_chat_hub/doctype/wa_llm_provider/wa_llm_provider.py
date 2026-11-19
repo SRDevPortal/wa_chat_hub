@@ -1,10 +1,16 @@
 import frappe
 from frappe.model.document import Document
+from wa_chat_hub.ai.prompt_limits import get_character_limits
 from wa_chat_hub.ai.provider_endpoints import operation_url
 
 
 class WALLMProvider(Document):
     def validate(self):
+        try:
+            get_character_limits(self)
+        except ValueError as exc:
+            frappe.throw(str(exc))
+        self.character_limits_version = 1
         if self.base_url:
             try:
                 operation_url(self.base_url)

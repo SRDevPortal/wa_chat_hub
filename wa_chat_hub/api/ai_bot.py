@@ -20,6 +20,7 @@ from wa_chat_hub.ai.ocr_summary import (
 )
 from wa_chat_hub.ai.providers import CHAT_CAPABILITY, VISION_CAPABILITY, get_active_llm_provider_rows
 from wa_chat_hub.ai.provider_endpoints import operation_url
+from wa_chat_hub.ai.prompt_limits import LIMIT_FIELDS, fit_messages, message_characters
 from wa_chat_hub.ai.media_transcription import (
     TRANSCRIPT_CONTENT_TYPES,
     build_transcript_context_for_chat,
@@ -72,7 +73,6 @@ from wa_chat_hub.security import (
 from wa_chat_hub.task_logger import elapsed, queue_wait_seconds, task_log
 
 CONVERSATION_HISTORY_LIMIT = 100
-MAX_HISTORY_MESSAGE_CHARS = 1200
 MEDIA_CONTENT_TYPES = frozenset({"Image", "Video", "Audio", "Document", "Sticker"})
 DEFAULT_TEXT_AUTOPILOT_REPLY_DELAY_SECONDS = 3
 DEFAULT_MEDIA_AUTOPILOT_REPLY_DELAY_SECONDS = 15
@@ -82,8 +82,6 @@ AUTOPILOT_BATCH_LOOKBACK_MINUTES = 15
 AUTOPILOT_MEDIA_BURST_LOOKBACK_MINUTES = 10
 AUTOPILOT_MEDIA_BURST_GAP_SECONDS = 90
 AUTOPILOT_MEDIA_SETTLE_SECONDS = 5
-LOW_CONTEXT_INPUT_CHAR_BUDGET = 6500
-LOW_CONTEXT_SYSTEM_CHAR_BUDGET = 4200
 
 
 def _log_ai_timing(event: str, **fields) -> None:
@@ -1506,13 +1504,13 @@ def _format_history_line(row) -> str:
     content_type = str(row.content_type or "Text").title()
     body = _meaningful_body(str(row.body or ""), content_type)
     if body:
-        return _truncate_history_text(body)
+        return body
     if str(row.media_url or "").strip() and content_type in MEDIA_CONTENT_TYPES:
         return f"[sent {content_type}]"
     return ""
 
 
-def _truncate_history_text(text: str, limit: int = MAX_HISTORY_MESSAGE_CHARS) -> str:
+def _truncate_history_text(text: str, limit: int) -> str:
     text = str(text or "").strip()
     if len(text) <= limit:
         return text
@@ -1694,6 +1692,7 @@ def _load_providers(preferred_provider: str | None = None, *, channel_account=No
                 model_name=row.model_name,
                 base_url=row.base_url,
                 api_key=api_key,
+                **{field: doc.get(field) for field in LIMIT_FIELDS},
             )
         )
     return providers
@@ -2041,65 +2040,20 @@ def _strip_model_reasoning(text: str) -> str:
     return text.strip()
 
 
-def _is_low_context_provider(provider) -> bool:
-    base_url = str(getattr(provider, "base_url", "") or "").lower()
-    model = str(getattr(provider, "model_name", "") or "").lower()
-    return "openrouter.ai" in base_url or "vllm.buopso.net" in base_url or "glm" in model
-
-
-def _truncate_message_content(content, limit: int):
-    if isinstance(content, str):
-        return content[:limit]
-    if isinstance(content, list):
-        remaining = limit
-        trimmed = []
-        for part in content:
-            if not isinstance(part, dict):
-                continue
-            item = dict(part)
-            text = item.get("text")
-            if isinstance(text, str):
-                item["text"] = text[:remaining]
-                remaining -= len(item["text"])
-            trimmed.append(item)
-            if remaining <= 0:
-                break
-        return trimmed
-    return content
-
-
 def _fit_messages_for_provider(provider, messages: list[dict]) -> list[dict]:
-    if not _is_low_context_provider(provider):
-        return messages
-
-    if not messages:
-        return messages
-
-    system_message = dict(messages[0])
-    system_content = str(system_message.get("content") or "")
-    if len(system_content) > LOW_CONTEXT_SYSTEM_CHAR_BUDGET:
-        head_budget = int(LOW_CONTEXT_SYSTEM_CHAR_BUDGET * 0.65)
-        tail_budget = LOW_CONTEXT_SYSTEM_CHAR_BUDGET - head_budget
-        system_message["content"] = (
-            system_content[:head_budget]
-            + "\n\n[Prompt middle shortened for provider context limit. Continue following role, safety, healthcare-segment, stop-rule, and appointment/callback rules. Important recent context continues below.]\n\n"
-            + system_content[-tail_budget:]
+    fitted = fit_messages(provider, messages)
+    before = sum(message_characters(message) for message in messages)
+    after = sum(message_characters(message) for message in fitted)
+    if before != after or len(messages) != len(fitted):
+        _log_ai_timing(
+            "prompt_characters_trimmed",
+            provider=provider.name,
+            original_characters=before,
+            sent_characters=after,
+            original_messages=len(messages),
+            sent_messages=len(fitted),
         )
-
-    kept = [system_message]
-    remaining_budget = LOW_CONTEXT_INPUT_CHAR_BUDGET - len(str(system_message.get("content") or ""))
-    for message in reversed(messages[1:]):
-        content = message.get("content")
-        content_len = len(str(content or ""))
-        if remaining_budget <= 0:
-            break
-        if content_len > min(1200, remaining_budget):
-            message = dict(message)
-            message["content"] = _truncate_message_content(content, min(1200, remaining_budget))
-            content_len = len(str(message.get("content") or ""))
-        kept.insert(1, message)
-        remaining_budget -= content_len
-    return kept
+    return fitted
 
 
 def call_openai_format(
@@ -2226,6 +2180,7 @@ def call_openai_format(
                 }
             )
 
+        messages = _fit_messages_for_provider(provider, messages)
         payload["messages"] = messages
         followup_started = time.monotonic()
         _log_ai_timing(

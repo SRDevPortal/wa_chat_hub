@@ -24,7 +24,13 @@
   "transcription_model",
   "audio_input_format",
   "analyse_video_frames",
-  "media_settings_version"
+  "media_settings_version",
+  "character_limits_section",
+  "enable_character_limits",
+  "max_system_prompt_chars",
+  "max_input_chars",
+  "max_message_chars",
+  "character_limits_version"
  ],
  "fields": [
   {
@@ -150,12 +156,58 @@
    "default": "0",
    "hidden": 1,
    "label": "Media Settings Version"
+  },
+  {
+   "fieldname": "character_limits_section",
+   "fieldtype": "Section Break",
+   "label": "AI Prompt Character Limits"
+  },
+  {
+   "fieldname": "enable_character_limits",
+   "fieldtype": "Check",
+   "label": "Enable Character Limits",
+   "default": "0",
+   "description": "Limit prompt and conversation text sent for AI chat replies. Disable to send complete text. Model token limits still apply."
+  },
+  {
+   "fieldname": "max_system_prompt_chars",
+   "fieldtype": "Int",
+   "label": "Maximum System Prompt Characters",
+   "default": "4200",
+   "description": "Combined instructions, policies and added context. Longer text keeps its beginning and end; the middle is shortened.",
+   "depends_on": "eval:doc.enable_character_limits",
+   "mandatory_depends_on": "eval:doc.enable_character_limits"
+  },
+  {
+   "fieldname": "max_input_chars",
+   "fieldtype": "Int",
+   "label": "Maximum Total Message Characters",
+   "default": "6500",
+   "description": "Budget for system prompt, conversation text and tool-call data. Images and tool schemas are excluded. Must exceed the system prompt limit.",
+   "depends_on": "eval:doc.enable_character_limits",
+   "mandatory_depends_on": "eval:doc.enable_character_limits"
+  },
+  {
+   "fieldname": "max_message_chars",
+   "fieldtype": "Int",
+   "label": "Maximum Characters per Message",
+   "default": "1200",
+   "description": "Limit for each non-system message, including the latest message and tool results. Recent conversation takes priority.",
+   "depends_on": "eval:doc.enable_character_limits",
+   "mandatory_depends_on": "eval:doc.enable_character_limits"
+  },
+  {
+   "fieldname": "character_limits_version",
+   "fieldtype": "Int",
+   "label": "Character Limits Version",
+   "default": "0",
+   "hidden": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-04-09 15:05:52.417257",
+ "modified": "2026-11-19 16:12:36.138427",
  "modified_by": "Administrator",
  "module": "WA Chat Hub",
  "name": "WA LLM Provider",
