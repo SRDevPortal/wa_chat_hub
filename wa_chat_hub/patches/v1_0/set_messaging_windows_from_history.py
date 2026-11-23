@@ -1,9 +1,9 @@
-"""Backfill messaging window fields from Chat Message history."""
+"""Compatibility patch: historical backfills are explicitly manual-only.
 
-import frappe
-
-from wa_chat_hub.messaging.windows import backfill_messaging_windows_from_history
+Patch Log completion means this automatic step was retired, not that history
+was processed. See docs/manual-backfills.md for bounded operator commands.
+"""
 
 
 def execute():
-    backfill_messaging_windows_from_history()
+    return {"status": "manual_backfill_required"}

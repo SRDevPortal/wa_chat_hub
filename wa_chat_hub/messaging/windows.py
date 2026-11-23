@@ -464,34 +464,18 @@ def repair_ctwa_false_positives() -> None:
 
 @frappe.whitelist()
 def repair_messaging_windows():
-    """Recompute window fields for all conversations (admin maintenance)."""
-    repair_ctwa_false_positives()
-    backfill_messaging_windows_from_history(force=True)
-    return {"success": True, "message": "Messaging windows repaired"}
+    """Direct operators to the explicit, bounded Bench maintenance command."""
+    frappe.only_for("System Manager")
+    return {
+        "success": False,
+        "status": "manual_backfill_required",
+        "message": "Use wa_chat_hub.maintenance.history_backfill.run via Bench.",
+    }
 
 
-def backfill_messaging_windows_from_history(force: bool = False) -> None:
-    """Set window fields from existing Chat Message rows."""
-    if not force and messaging_windows_backfill_completed():
-        return
-    if not safe_ai_exists("DocType", "Chat Conversation"):
-        return
-    meta = frappe.get_meta("Chat Conversation")
-    if not meta.has_field("last_customer_message_at"):
-        return
-
-    repair_ctwa_false_positives()
-
-    conversations = safe_ai_get_all("Chat Conversation", pluck="name")
-    for conversation in conversations:
-        try:
-            _backfill_single_conversation(conversation)
-        except Exception as exc:
-            _safe_log_error(f"Messaging Window Backfill Failed: {conversation}")
-            if _is_db_connection_error(exc):
-                raise
-
-    mark_messaging_windows_backfill_completed()
+def backfill_messaging_windows_from_history(force: bool = False) -> dict:
+    """Retired automatic worker; even old queued jobs perform no historical writes."""
+    return {"status": "manual_backfill_required"}
 
 
 def _backfill_single_conversation(conversation: str) -> None:

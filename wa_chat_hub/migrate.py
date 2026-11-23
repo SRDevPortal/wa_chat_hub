@@ -56,9 +56,11 @@ def _background_queue_available(queue: str) -> bool:
 def after_migrate() -> None:
     """Refresh the workspace after schema synchronization.
 
-    Schema setup and data backfills belong in versioned patches so they run once
-    per site instead of on every ``bench migrate``.
+    Historical backfills are manual-only; migration never runs or queues them.
     """
+    from wa_chat_hub.security import ensure_default_ai_doctype_permissions
+
+    ensure_default_ai_doctype_permissions()
     try:
         from wa_chat_hub.setup_workspace import run as setup_workspace
 
@@ -73,30 +75,9 @@ def backfill_indexed_phone_keys() -> dict:
     return {"status": "manual_backfill_required"}
 
 
-def backfill_messaging_windows() -> None:
-    try:
-        from wa_chat_hub.messaging.windows import (
-            backfill_messaging_windows_from_history,
-            messaging_windows_backfill_completed,
-        )
-
-        if messaging_windows_backfill_completed():
-            return
-        if not _background_queue_available("long"):
-            return
-
-        frappe.enqueue(
-            backfill_messaging_windows_from_history,
-            queue="long",
-            timeout=7200,
-            enqueue_after_commit=True,
-            job_id=MESSAGING_WINDOW_BACKFILL_JOB_ID,
-            deduplicate=True,
-        )
-    except Exception as exc:
-        _safe_log_error("Messaging Window Backfill Enqueue Failed")
-        if _is_db_connection_error(exc) and frappe.db:
-            _recover_db_connection()
+def backfill_messaging_windows() -> dict:
+    """Retired enqueue entry point, including calls from old queued jobs."""
+    return {"status": "manual_backfill_required"}
 
 
 def ensure_lead_scoring_fields() -> None:
@@ -214,8 +195,11 @@ def ensure_app_update_setting() -> None:
         frappe.db.set_single_value("WA Chat Hub Settings", "app_update_system_initialized", 1)
 
 
-def backfill_channel_account_medical_departments() -> None:
-    """Copy existing account pipeline-map medical departments into the account default."""
+def backfill_channel_account_medical_departments(names=None):
+    """Copy account defaults only within an explicitly selected manual batch."""
+    if names is None:
+        from wa_chat_hub.maintenance.history_backfill import run
+        return run("channel_departments")
     if not frappe.db.exists("DocType", "Chat Channel Account"):
         return
     if not frappe.get_meta("Chat Channel Account").has_field("default_medical_department"):
@@ -228,14 +212,17 @@ def backfill_channel_account_medical_departments() -> None:
             ON wpm.chat_channel_account = cca.name
            AND wpm.is_active = 1
         SET cca.default_medical_department = wpm.sr_medical_department
-        WHERE {condition}
+        WHERE cca.name IN %(names)s AND ({condition})
     """
-    frappe.db.sql(statement.format(condition="cca.default_medical_department IS NULL"))
-    frappe.db.sql(statement.format(condition="cca.default_medical_department = ''"))
+    frappe.db.sql(statement.format(condition="cca.default_medical_department IS NULL"), {"names": names})
+    frappe.db.sql(statement.format(condition="cca.default_medical_department = ''"), {"names": names})
 
 
-def migrate_conversation_crm_lead_links() -> None:
-    """Copy legacy CRM Lead / Lead links into linked_crm_lead Link field."""
+def migrate_conversation_crm_lead_links(names=None):
+    """Copy legacy links within an explicitly selected manual batch."""
+    if names is None:
+        from wa_chat_hub.maintenance.history_backfill import run
+        return run("crm_lead_links")
     if not frappe.db.exists("DocType", "Chat Conversation"):
         return
     meta = frappe.get_meta("Chat Conversation")
@@ -251,8 +238,10 @@ def migrate_conversation_crm_lead_links() -> None:
         INNER JOIN `tabCRM Lead` l ON l.name = c.linked_reference_name
         SET c.linked_crm_lead = c.linked_reference_name,
             c.linked_reference_doctype = 'CRM Lead'
-        WHERE IFNULL(c.linked_reference_doctype, '') IN ('CRM Lead', 'Lead')
+        WHERE c.name IN %(names)s
+          AND IFNULL(c.linked_reference_doctype, '') IN ('CRM Lead', 'Lead')
           AND IFNULL(c.linked_reference_name, '') != ''
           AND IFNULL(c.linked_crm_lead, '') = ''
-        """
+        """,
+        {"names": names},
     )

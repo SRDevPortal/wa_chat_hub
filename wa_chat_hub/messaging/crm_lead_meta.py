@@ -99,29 +99,7 @@ def _coerce_payload_dict(raw_payload: Any) -> Dict[str, Any]:
     return {}
 
 
-def backfill_all_linked_leads() -> Dict[str, int]:
-    """bench execute helper: copy conversation attribution to CRM Leads."""
-    if not safe_ai_exists("DocType", "Chat Conversation"):
-        return {"updated": 0, "skipped": 0}
-
-    meta = frappe.get_meta("Chat Conversation")
-    filters = {"status": ["!=", "Closed"]}
-    fields = ["name"]
-    if meta.has_field("linked_crm_lead"):
-        filters["linked_crm_lead"] = ["is", "set"]
-        fields.append("linked_crm_lead")
-    else:
-        filters["linked_reference_doctype"] = "CRM Lead"
-        filters["linked_reference_name"] = ["is", "set"]
-        fields.extend(["linked_reference_doctype", "linked_reference_name"])
-
-    updated = 0
-    skipped = 0
-    for row in safe_ai_get_all("Chat Conversation", filters=filters, fields=fields, limit_page_length=0):
-        result = sync_crm_lead_meta_from_conversation(row.name, force=False)
-        if result.get("updated"):
-            updated += 1
-        else:
-            skipped += 1
-    frappe.db.commit()
-    return {"updated": updated, "skipped": skipped}
+def backfill_all_linked_leads(batch_size=100, after_name="", dry_run=True):
+    """Compatibility Bench entry point: preview or apply one explicit batch."""
+    from wa_chat_hub.maintenance.history_backfill import run
+    return run("crm_lead_meta", batch_size=batch_size, after_name=after_name, dry_run=dry_run)

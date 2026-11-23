@@ -366,7 +366,11 @@ def _ensure_shipping_history_on_patient_departments() -> dict:
     }
 
 
-def backfill_conversation_identities() -> None:
+def backfill_conversation_identities(names=None):
+    """Manual-only identity repair, bounded to the selected conversation names."""
+    if names is None:
+        from wa_chat_hub.maintenance.history_backfill import run
+        return run("conversation_identities")
     if not frappe.db.exists("DocType", "Chat Conversation"):
         return
     meta = frappe.get_meta("Chat Conversation")
@@ -382,9 +386,10 @@ def backfill_conversation_identities() -> None:
             identity_status = 'Matched',
             routing_reason = 'patient_identity:legacy_reference',
             last_identity_sync_at = NOW()
-        WHERE linked_reference_doctype = 'Patient'
+        WHERE name IN %(names)s AND linked_reference_doctype = 'Patient'
           AND IFNULL(linked_reference_name, '') != ''
-        """
+        """,
+        {"names": names},
     )
     frappe.db.sql(
         """
@@ -392,12 +397,13 @@ def backfill_conversation_identities() -> None:
         SET party_type = 'Lead',
             identity_status = 'Matched',
             last_identity_sync_at = NOW()
-        WHERE IFNULL(linked_patient, '') = ''
+        WHERE name IN %(names)s AND IFNULL(linked_patient, '') = ''
           AND (
             IFNULL(linked_crm_lead, '') != ''
             OR linked_reference_doctype IN ('CRM Lead', 'Lead')
           )
-        """
+        """,
+        {"names": names},
     )
 
     if frappe.db.exists("DocType", "CRM Lead") and frappe.db.has_column("CRM Lead", "sr_source_patient"):
@@ -413,9 +419,10 @@ def backfill_conversation_identities() -> None:
                 c.linked_reference_name = l.sr_source_patient,
                 c.routing_reason = 'patient_identity:crm_lead_conversion',
                 c.last_identity_sync_at = NOW()
-            WHERE IFNULL(l.sr_source_patient, '') != ''
+            WHERE c.name IN %(names)s AND IFNULL(l.sr_source_patient, '') != ''
               AND IFNULL(c.linked_patient, '') = ''
-            """
+            """,
+            {"names": names},
         )
 
     if meta.has_field("medical_department") and frappe.db.has_column("Patient", "sr_medical_department"):
@@ -426,9 +433,10 @@ def backfill_conversation_identities() -> None:
             SET c.medical_department = p.sr_medical_department,
                 c.department_source = 'patient.sr_medical_department',
                 c.department_confidence = 1.0
-            WHERE IFNULL(c.linked_patient, '') != ''
+            WHERE c.name IN %(names)s AND IFNULL(c.linked_patient, '') != ''
               AND IFNULL(p.sr_medical_department, '') != ''
-            """
+            """,
+            {"names": names},
         )
 
 

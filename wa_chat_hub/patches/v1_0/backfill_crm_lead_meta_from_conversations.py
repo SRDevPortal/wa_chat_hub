@@ -1,11 +1,9 @@
-import frappe
+"""Compatibility patch: historical backfills are explicitly manual-only.
 
-from wa_chat_hub.messaging.crm_lead_meta import backfill_all_linked_leads
+Patch Log completion means this automatic step was retired, not that history
+was processed. See docs/manual-backfills.md for bounded operator commands.
+"""
 
 
 def execute():
-    if not frappe.db.exists("DocType", "CRM Lead"):
-        return
-    if not frappe.get_meta("CRM Lead").has_field("sr_w_source_id"):
-        return
-    backfill_all_linked_leads()
+    return {"status": "manual_backfill_required"}

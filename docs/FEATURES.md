@@ -90,7 +90,7 @@ WA Chat Hub tracks and enforces WhatsApp messaging windows per **Chat Conversati
 
 **UI:** Composer banner (green = free messaging until expiry; orange = template required). Composer/attach disabled when window closed; Template button emphasized.
 
-**Migrate:** `after_migrate` runs `backfill_messaging_windows_from_history()` from existing Chat Messages.
+**Historical maintenance:** Messaging-window backfills are manual-only; migration does not run or enqueue them. See [manual backfill commands](manual-backfills.md).
 
 Template approval timing (minutes to 24h) remains in **Interakt dashboard**, not ERP.
 

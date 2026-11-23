@@ -9,6 +9,7 @@ app_include_css = ["/assets/wa_chat_hub/css/wa_chat_hub.css"]
 app_include_js = ["/assets/wa_chat_hub/js/remote_attachment_links.js"]
 
 after_install = [
+    "wa_chat_hub.security.ensure_default_ai_doctype_permissions",
     "wa_chat_hub.setup_workspace.run",
     "wa_chat_hub.maintenance.notification_indexes.ensure_notification_event_index",
 ]

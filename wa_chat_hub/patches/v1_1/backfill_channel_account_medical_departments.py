@@ -1,7 +1,9 @@
-from __future__ import annotations
+"""Compatibility patch: historical backfills are explicitly manual-only.
+
+Patch Log completion means this automatic step was retired, not that history
+was processed. See docs/manual-backfills.md for bounded operator commands.
+"""
 
 
-def execute() -> None:
-    from wa_chat_hub.migrate import backfill_channel_account_medical_departments
-
-    backfill_channel_account_medical_departments()
+def execute():
+    return {"status": "manual_backfill_required"}
